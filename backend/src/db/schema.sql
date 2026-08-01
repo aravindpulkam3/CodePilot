@@ -1,7 +1,4 @@
--- AI Engineering Workspace — initial schema
--- Authentication itself is handled entirely by Clerk (identity, sessions,
--- passwords, OAuth). This database never stores credentials. `app_users`
--- holds only application-specific data, keyed to Clerk's user id.
+
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
@@ -84,10 +81,41 @@ CREATE TABLE reviews (
     updated_at TIMESTAMP DEFAULT NOW()
 );
 
--- CREATE TABLE documentation_pages (
---     id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
---     repository_id  UUID NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
---     title          TEXT NOT NULL,
---     content        TEXT NOT NULL,
---     generated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
--- );
+CREATE TABLE IF NOT EXISTS review_findings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    review_id UUID NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+
+    severity TEXT NOT NULL,
+
+    category TEXT NOT NULL,
+
+    file_path TEXT NOT NULL,
+
+    line_number INTEGER,
+
+    title TEXT NOT NULL,
+
+    description TEXT NOT NULL,
+
+    recommendation TEXT NOT NULL,
+
+    code_suggestion TEXT,
+
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS review_messages (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    review_id UUID NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+
+    role TEXT NOT NULL,
+
+    content TEXT NOT NULL,
+
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS reviews_repo_pr_latest_idx ON reviews(repository_id, pull_number) WHERE is_latest = TRUE;
+CREATE INDEX IF NOT EXISTS review_findings_review_id_idx ON review_findings(review_id);

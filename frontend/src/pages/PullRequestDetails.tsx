@@ -1,190 +1,171 @@
 // import React from "react";
 import { useParams } from "react-router-dom";
 import { usePullRequestDetail } from "@/hooks/useRepository";
-import { useTriggerAiReview } from "@/hooks/useReview";
+import { useTriggerAiReview,usePullRequestReviews, ReviewHistoryItem } from "@/hooks/useReview";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card, CardBody,CardHeader } from "@/components/ui/Card";
+import { AlertTriangle, RefreshCw, CheckCircle2 } from "lucide-react";
+
 export default function PullRequestDetailsPage() {
   const { repositoryId, pullNumber } = useParams<{ repositoryId: string; pullNumber: string }>();
 
-  // 1. Data Fetching Hook (Fetches PR metadata and Git patches)
-  const { 
-    data: prDetails, 
-    isLoading: prLoading 
-  } = usePullRequestDetail(repositoryId!, pullNumber!);
+  // 1. Fetch GitHub PR Details (returns current head_sha)
+  const { data: pr, isLoading: isPrLoading } = usePullRequestDetail(repositoryId!, pullNumber!);
+  
+  // 2. Fetch Existing AI Reviews from Postgres (returns latest review with stored head_sha)
+  const { data: reviewData, isLoading: isReviewsLoading } = usePullRequestReviews(repositoryId!, pullNumber!);
 
-  // 2. AI Review Mutation Hook
-  const { 
-    mutate: triggerReview, 
-    data: review, 
-    isPending 
-  } = useTriggerAiReview();
+  // 3. AI Generation Mutation
+  const { mutate: generateReview, isPending: isGenerating } = useTriggerAiReview();
 
-  if (prLoading) return <div className="p-8 text-center text-lg font-medium">Loading Pull Request...</div>;
-  if (!prDetails) return <div className="p-8 text-center text-red-500">Failed to load Pull Request details.</div>;
+  if (isPrLoading || isReviewsLoading) return <div className="p-8">Loading PR details...</div>;
+  if (!pr) return <div className="p-8">Pull Request not found.</div>;
+
+  const { latest, history } = reviewData || { latest: null, history: [] };
+
+  // 🎯 STALENESS CHECK: Compare current commit SHA vs reviewed commit SHA
+  const isOutdated = !!latest && pr.head_sha !== latest.head_sha;
 
   return (
-    <div className="max-w-6xl mx-auto py-8 px-4">
-      {/* --- PAGE HEADER --- */}
+    <div className="max-w-5xl mx-auto p-6 space-y-6">
+      {/* --- PR Header --- */}
       <PageHeader 
-        title={`#${pullNumber} ${prDetails.title || 'Pull Request'}`} 
-        description={`Opened by ${prDetails.author?.login || 'Unknown'} • ${prDetails.changed_files_count || 0} files changed`}
+        title={`#${pr.number} ${pr.title}`} 
+        description={`Opened by ${pr.author?.login} • ${pr.changed_files_count} files changed`} 
       />
 
-      {/* --- AI REVIEW TRIGGER BANNER --- */}
-      <div className="my-8 flex flex-col md:flex-row justify-between items-start md:items-center bg-slate-50 dark:bg-slate-800/50 p-6 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm gap-4">
-        <div>
-          <h2 className="text-xl font-bold mb-2">AI Code Review</h2>
-          <p className="text-slate-600 dark:text-slate-400 max-w-2xl">
-            Generate a deep, context-aware analysis of this pull request using Gemini 2.0 Flash. The AI will categorize findings by Correctness, Security, Performance, and Best Practices.
-          </p>
+      {/* --- Trigger / Refresh AI Review Button --- */}
+      <div className="flex justify-between items-center">
+        <div className="text-xs text-gray-500 font-mono">
+          Current Commit: <span className="font-bold text-gray-700 dark:text-gray-300">{pr.head_sha.slice(0, 7)}</span>
         </div>
-        
-        <button 
-          onClick={() => {
-            if (repositoryId && pullNumber) {
-               triggerReview({ repositoryId, pullNumber: Number(pullNumber) });
-            }
-          }}
-          disabled={isPending}
-          className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-lg font-semibold transition-all disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap flex-shrink-0 shadow-sm hover:shadow"
+        <button
+          onClick={() => generateReview({ repositoryId: repositoryId!, pullNumber: Number(pullNumber) })}
+          disabled={isGenerating}
+          className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 disabled:opacity-50 text-sm font-medium transition-colors"
         >
-          {isPending ? "Analyzing Code..." : "Review with AI"}
+          <RefreshCw className={`w-4 h-4 ${isGenerating ? "animate-spin" : ""}`} />
+          {isGenerating 
+            ? "Analyzing Code..." 
+            : isOutdated 
+            ? "Re-analyze New Commits" 
+            : latest 
+            ? "Re-run AI Review" 
+            : "Generate AI Review"}
         </button>
       </div>
 
-      {/* --- AI REVIEW RESULTS --- */}
-      {review && (
-        <div className="space-y-6 mb-12">
-          {/* Summary Card */}
-          <Card>
-            <CardHeader className="bg-slate-100 dark:bg-slate-800/80">
-              <div className="flex justify-between items-center">
-                <h3 className="font-bold text-lg">Review Summary</h3>
-                <span className={`px-4 py-1.5 rounded-full text-sm font-bold ${
-                  review.overall_score >= 80 ? 'bg-green-100 text-green-800' : 
-                  review.overall_score >= 60 ? 'bg-yellow-100 text-yellow-800' : 
-                  'bg-red-100 text-red-800'
-                }`}>
-                  Score: {review.overall_score}/100
-                </span>
-              </div>
-            </CardHeader>
-            <CardBody>
-              <p className="whitespace-pre-wrap leading-relaxed text-slate-700 dark:text-slate-300">
-                {review.summary}
-              </p>
-            </CardBody>
-          </Card>
-
-          {/* Detailed Findings */}
-          {review.findings && review.findings.length > 0 && (
-            <>
-              <h3 className="text-xl font-bold mt-10 mb-4">Detailed Findings</h3>
-              <div className="grid gap-5">
-                {review.findings.map((finding: any, idx: number) => (
-                  <Card key={idx} className={`overflow-hidden ${
-                    finding.severity === 'Critical' || finding.severity === 'High' ? 'border-l-4 border-l-red-500' : 
-                    finding.severity === 'Major' || finding.severity === 'Medium' ? 'border-l-4 border-l-amber-500' : 
-                    'border-l-4 border-l-blue-500'
-                  }`}>
-                    <CardBody>
-                      <div className="flex flex-col md:flex-row md:justify-between md:items-center mb-3 gap-2">
-                        <div className="flex items-center gap-3">
-                          <span className={`text-xs font-bold px-2.5 py-1 rounded-md uppercase tracking-wider ${
-                            finding.category === 'Security' ? 'bg-red-100 text-red-800' :
-                            finding.category === 'Performance' ? 'bg-purple-100 text-purple-800' :
-                            'bg-slate-200 text-slate-800 dark:bg-slate-700 dark:text-slate-200'
-                          }`}>
-                            {finding.category}
-                          </span>
-                          <span className="font-bold text-lg">{finding.title}</span>
-                        </div>
-                        <span className="text-sm font-mono bg-slate-100 dark:bg-slate-800 px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-700">
-                          {finding.file_path} {finding.line_number ? `(Line ${finding.line_number})` : ''}
-                        </span>
-                      </div>
-                      
-                      <p className="text-slate-700 dark:text-slate-300 mb-5">{finding.description}</p>
-                      
-                      <div className="bg-blue-50/50 dark:bg-blue-900/10 p-4 rounded-lg border border-blue-100 dark:border-blue-900/30">
-                        <strong className="block mb-1.5 text-blue-900 dark:text-blue-300">Recommendation:</strong>
-                        <span className="text-sm text-slate-800 dark:text-slate-200">{finding.recommendation}</span>
-                      </div>
-
-                      {finding.code_suggestion && (
-                        <div className="mt-5">
-                          <strong className="block mb-2 text-sm text-slate-600 dark:text-slate-400">Suggested Fix:</strong>
-                          <pre className="p-4 bg-slate-950 text-green-400 rounded-lg overflow-x-auto text-sm font-mono shadow-inner">
-                            <code>{finding.code_suggestion}</code>
-                          </pre>
-                        </div>
-                      )}
-                    </CardBody>
-                  </Card>
-                ))}
-              </div>
-            </>
-          )}
+      {/* ⚠️ OUTDATED REVIEW ALERT BANNER */}
+      {isOutdated && (
+        <div className="flex items-start gap-3 p-4 rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 text-amber-900 dark:text-amber-200">
+          <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+          <div className="flex-1 text-sm">
+            <p className="font-semibold">Code has changed since the last AI review</p>
+            <p className="mt-0.5 opacity-90">
+              New commits were pushed to this branch after this review was generated for commit{" "}
+              <code className="font-mono bg-amber-100 dark:bg-amber-900/50 px-1 py-0.5 rounded text-xs">
+                {latest.head_sha.slice(0, 7)}
+              </code>. Click above to generate a fresh review.
+            </p>
+          </div>
         </div>
       )}
 
-      {/* --- CODE DIFF VIEWER --- */}
-      <div className="mt-12">
-        <h3 className="text-xl font-bold mb-6 pb-2 border-b border-slate-200 dark:border-slate-700">
-          Files Changed ({prDetails.files?.length || 0})
-        </h3>
-        
-        <div className="space-y-6">
-          {prDetails.files?.map((file: any, index: number) => (
-            <div key={index} className="border border-slate-300 dark:border-slate-700 rounded-lg overflow-hidden bg-white dark:bg-slate-900 shadow-sm">
-              {/* File Header */}
-              <div className="flex justify-between items-center px-5 py-3 bg-slate-100 dark:bg-slate-800 border-b border-slate-300 dark:border-slate-700">
-                <span className="font-mono text-sm font-semibold text-slate-800 dark:text-slate-200">
-                  {file.filename}
+      {/* --- UP-TO-DATE BADGE (Optional indicator when review matches head_sha) --- */}
+      {latest && !isOutdated && (
+        <div className="flex items-center gap-2 text-xs font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 px-3 py-1.5 rounded-md w-fit">
+          <CheckCircle2 className="w-4 h-4" />
+          AI Review is up to date with commit {latest.head_sha.slice(0, 7)}
+        </div>
+      )}
+
+      {/* --- Latest AI Review Display --- */}
+      {latest && (
+        <Card className={`border ${isOutdated ? "border-amber-200 dark:border-amber-900 opacity-90" : "border-blue-200 dark:border-blue-900"}`}>
+          <CardHeader>
+            <div className="flex justify-between items-center">
+              <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100">
+                AI Review Score: {latest.overall_score}/100
+              </h2>
+              {isOutdated && (
+                <span className="text-xs bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200 font-bold px-2.5 py-1 rounded-full uppercase">
+                  Outdated
                 </span>
-                <div className="flex space-x-4 text-sm bg-white dark:bg-slate-900 px-3 py-1 rounded-md border border-slate-200 dark:border-slate-700">
-                  <span className="text-green-600 dark:text-green-500 font-bold">+{file.additions}</span>
-                  <span className="text-red-600 dark:text-red-500 font-bold">-{file.deletions}</span>
-                </div>
-              </div>
-
-              {/* File Patch Render */}
-              {file.patch ? (
-                <div className="overflow-x-auto">
-                  <pre className="text-sm font-mono whitespace-pre-wrap leading-relaxed">
-                    {file.patch.split('\n').map((line: string, i: number) => {
-                      // Determine GitHub-style diff colors
-                      let lineClass = "text-slate-800 dark:text-slate-300";
-                      let bgClass = "bg-transparent";
-
-                      if (line.startsWith('+')) {
-                        lineClass = "text-green-800 dark:text-green-300";
-                        bgClass = "bg-green-100/50 dark:bg-green-900/30";
-                      } else if (line.startsWith('-')) {
-                        lineClass = "text-red-800 dark:text-red-300";
-                        bgClass = "bg-red-100/50 dark:bg-red-900/30";
-                      } else if (line.startsWith('@@')) {
-                        lineClass = "text-blue-600 dark:text-blue-400 font-bold";
-                        bgClass = "bg-blue-50/50 dark:bg-blue-900/20";
-                      }
-
-                      return (
-                        <div key={i} className={`px-4 py-0.5 ${bgClass}`}>
-                          <span className={lineClass}>{line}</span>
-                        </div>
-                      );
-                    })}
-                  </pre>
-                </div>
-              ) : (
-                <div className="p-5 text-sm text-slate-500 italic">No patch available for this file (Binary or too large).</div>
               )}
             </div>
+            <p className="text-xs text-gray-500 mt-1">
+              Reviewed on {new Date(latest.created_at).toLocaleString()} • Commit: {latest.head_sha.slice(0, 7)}
+            </p>
+          </CardHeader>
+          <CardBody className="space-y-4">
+            <p className="text-gray-700 dark:text-gray-300 leading-relaxed">{latest.summary}</p>
+            
+            {/* Inline Findings */}
+            <div className="space-y-3 mt-4">
+              {latest.findings?.map((finding: any) => (
+                <div key={finding.id} className="p-3.5 border rounded-lg bg-white dark:bg-slate-800 border-gray-200 dark:border-gray-700">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className={`text-xs font-bold uppercase tracking-wider ${
+                      finding.category === 'security' ? 'text-red-500' : 
+                      finding.category === 'correctness' ? 'text-amber-600' : 'text-blue-500'
+                    }`}>
+                      {finding.category} • {finding.severity}
+                    </span>
+                  </div>
+                  <p className="font-semibold text-sm text-gray-900 dark:text-gray-100">{finding.title}</p>
+                  <p className="text-xs font-mono text-gray-500 mt-0.5">{finding.file_path}:{finding.line_number}</p>
+                  <p className="text-sm text-gray-700 dark:text-gray-300 mt-2">{finding.description}</p>
+                  {finding.code_suggestion && (
+                    <pre className="mt-2.5 bg-gray-900 text-gray-100 p-3 text-xs rounded-md overflow-x-auto font-mono">
+                      <code>{finding.code_suggestion}</code>
+                    </pre>
+                  )}
+                </div>
+              ))}
+            </div>
+          </CardBody>
+        </Card>
+      )}
+
+      {/* --- Code Diff Viewer --- */}
+      <Card>
+        <CardHeader>
+          <h3 className="font-bold">Code Changes</h3>
+        </CardHeader>
+        <CardBody>
+          {pr.files?.map((file: any) => (
+            <div key={file.filename} className="mb-4 border rounded overflow-hidden border-gray-200 dark:border-gray-700">
+              <div className="bg-gray-100 dark:bg-gray-800 p-2 text-xs font-mono font-semibold border-b border-gray-200 dark:border-gray-700">
+                {file.filename}
+              </div>
+              <pre className="p-3 text-xs font-mono overflow-x-auto bg-slate-900 text-slate-100 leading-normal">
+                {file.patch}
+              </pre>
+            </div>
           ))}
+        </CardBody>
+      </Card>
+
+      {/* --- Review History List --- */}
+      {history && history.length > 0 && (
+        <div className="mt-8 space-y-3">
+          <h3 className="text-lg font-bold text-gray-800 dark:text-gray-200">Review History</h3>
+          <div className="space-y-2">
+            {history.map((hist: any) => (
+              <Card key={hist.id} className="opacity-75 hover:opacity-100 transition-opacity">
+                <CardBody className="flex justify-between items-center py-3">
+                  <div>
+                    <span className="font-bold text-sm">Score: {hist.overall_score}/100</span>
+                    <p className="text-xs text-gray-500 font-mono">
+                      {new Date(hist.created_at).toLocaleString()} • Commit: {hist.head_sha.slice(0, 7)}
+                    </p>
+                  </div>
+                </CardBody>
+              </Card>
+            ))}
+          </div>
         </div>
-      </div>
-      
+      )}
     </div>
   );
 }

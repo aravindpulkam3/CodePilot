@@ -1,5 +1,5 @@
 import { apiClient } from "@/services/api/client";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 
 // Optional: You can import the interface from your backend or define it here
 interface AIReviewResponse {
@@ -25,5 +25,25 @@ export function useTriggerAiReview() {
       const { data } = await apiClient.post<AIReviewResponse>("/reviews", payload);
       return data;
     },
+  });
+}
+
+export interface ReviewHistoryItem {
+  id: string;
+  summary: string;
+  overall_score: number;
+  created_at: string;
+}
+
+export function usePullRequestReviews(repositoryId: string, pullNumber: string) {
+  return useQuery({
+    queryKey: ["reviews", repositoryId, pullNumber],
+    queryFn: async () => {
+      const { data } = await apiClient.get(
+        `/reviews/${repositoryId}/pulls/${pullNumber}`
+      );
+      return data;
+    },
+    enabled: !!repositoryId && !!pullNumber,
   });
 }

@@ -54,6 +54,8 @@ export class GeminiLLMService implements LLMService {
   async generateStructured<T>(messages: LLMMessage[], schema: Schema): Promise<T> {
     const { systemInstruction, contents } = this.formatMessages(messages);
 
+    console.log("came to generate ai response");
+
     const response = await this.ai.models.generateContent({
       model: this.modelName,
       contents,

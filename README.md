@@ -115,13 +115,4 @@ product" look (cream + terracotta, or black + neon violet). It uses a
 graphite/paper neutral palette with a signal-teal accent, Space Grotesk
 for display type, Inter for UI text, and JetBrains Mono for technical
 detail — meant to read as a developer tool, not a generic SaaS template.
-
 ---
-
-## 3. What's deliberately not built yet
-
-Per the brief, these are out of scope for this milestone. The folders,
-routes, and DB schema comments mark where each will attach:
-AI Chat, repository indexing, GitHub repository APIs, vector database,
-embeddings, documentation generation, pull request review, LangChain/
-LangGraph, Python service.

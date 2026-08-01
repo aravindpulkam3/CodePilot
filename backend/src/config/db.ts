@@ -8,9 +8,6 @@ import { env } from "./env.js";
  */
 export const pool = new Pool({ connectionString: env.databaseUrl });//connects to the database
 
-// const result = await pool.query("SELECT NOW()");
-// console.log(result.rows);
-
 pool.on("error", (err) => {
   // A background client crashed (idle connection dropped etc.) — log and
   // let the pool recover rather than crashing the process.

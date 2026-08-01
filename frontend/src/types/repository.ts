@@ -40,9 +40,10 @@ export interface ChangedFile {
 export interface PullRequestDetail {
   number: number;
   title: string;
-  description: string;
-  state: "open" | "closed";
+  description: string | null;
+  state: string;
   merged: boolean;
+  head_sha: string; // <-- ADD THIS LINE HERE
   author: {
     login: string;
     avatar_url: string;
@@ -53,5 +54,11 @@ export interface PullRequestDetail {
   commits_count: number;
   created_at: string;
   updated_at: string;
-  files: ChangedFile[];
+  files: Array<{
+    filename: string;
+    status: string;
+    additions: number;
+    deletions: number;
+    patch: string;
+  }>;
 }

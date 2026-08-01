@@ -108,3 +108,35 @@ export class ReviewService {
 }
 
 export const reviewService = new ReviewService();
+
+export const getReviewsForPullRequest = async (repositoryId: string, pullNumber: number) => {
+  // 1. Fetch all reviews for this PR, ordered by newest first
+  const { rows: reviews } = await pool.query(
+    `SELECT * FROM reviews 
+     WHERE repository_id = $1 AND pull_number = $2 
+     ORDER BY created_at DESC`,
+    [repositoryId, pullNumber]
+  );
+
+  if (reviews.length === 0) {
+    return { latest: null, history: [] };
+  }
+
+  // 2. Separate the latest review from the historical ones
+  const latest = reviews.find(r => r.is_latest) || reviews[0];
+  const history = reviews.filter(r => r.id !== latest.id);
+
+  // 3. Fetch the specific inline findings only for the latest review
+  const { rows: findings } = await pool.query(
+    `SELECT * FROM review_findings WHERE review_id = $1 ORDER BY file_path, line_number`,
+    [latest.id]
+  );
+
+  return {
+    latest: {
+      ...latest,
+      findings
+    },
+    history
+  };
+};
