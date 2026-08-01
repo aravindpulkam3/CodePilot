@@ -1,0 +1,5 @@
+-- Migration 001: initial schema.
+-- This mirrors backend/src/db/schema.sql exactly. Run the schema file
+-- directly (see backend/README section below, or `npm run migrate`
+-- from backend/) — this file exists as a dated migration record for
+-- when the project moves to a real migration tool.

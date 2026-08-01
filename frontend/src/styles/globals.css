@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply antialiased;
+  }
+
+  body {
+    @apply bg-canvas-light dark:bg-canvas-dark text-ink-light dark:text-ink-dark font-sans;
+    font-feature-settings: "cv11", "ss01";
+  }
+
+  h1, h2, h3, h4 {
+    @apply font-display tracking-tight;
+  }
+
+  :focus-visible {
+    outline: 2px solid theme("colors.signal.500");
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background: theme("colors.signal.300");
+    color: theme("colors.canvas.dark");
+  }
+}
+
+@layer components {
+  /* Faint dot-grid — a quiet nod to a schematic / circuit board,
+     used sparingly behind auth panels and the landing hero. */
+  .bg-grid {
+    background-image: radial-gradient(
+      theme("colors.border.light") 1px,
+      transparent 1px
+    );
+    background-size: 24px 24px;
+  }
+  .dark .bg-grid {
+    background-image: radial-gradient(
+      theme("colors.border.dark") 1px,
+      transparent 1px
+    );
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
