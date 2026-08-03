@@ -1,5 +1,5 @@
 import { Type, Schema } from "@google/genai";
-import { LLMMessage } from "../services/llm.service.js";
+import { LLMMessage } from "../services/llm.service.js"; // Adjust path if needed
 
 interface PRFile {
   filename: string;
@@ -21,14 +21,15 @@ export class CodeReviewPromptBuilder {
     /\.(jpg|jpeg|png|gif|svg|webp|ico|mp4|webm|wav|mp3|eot|ttf|woff|woff2)$/i,
   ];
 
-  // Total character budget for all patches combined.
   private static readonly MAX_TOTAL_PATCH_LENGTH = 80000;
 
+  // UPGRADE: Added codebaseContext parameter
   public static buildReviewPrompt(
     repoName: string,
     prTitle: string,
     prDescription: string,
     files: PRFile[],
+    codebaseContext: string
   ): LLMMessage[] {
     return [
       {
@@ -37,12 +38,13 @@ export class CodeReviewPromptBuilder {
       },
       {
         role: "user",
-        content: this.buildUserPrompt(prTitle, prDescription, files),
+        content: this.buildUserPrompt(prTitle, prDescription, files, codebaseContext),
       },
     ];
   }
 
   private static buildSystemPrompt(repoName: string): string {
+    // UPGRADE: Added specific RAG instructions (Rule 2 & 4) to your existing rules
     return `
 You are a Senior Software Engineer performing a pull request review.
 
@@ -92,8 +94,9 @@ Positive Feedback
 
 Important Rules
 
-- Review ONLY the provided diff.
-- Never assume unseen code exists.
+- Review ONLY the provided <PullRequestDiff>.
+- Use the <RepositoryContext> to understand how the changed code interacts with the rest of the system.
+- Do NOT suggest changes to code inside the <RepositoryContext> unless it directly relates to the PR diff.
 - If context is insufficient, explicitly state that additional context is required.
 - Ignore formatting and stylistic preferences unless they affect correctness or maintainability.
 - Prefer fewer high-quality findings over many weak observations.
@@ -127,10 +130,12 @@ Return ONLY valid JSON matching the provided schema.
 `;
   }
 
+  // UPGRADE: Added XML tags and injected codebaseContext
   private static buildUserPrompt(
     prTitle: string,
     prDescription: string,
     files: PRFile[],
+    codebaseContext: string
   ): string {
     const validFiles = files.filter(
       (file) =>
@@ -139,6 +144,13 @@ Return ONLY valid JSON matching the provided schema.
     );
 
     let prompt = `
+<RepositoryContext>
+The following code chunks are pulled from the existing repository to give you architectural context. This code is NOT part of the PR diff, but it is related to the files being changed:
+
+${codebaseContext || "No relevant repository context found."}
+</RepositoryContext>
+
+<PullRequestDiff>
 # Pull Request
 
 Title:
@@ -193,6 +205,8 @@ Do not speculate about omitted files.
 `;
     }
 
+    prompt += `</PullRequestDiff>`;
+
     return prompt;
   }
 
@@ -202,8 +216,7 @@ Do not speculate about omitted files.
       properties: {
         summary: {
           type: Type.STRING,
-          description:
-            "A highly readable, senior-level summary of the PR changes.",
+          description: "A highly readable, senior-level summary of the PR changes.",
         },
         overall_score: {
           type: Type.INTEGER,
@@ -224,8 +237,7 @@ Do not speculate about omitted files.
               },
               category: {
                 type: Type.STRING,
-                description:
-                  "Must match one of the defined system prompt categories.",
+                description: "Must match one of the defined system prompt categories.",
               },
               file_path: { type: Type.STRING },
               line_number: { type: Type.INTEGER, nullable: true },
@@ -244,8 +256,7 @@ Do not speculate about omitted files.
               code_suggestion: {
                 type: Type.STRING,
                 nullable: true,
-                description:
-                  "A formatted code block showing the exact fix, if applicable.",
+                description: "A formatted code block showing the exact fix, if applicable.",
               },
             },
             required: [

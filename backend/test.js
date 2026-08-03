@@ -23,4 +23,22 @@ async function testHello() {
   }
 }
 
-testHello();
+async function generateEmbeddings(){
+  
+  try{
+    const response = await ai.models.embedContent({
+        model: "gemini-embedding-001",
+        contents: "hello world",
+        config: {
+          taskType: "RETRIEVAL_DOCUMENT",
+        },
+      });
+      console.log(response);
+      console.log(response.embeddings[0].values.slice(0, 10));
+  }catch(error){
+    console.log(error);
+  }
+};
+
+// testHello();
+generateEmbeddings();

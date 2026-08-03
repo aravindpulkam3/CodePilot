@@ -1,12 +1,12 @@
 import { clerkClient } from '@clerk/express';
 import axios from 'axios';
 import * as repositoryService from './repository.service.js';
+import { FileChange } from './repositoryIndex.service.js';
 /**
  * Retrieves the GitHub OAuth access token from Clerk for a given user.
  */
 const getGitHubAccessToken = async (userId: string): Promise<string> => {
   try {
-    // Drop the 'oauth_' prefix to resolve the deprecation warning
     const response = await clerkClient.users.getUserOauthAccessToken(userId, 'github');
     
     // Access the tokens array via the 'data' property of the paginated response
@@ -23,9 +23,8 @@ const getGitHubAccessToken = async (userId: string): Promise<string> => {
   }
 };
 
-/**
- * Fetches the authenticated user's GitHub profile.
- */
+ //Fetches the authenticated user's GitHub profile.
+ 
 export const getGitHubUserProfile = async (userId: string) => {
   const token = await getGitHubAccessToken(userId);
 
@@ -42,9 +41,6 @@ export const getGitHubUserProfile = async (userId: string) => {
   }
 };
 
-/**
- * Fetches the authenticated user's GitHub repositories.
- */
 export const syncAndGetGitHubRepositories = async (clerkUserId: string, appUserId: string) => {
   const token = await getGitHubAccessToken(clerkUserId);
 
@@ -185,3 +181,134 @@ export const getPullRequestDetails = async (
     })),
   };
 };
+
+async function fetchRawFileContent(token: string, owner: string, repo: string, path: string, ref: string): Promise<string | null> {
+    const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${ref}`;
+    const response = await fetch(url, {
+        headers: {
+            'Authorization': `Bearer ${token}`,
+            'Accept': 'application/vnd.github.v3.raw' // Crucial: gets the raw text, not the base64 JSON
+        }
+    });
+
+    if (!response.ok) {
+        if (response.status === 404) return null;
+        throw new Error(`Failed to fetch file content for ${path}: ${response.statusText}`);
+    }
+    return response.text();
+}
+
+/**
+ * 1. Gets the latest commit SHA for the repository's default branch.
+ */
+export async function getLatestCommit(clerkUserId:string, owner: string, repo: string) {
+    const token = await getGitHubAccessToken(clerkUserId); 
+    
+    // Get repo details to find the default branch (usually 'main' or 'master')
+    const repoRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github.v3+json' }
+    });
+    if (!repoRes.ok) throw new Error("Failed to fetch repository details");
+    const repoData = await repoRes.json();
+    const defaultBranch = repoData.default_branch;
+
+    // Get the latest commit on the default branch
+    const branchRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/branches/${defaultBranch}`, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github.v3+json' }
+    });
+    if (!branchRes.ok) throw new Error("Failed to fetch branch details");
+    const branchData = await branchRes.json();
+    
+    return { sha: branchData.commit.sha };
+}
+
+/**
+ * 2. Compares two commits and returns ONLY the files that changed, with their new content.
+ */
+export async function getChangedFilesBetweenCommits(
+    clerkUserId: string, 
+    owner: string, 
+    repo: string, 
+    baseSha: string, 
+    headSha: string
+): Promise<FileChange[]> {
+    const token = await getGitHubAccessToken(clerkUserId); 
+
+    const url = `https://api.github.com/repos/${owner}/${repo}/compare/${baseSha}...${headSha}`;
+    const response = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github.v3+json' }
+    });
+
+    if (!response.ok) throw new Error("Failed to compare commits");
+    const data = await response.json();
+
+    const fileChanges: FileChange[] = [];
+
+    // GitHub's compare API returns an array of 'files'
+    for (const file of data.files || []) {
+        // Map GitHub's status to our expected status
+        const status = file.status as 'added' | 'modified' | 'removed' | 'renamed';
+        
+        let content: string | null = null;
+        
+        // Only fetch content if the file wasn't deleted
+        if (status !== 'removed') {
+            content = await fetchRawFileContent(token, owner, repo, file.filename, headSha);
+        }
+
+        fileChanges.push({
+            path: file.filename,
+            content,
+            status
+        });
+    }
+
+    return fileChanges;
+}
+
+/**
+ * 3. Does a deep clone of the entire repository tree for the initial sync.
+ */
+export async function fetchAllRepositoryFiles(
+    clerkUserId: string, 
+    owner: string, 
+    repo: string, 
+    sha: string
+): Promise<FileChange[]> {
+    const token = await getGitHubAccessToken(clerkUserId);
+
+    // Use the Git Trees API with recursive=1 to get all files in one request
+    const url = `https://api.github.com/repos/${owner}/${repo}/git/trees/${sha}?recursive=1`;
+    const response = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github.v3+json' }
+    });
+
+    if (!response.ok) throw new Error("Failed to fetch repository tree");
+    const data = await response.json();
+
+    const fileChanges: FileChange[] = [];
+
+    // Filter out directories (tree) and keep only files (blob)
+    const blobs = data.tree.filter((item: any) => item.type === 'blob');
+
+    // Note: If the repository is massive, this loop should be chunked/paginated
+    // to avoid hitting GitHub API rate limits.
+    for (const blob of blobs) {
+        // Skip common binary or massive files that we don't want to parse
+        if (blob.path.includes('package-lock.json') || blob.path.startsWith('dist/')) {
+            continue; 
+        }
+
+        const content = await fetchRawFileContent(token, owner, repo, blob.path, sha);
+        
+        if (content) {
+            fileChanges.push({
+                path: blob.path,
+                content,
+                status: 'added'
+            });
+        }
+    }
+
+    return fileChanges;
+}

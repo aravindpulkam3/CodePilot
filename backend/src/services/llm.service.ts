@@ -68,6 +68,7 @@ export class GeminiLLMService implements LLMService {
     });
 
     const textResult = response.text;
+    console.log(textResult);
     if (!textResult) throw new Error("LLM returned an empty response.");
 
     return JSON.parse(textResult) as T;
