@@ -38,15 +38,7 @@ export class ReviewService {
         throw new Error("Repository not found in database.");
       }
 
-      console.log(
-        `[ReviewService] JIT Sync check for repository ${repositoryId}...`,
-      );
-      // This will instantly return if the Webhook already updated the DB.
-      // If the webhook dropped, it will self-heal and index the missing files now.
-      await repositorySyncService.syncRepository(clerkUserId, repositoryId);
-      console.log(
-        `[ReviewService] Repository is guaranteed up to date. Proceeding...`,
-      );
+      
 
       // 2. Fetch GitHub PR Data
       const prDetails = await githubService.getPullRequestDetails(
@@ -63,6 +55,7 @@ export class ReviewService {
 
       // Fetch top 5 chunks from your pgvector database
       const codebaseChunks = await retrievalService.searchRepository(
+        clerkUserId,
         repositoryId,
         ragQuery,
         5,

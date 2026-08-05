@@ -10,6 +10,7 @@ export interface LLMMessage {
 export interface LLMService {
   generate(messages: LLMMessage[]): Promise<string>;
   generateStructured<T>(messages: LLMMessage[], schema: Schema): Promise<T>;
+  stream(messages: LLMMessage[]): AsyncGenerator<{ text: string }, void, unknown>;
 }
 
 export class GeminiLLMService implements LLMService {
@@ -73,6 +74,26 @@ export class GeminiLLMService implements LLMService {
 
     return JSON.parse(textResult) as T;
   }
-}
 
+  async *stream(messages: LLMMessage[]): AsyncGenerator<{ text: string }, void, unknown> {
+    const { systemInstruction, contents } = this.formatMessages(messages);
+
+    // Use generateContentStream instead of generateContent
+    const responseStream = await this.ai.models.generateContentStream({
+      model: this.modelName,
+      contents,
+      config: {
+        systemInstruction,
+        temperature: 0.2, 
+      }
+    });
+
+    // Iterate over the stream and yield each chunk as it arrives
+    for await (const chunk of responseStream) {
+      if (chunk.text) {
+        yield { text: chunk.text };
+      }
+    }
+}
+}
 export const llmService = new GeminiLLMService();

@@ -52,7 +52,7 @@ export class RepositorySyncService {
 
     if (!repo.last_indexed_sha) {
       // INITIAL SYNC: The database has no SHA. We must fetch the entire repository tree.
-      console.log("fetching all files");
+      console.log("[INITIAL SYNC]:fetching all files");
       filesToIndex = await githubService.fetchAllRepositoryFiles(
         clerkUserId,
         repo.owner,

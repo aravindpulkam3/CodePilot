@@ -29,7 +29,7 @@ export class CodeReviewPromptBuilder {
     prTitle: string,
     prDescription: string,
     files: PRFile[],
-    codebaseContext: string
+    codebaseContext: string,
   ): LLMMessage[] {
     return [
       {
@@ -38,13 +38,17 @@ export class CodeReviewPromptBuilder {
       },
       {
         role: "user",
-        content: this.buildUserPrompt(prTitle, prDescription, files, codebaseContext),
+        content: this.buildUserPrompt(
+          prTitle,
+          prDescription,
+          files,
+          codebaseContext,
+        ),
       },
     ];
   }
 
   private static buildSystemPrompt(repoName: string): string {
-    // UPGRADE: Added specific RAG instructions (Rule 2 & 4) to your existing rules
     return `
 You are a Senior Software Engineer performing a pull request review.
 
@@ -130,12 +134,11 @@ Return ONLY valid JSON matching the provided schema.
 `;
   }
 
-  // UPGRADE: Added XML tags and injected codebaseContext
   private static buildUserPrompt(
     prTitle: string,
     prDescription: string,
     files: PRFile[],
-    codebaseContext: string
+    codebaseContext: string,
   ): string {
     const validFiles = files.filter(
       (file) =>
@@ -216,7 +219,8 @@ Do not speculate about omitted files.
       properties: {
         summary: {
           type: Type.STRING,
-          description: "A highly readable, senior-level summary of the PR changes.",
+          description:
+            "A highly readable, senior-level summary of the PR changes.",
         },
         overall_score: {
           type: Type.INTEGER,
@@ -237,7 +241,8 @@ Do not speculate about omitted files.
               },
               category: {
                 type: Type.STRING,
-                description: "Must match one of the defined system prompt categories.",
+                description:
+                  "Must match one of the defined system prompt categories.",
               },
               file_path: { type: Type.STRING },
               line_number: { type: Type.INTEGER, nullable: true },
@@ -256,7 +261,8 @@ Do not speculate about omitted files.
               code_suggestion: {
                 type: Type.STRING,
                 nullable: true,
-                description: "A formatted code block showing the exact fix, if applicable.",
+                description:
+                  "A formatted code block showing the exact fix, if applicable.",
               },
             },
             required: [
