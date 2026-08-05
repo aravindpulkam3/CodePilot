@@ -1,218 +1,379 @@
-AI-Powered Code Review & Codebase Intelligence Platform
-A production-grade, enterprise-ready platform designed to automate code reviews, provide real-time architectural insights, and enable interactive codebase Q&A using advanced Retrieval-Augmented Generation (RAG). Built with modular, SOLID-compliant backend design and AST-level parsing, this platform transforms raw git patches into actionable, senior-engineer-level reviews while allowing developers to interact with their codebases directly.
+# AI-Powered Code Review & Codebase Intelligence Platform
 
-🏗 System Architecture Overview
-The system is designed with strict separation of concerns, decoupling the AI model providers from prompt engineering and business logic.
+A production-grade platform that automates pull request reviews, performs intelligent repository indexing, and enables natural language interaction with entire codebases using Retrieval-Augmented Generation (RAG).
 
-┌─────────────────────────────────────────────────────────────────────────┐
-│                              React Frontend                             │
-│       (Dashboard, Diff Viewer, Stale Commit Banners, Chat Panel)        │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │ HTTP / REST / SSE
-┌────────────────────────────────────▼────────────────────────────────────┐
-│                             Express Backend                             │
-│ ┌───────────────────┬──────────────────────────┬──────────────────────┐ │
-│ │  Clerk Auth Guards│   GitHub REST & OAuth    │ GitHub Push Webhooks │ │
-│ └─────────┬─────────┴────────────┬─────────────┴──────────┬───────────┘ │
-│           │                      │                        │             │
-│ ┌─────────▼──────────────────────▼────────────────────────▼───────────┐ │
-│ │                          Review Service                             │ │
-│ │            (Orchestrates diff analysis & AST Context)              │ │
-│ └─────────┬──────────────────────┬────────────────────────┬───────────┘ │
-│           │                      │                        │             │
-│ ┌─────────▼─────────────┐ ┌──────▼────────────────┐ ┌─────▼───────────┐ │
-│ │ CodeReviewPromptBuilder│ │   Indexing Service   │ │ RetrievalService│ │
-│ │  (Schema & AST Context)│ │  (Tree-Sitter Delta) │ │  (pgvector MMR) │ │
-│ └─────────┬─────────────┘ └──────┬────────────────┘ └─────┬───────────┘ │
-│           │                      │                        │             │
-│ ┌─────────▼──────────────────────▼────────────────────────▼───────────┐ │
-│ │                     Generic LLM Service Interface                   │ │
-│ │               (Gemini 2.0 Flash / OpenRouter / Groq)                │ │
-│ └────────────────────────────────┬────────────────────────────────────┘ │
-└──────────────────────────────────┼──────────────────────────────────────┘
-                                   │
-┌──────────────────────────────────▼──────────────────────────────────────┐
-│                        PostgreSQL + pgvector                            │
-│ ┌─────────────┬─────────────┬────────────────┬────────────────────────┐ │
-│ │ app_users   │ reviews     │review_findings │repository_embeddings  │ │
-│ ├─────────────┼─────────────┼────────────────┼────────────────────────┤ │
-│ │ repositories│review_msg...│chat_sessions   │chat_messages           │ │
-│ └─────────────┴─────────────┴────────────────┴────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────┘
+The platform combines AST-aware code parsing, vector search, structured LLM outputs, and GitHub integration to deliver senior engineer-level code reviews while allowing developers to ask questions about their repositories in real time.
 
-🌟 Key Engineering Accomplishments
-1. Abstract Syntax Tree (AST) Chunking
-Rather than slicing source code by arbitrary character lengths, the platform uses Tree-sitter (WebAssembly) to parse files into Abstract Syntax Trees.
+---
 
-Logical Chunking: Extracts language-native blocks—function_declaration, class_declaration, method_definition, and arrow function variable declarators across .ts, .tsx, .js, .jsx, .py, .go, and .cpp files.
+# Features
 
-Syntactic Integrity: Ensures function bounds and logic remain preserved so the LLM evaluates complete logic units rather than broken lines.
+- Automated AI-powered pull request reviews
+- Repository-wide Codebase Q&A using RAG
+- AST-aware code chunking using Tree-sitter
+- Incremental (Delta) indexing for fast embedding updates
+- Semantic code search using pgvector
+- Structured JSON AI responses with schema validation
+- Commit staleness detection
+- Persistent review history and chat sessions
+- Multi-provider LLM architecture
+- Modular SOLID-based backend design
 
-Enriched Metadata: Injects file paths, languages, symbol types, and symbol names directly into the content string prior to embedding generation.
+---
 
-2. Surgical Delta Indexing
-To prevent API token waste and reduce re-indexing latency, the platform implements an incremental update pipeline:
+# System Architecture
 
-Commit Compare Strategy: Leverages the GitHub Compare API (/compare/{last_indexed_sha}...{current_head_sha}) to isolate changed files.
+```
+                               React Frontend
+      (Dashboard • Diff Viewer • Repository Chat • Review History)
+                                      │
+                             HTTP / REST / SSE
+                                      │
+┌────────────────────────────────────────────────────────────────────────┐
+│                         Express.js Backend                             │
+│                                                                        │
+│  Clerk Authentication                                                  │
+│  GitHub OAuth & REST APIs                                              │
+│  GitHub Push Webhooks                                                  │
+│                                                                        │
+│               Review Service (Business Logic)                          │
+│                        │                │                               │
+│                        │                │                               │
+│        Prompt Builder  │      Retrieval Service                        │
+│                        │                │                               │
+│                 Repository Indexing Service                            │
+│                        │                │                               │
+│                 Tree-sitter AST Parser                                 │
+│                        │                │                               │
+│              Generic LLM Service Interface                             │
+│          (Gemini / OpenRouter / Groq Providers)                        │
+└────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+                      PostgreSQL + pgvector Database
+```
 
-Targeted Operations: Only deletes, re-chunks, and re-embeds vectors for added or modified files, while automatically purging embeddings for removed files.
+---
 
-Pointer Tracking: Updates the repository's last_indexed_sha in PostgreSQL upon successful transaction completion.
+# Engineering Highlights
 
-3. Context-Aware AI Review Pipeline
-Structured Enforcements: Uses model-native JSON Schema enforcement (via Gemini 2.0 Flash) to enforce structural validation.
+## AST-Based Semantic Code Chunking
 
-Categorized Findings: Classifies feedback under Correctness, Security, Performance, Maintainability, Testing, and Best Practices.
+Instead of splitting files using fixed character limits, the platform parses source code into Abstract Syntax Trees using Tree-sitter.
 
-Atomic PostgreSQL Transactions: Stores parent reviews, child line-by-line findings, and audit logs inside atomic SQL transactions (BEGIN...COMMIT).
+Each embedding represents complete language-native structures such as:
 
-Commit Staleness Detection: Tracks commit hashes (head_sha) to detect outdated reviews and alert users when new code has been pushed since the last review.
+- Functions
+- Methods
+- Classes
+- Arrow Functions
 
-4. Diverse Vector Retrieval (MMR-inspired)
-Similarity Search: Executes cosine similarity searches over vectors stored in PostgreSQL via the pgvector extension.
+Supported languages include:
 
-Diversity Filters: Enforces a file diversity threshold to prevent small utility files (e.g., helper scripts) from flooding the retrieved context window.
+- TypeScript
+- JavaScript
+- Python
+- Go
+- C++
 
-🛠 Tech Stack
-Backend
-Runtime: Node.js (TypeScript, ESM execution)
+Each chunk is enriched with metadata including:
 
-Framework: Express.js
+- File path
+- Language
+- Symbol type
+- Symbol name
 
-Database: PostgreSQL with pgvector extension
+This preserves syntactic integrity and significantly improves retrieval quality.
 
-ORM/Driver: pg (Pool-based connection management)
+---
 
-Authentication: Clerk (@clerk/express)
+## Delta Indexing Pipeline
 
-Parsing: Web-Tree-Sitter (WASM)
+Re-indexing an entire repository after every commit is inefficient.
 
-AI SDK: @google/genai (Gemini 2.0 Flash)
+The platform performs **incremental indexing** using the GitHub Compare API.
 
-Frontend
-Core: React.js, Vite, TypeScript
+Pipeline:
 
-State & Query: TanStack React Query (Cache management, mutations, invalidation)
+1. Compare latest indexed commit with repository HEAD
+2. Detect added, modified and deleted files
+3. Re-embed only changed files
+4. Remove embeddings belonging to deleted files
+5. Update `last_indexed_sha` after successful completion
 
-Styling: Tailwind CSS
+Benefits:
 
-Icons: Lucide React
+- Faster indexing
+- Lower embedding cost
+- Reduced API token consumption
+- Production-friendly scalability
 
-📂 Project Structure
-.
-├── backend/
-│   ├── parsers/                   # WebAssembly language parsers (.wasm)
-│   ├── src/
-│   │   ├── config/                # Environment variables and Pool config
-│   │   ├── controllers/           # Route handlers (Review, Sync, GitHub, Webhooks)
-│   │   ├── middleware/            # Auth guards (Clerk middleware)
-│   │   ├── promptBuilders/        # LLM prompt templates & JSON schemas
-│   │   ├── routes/                # Express API routes
-│   │   └── services/              # Core business logic
-│   │       ├── astChunking.service.ts
-│   │       └── chat.service.ts
-│   │       ├── github.service.ts
-│   │       ├── llm.service.ts
-│   │       ├── repositoryIndex.service.ts
-│   │       ├── repositorySync.service.ts
-│   │       ├── retrieval.service.ts
-│   │       └── review.service.ts
-│   └── docker-compose.yml
-└── frontend/
-    ├── src/
-    │   ├── components/            # Reusable UI components (Cards, Headers, Diff Viewer)
-    │   ├── hooks/                 # Custom React Query hooks (useGitHub, useReviews, etc.)
-    │   ├── pages/                 # Main routes (Dashboard, RepoDetails, PRDetails)
-    │   ├── services/              # API client wrapper
-    │   └── types/                 # Strongly-typed interface definitions
-    └── vite.config.ts
+---
 
-    Setup & Local Development
-1. Prerequisites
-Node.js: v18+
+## Intelligent Code Retrieval
 
-Docker Desktop: Installed and running
+Repository knowledge is stored using **pgvector** inside PostgreSQL.
 
-Clerk Account: For API keys and OAuth configurations
+Retrieval pipeline:
 
-Google AI Studio API Key: For Gemini model integration
+- Cosine similarity search
+- MMR-inspired diversity filtering
+- File diversity threshold
+- Context ranking before LLM inference
 
-2. Environment Setup
-Backend (backend/.env)
-Code snippet
+This prevents repetitive utility files from dominating the context window while improving answer diversity.
+
+---
+
+## AI Code Review Engine
+
+Every review follows a structured pipeline.
+
+Features include:
+
+- JSON Schema enforced LLM outputs
+- Categorized review findings
+- Atomic PostgreSQL transactions
+- Persistent review history
+- Audit logging
+- Commit hash tracking
+
+Review categories:
+
+- Correctness
+- Security
+- Performance
+- Maintainability
+- Testing
+- Best Practices
+
+---
+
+## Repository Chat (RAG)
+
+Developers can ask natural language questions about an indexed repository.
+
+Examples:
+
+- Explain the authentication flow
+- Where is JWT validation implemented?
+- Which service creates embeddings?
+- How is repository synchronization handled?
+
+The retrieval pipeline automatically fetches the most relevant AST chunks before generating answers.
+
+---
+
+## Commit Staleness Detection
+
+Each review stores the corresponding Git commit SHA.
+
+Whenever new commits are pushed:
+
+- Older reviews are automatically marked as stale
+- Users are prompted to generate a fresh review
+- Prevents developers from relying on outdated AI feedback
+
+---
+
+# Technology Stack
+
+## Backend
+
+- Node.js
+- TypeScript
+- Express.js
+- PostgreSQL
+- pgvector
+- Clerk Authentication
+- Tree-sitter (WebAssembly)
+- Google Gemini API
+- GitHub REST API
+
+---
+
+## Frontend
+
+- React
+- TypeScript
+- Vite
+- Tailwind CSS
+- TanStack React Query
+- Lucide React
+
+---
+
+# Project Structure
+
+```
+backend/
+│
+├── parsers/
+│
+├── src/
+│   ├── config/
+│   ├── controllers/
+│   ├── middleware/
+│   ├── promptBuilders/
+│   ├── routes/
+│   └── services/
+│       ├── astChunking.service.ts
+│       ├── chat.service.ts
+│       ├── github.service.ts
+│       ├── llm.service.ts
+│       ├── repositoryIndex.service.ts
+│       ├── repositorySync.service.ts
+│       ├── retrieval.service.ts
+│       └── review.service.ts
+│
+└── docker-compose.yml
+
+
+frontend/
+│
+├── src/
+│   ├── components/
+│   ├── hooks/
+│   ├── pages/
+│   ├── services/
+│   └── types/
+│
+└── vite.config.ts
+```
+
+---
+
+# Getting Started
+
+## Prerequisites
+
+- Node.js 18+
+- Docker Desktop
+- PostgreSQL (via Docker)
+- Clerk Account
+- Google AI Studio API Key
+
+---
+
+## Backend Environment
+
+```env
 PORT=5000
+
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ai_code_review
+
 CLERK_SECRET_KEY=your_clerk_secret_key
+
 GEMINI_API_KEY=your_gemini_api_key
-Frontend (frontend/.env)
-Code snippet
+```
+
+---
+
+## Frontend Environment
+
+```env
 VITE_CLERK_PUBLISHABLE_KEY=your_clerk_publishable_key
+
 VITE_API_BASE_URL=http://localhost:5000/api
-3. Database Initialization (Docker)
-Start the PostgreSQL container with pgvector preinstalled:
+```
 
-Bash
+---
+
+## Database Setup
+
+Start PostgreSQL using Docker.
+
+```bash
 cd backend
+
 docker-compose up -d
-Execute schema initialization in PostgreSQL:
+```
 
-SQL
+Enable pgvector.
+
+```sql
 CREATE EXTENSION IF NOT EXISTS vector;
+```
 
--- Key schema elements: repositories, reviews, review_findings, repository_embeddings, etc.
-4. Downloading AST Parsers
-Ensure language .wasm binaries sit within backend/parsers/:
+Initialize the project schema.
 
-tree-sitter-typescript.wasm
+---
 
-tree-sitter-javascript.wasm
+## Install Tree-sitter Parsers
 
-tree-sitter-python.wasm
+Place the following `.wasm` files inside:
 
-tree-sitter-go.wasm
+```
+backend/parsers/
+```
 
-tree-sitter-cpp.wasm
+- tree-sitter-typescript.wasm
+- tree-sitter-javascript.wasm
+- tree-sitter-python.wasm
+- tree-sitter-go.wasm
+- tree-sitter-cpp.wasm
 
-5. Running the Application
-Bash
-# Terminal 1: Backend
+---
+
+## Running the Project
+
+### Backend
+
+```bash
 cd backend
-npm install
-npm run dev
 
-# Terminal 2: Frontend
+npm install
+
+npm run dev
+```
+
+### Frontend
+
+```bash
 cd frontend
+
 npm install
+
 npm run dev
-🚀 Roadmap & Future Plans
-[x] Milestone 1: Core OAuth & Repository Sync
+```
 
-Clerk Auth integration and GitHub repository caching.
+---
 
-[x] Milestone 2: Pull Request Diff Viewer & Metadata
+# Roadmap
 
-Custom line-by-line colored diff rendering.
+### Completed
 
-[x] Milestone 3: Categorized AI Reviews & Persistence
+- GitHub OAuth & Repository Synchronization
+- Pull Request Diff Viewer
+- AI Code Review Engine
+- Structured Review Persistence
+- Tree-sitter AST Chunking
+- Delta Repository Indexing
+- pgvector-based Semantic Retrieval
+- Repository Codebase Chat
 
-Structured output review storage with SQL transactions.
+### In Progress
 
-[x] Milestone 4: RAG Foundation (Tree-sitter AST & pgvector)
+- Server-Sent Events (Streaming Responses)
+- Clickable Source Citations
+- Sliding Window Conversation Memory
 
-Function-level chunking and Delta Indexing pipeline.
+### Planned
 
-[ ] Milestone 5: Interactive Codebase Q&A (In Progress)
+- Inline AI Discussion Threads for Review Findings
+- AI Interview Mode using Repository Context
+- Multi-Repository Knowledge Workspace
+- Support for Additional LLM Providers
+- Advanced Repository Analytics
 
-Server-Sent Events (SSE): Real-time response streaming for repository chats.
+---
 
-Clickable Citations: Returning context line ranges (start_line, end_line) so users can jump to relevant source code chunks directly.
+# Design Principles
 
-Sliding Window History: PostgreSQL-backed session memory capped via ORDER BY created_at DESC LIMIT 10 for token efficiency.
-
-[ ] Milestone 6: Inline Finding Chat Threads
-
-Contextual sliding drawer to question specific AI findings directly on the diff page.
-
-[ ] Milestone 7: AI Interview Mode
-
-Interactive technical prep mode where the AI acts as a senior interviewer, evaluating solutions against codebase context without giving away direct answers.
+- SOLID Architecture
+- Separation of Concerns
+- Provider-Agnostic LLM Layer
+- Transactional Data Integrity
+- Incremental Indexing
+- Retrieval-Augmented Generation
+- Production-Ready Backend Design
