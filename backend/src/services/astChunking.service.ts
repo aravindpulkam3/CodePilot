@@ -2,6 +2,7 @@ import { Parser, Language, Query } from "web-tree-sitter";
 import crypto from "crypto";
 import path from "path";
 import fs from "fs";
+// import { FileASTMetadata } from "../types/summaryTypes.js";
 
 export interface ChunkMetadata {
   file_path: string;
@@ -12,13 +13,27 @@ export interface ChunkMetadata {
   end_line: number;
   content: string;
   content_hash: string;
-  // --- additive fields, safe for existing consumers (all optional) ---
   qualified_name?: string; // e.g. "UserService.createUser" for a method
   parent_symbol?: string; // enclosing class/interface/struct name, if any
   is_exported?: boolean; // true if wrapped in an export/export default
   docstring?: string | null; // leading comment / JSDoc / decorator / docstring
   chunk_index?: number; // set when a symbol was too large and got split
   chunk_total?: number; // total number of parts for a split symbol
+}
+
+export interface FileASTMetadata {
+  filePath: string;
+  folderPath: string;
+  language: string;
+  imports: string[];
+  exports: string[];
+  classes: string[];
+  interfaces: string[];
+  functions: string[];
+  decorators: string[];
+  annotations: string[];
+  inheritance: { child: string; parents: string[] }[];
+  sourceHash: string;
 }
 
 interface LangConfig {
@@ -412,6 +427,94 @@ export class AstChunkingService {
       if (parser) parser.delete();
     }
   }
+
+  public async extractFileAstMetadata(
+    filePath: string,
+    sourceCode: string,
+  ): Promise<FileASTMetadata | null> {
+    if (!this.isInitialized) await this.init();
+ 
+    const ext = path.extname(filePath).toLowerCase();
+    const config = LANGUAGE_REGISTRY[ext as keyof typeof LANGUAGE_REGISTRY];
+    if (!config) return null;
+ 
+    let parser: Parser | null = null;
+    let tree: any = null;
+ 
+    try {
+      const language = await this.getLanguage(config.wasmPath);
+      if (!language) return null;
+ 
+      parser = new Parser();
+      parser.setLanguage(language);
+      tree = parser.parse(sourceCode);
+      if (!tree) return null;
+ 
+      const imports = new Set<string>();
+      const exports = new Set<string>();
+      const decorators = new Set<string>();
+      const inheritance: { child: string; parents: string[] }[] = [];
+ 
+      const visit = (node: any) => {
+        switch (node.type) {
+          case "import_statement":
+          case "import_from_statement": {
+            const src = node.childForFieldName?.("source");
+            imports.add(src?.text ? src.text.replace(/['"]/g, "") : node.text.split("\n")[0].trim());
+            break;
+          }
+          case "export_statement":
+            exports.add(node.text.split("\n")[0].trim());
+            break;
+          case "decorator":
+            decorators.add(node.text.trim());
+            break;
+          case "class_declaration":
+          case "class_specifier": {
+            const nameNode = node.childForFieldName?.("name");
+            const heritage = node.childForFieldName?.("superclass") ?? node.childForFieldName?.("heritage");
+            if (nameNode?.text && heritage?.text) {
+              inheritance.push({
+                child: nameNode.text,
+                parents: [heritage.text.replace(/^extends\s+/, "").trim()],
+              });
+            }
+            break;
+          }
+          default:
+            break;
+        }
+        for (const child of node.namedChildren ?? []) visit(child);
+      };
+      visit(tree.rootNode);
+ 
+      const symbols = await this.chunkFile(filePath, sourceCode);
+ 
+      return {
+        filePath,
+        folderPath: path.dirname(filePath),
+        language: config.name,
+        imports: Array.from(imports),
+        exports: Array.from(exports),
+        classes: symbols.filter((s) => s.symbol_type === "class").map((s) => s.symbol_name),
+        interfaces: symbols.filter((s) => s.symbol_type === "interface").map((s) => s.symbol_name),
+        functions: symbols
+          .filter((s) => s.symbol_type === "function" || s.symbol_type === "method")
+          .map((s) => s.qualified_name ?? s.symbol_name),
+        decorators: Array.from(decorators),
+        annotations: [], // reserved for languages with distinct annotation syntax (e.g. Java)
+        inheritance,
+        sourceHash: this.generateHash(sourceCode),
+      };
+    } catch (error) {
+      console.error(`[AST Chunker] Failed to extract file metadata for ${filePath}:`, error);
+      return null;
+    } finally {
+      if (tree) tree.delete();
+      if (parser) parser.delete();
+    }
+  }
+
 }
 
 export const astChunker = new AstChunkingService();
