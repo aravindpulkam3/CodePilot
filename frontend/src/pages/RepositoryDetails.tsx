@@ -19,11 +19,22 @@ import {
   Send,
   Code,
   Terminal,
+  User,
+  Bot,
+  Loader2,
 } from "lucide-react";
 import { cn } from "@/utils/cn";
 import { useQueryClient } from "@tanstack/react-query";
-import { sendChatMessageStream } from "@/services/api/repository";
+import { sendChatMessageStream } from "@/services/api/repositoryApi";
 import { useAuth } from "@clerk/clerk-react";
+
+// The chat-history endpoint has been seen to send the sender under different
+// keys/casing depending on which layer produced the row (e.g. "user" vs
+// "human", or "role" vs "type"). Normalizing here means the UI keeps working
+// even if that shape drifts, instead of silently dropping user turns.
+function isUserMessage(msg: any): boolean {
+  return msg?.role?.trim().toLowerCase() === "user";
+}
 
 export default function RepositoryDetailsPage() {
   const { repositoryId } = useParams<{ repositoryId: string }>();
@@ -49,6 +60,8 @@ export default function RepositoryDetailsPage() {
   const { data: sessions = [] } = useChatSessions(repositoryId!);
   const { data: history = [], isLoading: isHistoryLoading } =
     useChatHistory(activeSessionId);
+
+  console.log(history);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -99,7 +112,6 @@ export default function RepositoryDetailsPage() {
             try {
               const payload = JSON.parse(jsonStr);
 
-              // ---> THE NEW CHECK <---
               if (payload.type === "sessionId") {
                 resolvedSessionId = payload.data; // Update local variable
                 setActiveSessionId(payload.data); // Update React state
@@ -115,7 +127,6 @@ export default function RepositoryDetailsPage() {
         }
       }
 
-      // ---> FIX THE CACHE INVALIDATION <---
       // We use `resolvedSessionId` here instead of `activeSessionId` because
       // the React state might not have fully batched and updated yet.
       await queryClient.invalidateQueries({
@@ -291,63 +302,106 @@ export default function RepositoryDetailsPage() {
               </button>
             </div>
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
-              {sessions.map((session: any) => (
-                <button
-                  key={session.id}
-                  onClick={() => setActiveSessionId(session.id)}
-                  className={cn(
-                    "flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-left transition-colors truncate",
-                    activeSessionId === session.id
-                      ? "bg-slate-200 dark:bg-slate-800 text-ink-light dark:text-ink-dark"
-                      : "text-muted-light dark:text-muted-dark hover:bg-slate-100 dark:hover:bg-slate-800/50",
-                  )}
-                >
-                  <MessageSquare className="h-4 w-4 shrink-0" />
-                  <span className="truncate">
-                    Chat {new Date(session.created_at).toLocaleDateString()}
-                  </span>
-                </button>
-              ))}
+              {sessions.length === 0 ? (
+                <p className="px-2 py-3 text-center text-xs text-muted-light dark:text-muted-dark">
+                  No conversations yet.
+                </p>
+              ) : (
+                sessions.map((session: any) => (
+                  <button
+                    key={session.id}
+                    onClick={() => setActiveSessionId(session.id)}
+                    className={cn(
+                      "flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-left transition-colors truncate",
+                      activeSessionId === session.id
+                        ? "bg-slate-200 dark:bg-slate-800 text-ink-light dark:text-ink-dark"
+                        : "text-muted-light dark:text-muted-dark hover:bg-slate-100 dark:hover:bg-slate-800/50",
+                    )}
+                  >
+                    <MessageSquare className="h-4 w-4 shrink-0" />
+                    <span className="truncate">
+                      Chat {new Date(session.created_at).toLocaleDateString()}
+                    </span>
+                  </button>
+                ))
+              )}
             </div>
           </div>
 
           {/* Chat Main Area */}
           <div className="flex-1 flex flex-col">
-            <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-white dark:bg-slate-950">
-              {history.map((msg: any, idx: number) => (
-                <div
-                  key={idx}
-                  className={cn(
-                    "flex",
-                    msg.role === "user" ? "justify-end" : "justify-start",
-                  )}
-                >
-                  <div
-                    className={cn(
-                      "max-w-[80%] rounded-xl px-4 py-3 text-sm",
-                      msg.role === "user"
-                        ? "bg-brand-500 text-white"
-                        : "bg-slate-100 dark:bg-slate-900 text-ink-light dark:text-ink-dark",
-                    )}
-                  >
-                    <div className="whitespace-pre-wrap">{msg.content}</div>
-                  </div>
+            <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-white dark:bg-slate-950">
+              {isHistoryLoading ? (
+                <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-light dark:text-muted-dark">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Loading
+                  conversation...
                 </div>
-              ))}
+              ) : history.length === 0 &&
+                !optimisticUserMessage &&
+                !isStreaming ? (
+                <div className="flex h-full items-center justify-center text-sm text-muted-light dark:text-muted-dark">
+                  Ask a question about the codebase to get started.
+                </div>
+              ) : (
+                history.map((msg: any, idx: number) => {
+                  const fromUser = isUserMessage(msg);
+                  console.log(msg.role, fromUser);
+                  return (
+                    <div
+                      key={msg.id ?? idx}
+                      className={cn(
+                        "flex items-end gap-2",
+                        fromUser ? "justify-end" : "justify-start",
+                      )}
+                    >
+                      {!fromUser && (
+                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-200 dark:bg-slate-800 text-muted-light dark:text-muted-dark">
+                          <Bot className="h-4 w-4" />
+                        </div>
+                      )}
+                      <div
+                        className={cn(
+                          "max-w-[80%] rounded-xl px-4 py-3 text-sm shadow-sm",
+                          fromUser
+                            ? "bg-blue-500 text-white"
+                            : "bg-slate-100 text-black",
+                        )}
+                      >
+                        <div className="whitespace-pre-wrap">
+                          <strong>{msg.role}</strong>
+                          <br />
+                          {msg.content}
+                        </div>
+                      </div>
+                      {fromUser && (
+                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-100 dark:bg-brand-500/20 text-brand-600 dark:text-brand-400">
+                          <User className="h-4 w-4" />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
 
               {/* Optimistic User Message */}
               {optimisticUserMessage && (
-                <div className="flex justify-end">
-                  <div className="max-w-[80%] rounded-xl bg-brand-500 px-4 py-3 text-sm text-white">
+                <div className="flex items-end justify-end gap-2">
+                  <div className="max-w-[80%] rounded-xl bg-brand-500 px-4 py-3 text-sm text-white shadow-sm">
                     {optimisticUserMessage}
+                  </div>
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-100 dark:bg-brand-500/20 text-brand-600 dark:text-brand-400">
+                    <User className="h-4 w-4" />
                   </div>
                 </div>
               )}
 
               {/* Streaming Assistant Response */}
               {(isStreaming || streamedText) && (
-                <div className="flex justify-start">
-                  <div className="max-w-[80%] rounded-xl bg-slate-100 dark:bg-slate-900 px-4 py-3 text-sm text-ink-light dark:text-ink-dark">
+                <div className="flex items-end justify-start gap-2">
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-200 dark:bg-slate-800 text-muted-light dark:text-muted-dark">
+                    <Bot className="h-4 w-4" />
+                  </div>
+                  <div className="max-w-[80%] rounded-xl bg-slate-100 dark:bg-slate-900 px-4 py-3 text-sm text-ink-light dark:text-ink-dark shadow-sm">
                     {/* Render Sources First */}
                     {streamedSources.length > 0 && (
                       <div className="mb-3 flex flex-wrap gap-2">

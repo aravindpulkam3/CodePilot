@@ -28,11 +28,8 @@ const handleGitHubError = (res: Response, error: any) => {
 
 export const getUser = async (req: Request, res: Response) => {
   try {
-    const { userId } = getAuth(req);
+    const userId = req.dbUser!.id;
     
-    if (!userId) {
-      return res.status(401).json({ error: 'Unauthorized: Invalid Clerk user.' });
-    }
 
     const profile = await getGitHubUserProfile(userId);
     return res.status(200).json(profile);
@@ -44,20 +41,12 @@ export const getUser = async (req: Request, res: Response) => {
 
 export const getRepositories = async (req: Request, res: Response) => {
   try {
-    const { userId: clerkUserId } = getAuth(req);
+    const clerkUserId = req.dbUser!.clerkId
     
-    if (!clerkUserId) {
-      return res.status(401).json({ error: 'Unauthorized: Invalid Clerk user.' });
-    }
-
-    // Retrieve internal app user to get DB UUID (user_id)
-    const appUser = await userService.findByClerkId(clerkUserId);
-    if (!appUser) {
-      return res.status(4404).json({ error: 'User profile not found in local database.' });
-    }
+    const appUserId = req.dbUser!.id
 
     // Fetch from GitHub and upsert into Postgres
-    const repositories = await syncAndGetGitHubRepositories(clerkUserId, appUser.id);
+    const repositories = await syncAndGetGitHubRepositories(clerkUserId, appUserId);
     return res.status(200).json(repositories);
     
   } catch (error: any) {
@@ -73,14 +62,10 @@ export const getRepositories = async (req: Request, res: Response) => {
 
 export const getPullRequests = async (req: Request, res: Response) => {
   try {
-    const { userId } = getAuth(req);
+    const clerkUserId = req.dbUser!.clerkId;
     const repoId = req.params.repositoryId as string;
 
-    if (!userId) {
-      return res.status(401).json({ error: 'Unauthorized user.' });
-    }
-
-    const pulls = await getRepositoryPullRequests(userId, repoId);
+    const pulls = await getRepositoryPullRequests(clerkUserId, repoId);
     return res.status(200).json(pulls);
   } catch (error: any) {
     if (error.message === 'REPO_NOT_FOUND') {
@@ -92,15 +77,11 @@ export const getPullRequests = async (req: Request, res: Response) => {
 
 export const getPullRequestDetail = async (req: Request, res: Response) => {
   try {
-    const { userId } = getAuth(req);
+     const clerkUserId = req.dbUser!.clerkId
     const repoId = req.params.repositoryId as string;
     const pullNumber = parseInt(req.params.pullNumber as string, 10);
 
-    if (!userId) {
-      return res.status(401).json({ error: 'Unauthorized user.' });
-    }
-
-    const prDetail = await getPullRequestDetails(userId, repoId, pullNumber);
+    const prDetail = await getPullRequestDetails(clerkUserId, repoId, pullNumber);
     return res.status(200).json(prDetail);
   } catch (error: any) {
     if (error.message === 'REPO_NOT_FOUND') {

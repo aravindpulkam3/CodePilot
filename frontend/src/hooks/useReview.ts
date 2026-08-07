@@ -1,4 +1,4 @@
-import { apiClient } from "@/services/api/client";
+import { apiClient } from "@/services/api/clientApi";
 import { useMutation, useQuery } from "@tanstack/react-query";
 
 // Optional: You can import the interface from your backend or define it here

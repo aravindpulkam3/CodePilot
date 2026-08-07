@@ -8,13 +8,7 @@ import type { AppUserRow } from "../types/user.js";
  * stays in one place when the schema evolves.
  */
 export const userService = {
-  async findByClerkId(clerkId: string): Promise<AppUserRow | null> {
-    const { rows } = await pool.query<AppUserRow>(
-      `SELECT * FROM app_users WHERE clerk_id = $1`,
-      [clerkId]
-    );
-    return rows[0] ?? null;
-  },
+
 
   /**
    * Upserts the application-side user row from a Clerk identity. Called

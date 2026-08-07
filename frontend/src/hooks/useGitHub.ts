@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { fetchGitHubProfile, fetchGitHubRepos } from "@/services/api/github.js";
+import { fetchGitHubProfile, fetchGitHubRepos } from "@/services/api/githubApi.js";
 
 /**
  * Hook to fetch the authenticated user's GitHub profile.

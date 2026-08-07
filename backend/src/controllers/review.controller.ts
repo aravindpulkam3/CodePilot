@@ -3,11 +3,9 @@ import { getAuth } from "@clerk/express";
 import * as reviewServiceModule from "../services/review.service.js";
 
 export const generateReview = async (req: Request, res: Response) => {
+  const clerkUserId=req.dbUser!.clerkId;
   try {
-    const { userId } = getAuth(req);
-    if (!userId) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
+    
 
     const { repositoryId, pullNumber } = req.body;
     
@@ -15,7 +13,7 @@ export const generateReview = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "repositoryId and pullNumber are required" });
     }
 
-    const reviewResult = await reviewServiceModule.reviewService.generateAndStoreReview(userId, repositoryId, pullNumber);
+    const reviewResult = await reviewServiceModule.reviewService.generateAndStoreReview(clerkUserId, repositoryId, pullNumber);
     
     return res.status(200).json(reviewResult);
   } catch (error: any) {

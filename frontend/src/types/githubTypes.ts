@@ -24,6 +24,14 @@ export interface GitHubUser {
  * Interface for GET /github/repositories
  * Represents a single repository item returned in the list.
  */
+export enum IndexingStatus {
+  UNINDEXED = 'UNINDEXED',
+  PENDING = 'PENDING',
+  INDEXING = 'INDEXING',   // Currently processing
+  INDEXED = 'INDEXED',     // Success
+  FAILED = 'FAILED'
+}
+
 export interface GitHubRepository {
   id: number;
   name: string;
@@ -47,4 +55,5 @@ export interface GitHubRepository {
     avatar_url: string;
     html_url: string;
   };
+  indexing_status?: IndexingStatus;
 }

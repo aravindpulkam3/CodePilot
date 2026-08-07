@@ -1,4 +1,4 @@
-import { apiClient } from "./client";
+import { apiClient } from "./clientApi";
 import type { AppUser } from "@/types/user";
 
 /**

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { getPullRequestDetails, getRepoDetails, getRepoPullRequests } from "@/services/api/repository";
+import { getPullRequestDetails, getRepoDetails, getRepoPullRequests } from "@/services/api/repositoryApi";
 
 export function useRepositoryDetails(repositoryId: string) {
   return useQuery({

@@ -1,6 +1,6 @@
 import { useAuth } from "@clerk/clerk-react";
 import { useEffect } from "react";
-import { attachAuthToken } from "@/services/api/client";
+import { attachAuthToken } from "@/services/api/clientApi";
 
 /**
  * Wires the Clerk session token into the shared axios instance. Mount

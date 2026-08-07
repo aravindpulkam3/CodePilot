@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { getChatHistory, getChatSessions } from "@/services/api/repository";
+import { getChatHistory, getChatSessions } from "@/services/api/repositoryApi";
 
 export function useChatSessions(repositoryId: string) {
   return useQuery({

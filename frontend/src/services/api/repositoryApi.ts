@@ -2,8 +2,8 @@ import {
   LocalRepository,
   PullRequestDetail,
   PullRequestItem,
-} from "@/types/repository";
-import { apiClient } from "./client";
+} from "@/types/repositoryTypes";
+import { apiClient } from "./clientApi";
 import { ChatMessage, ChatSession } from "@/types/chatTypes";
 
 export const getRepoDetails = async (

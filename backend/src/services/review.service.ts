@@ -37,9 +37,6 @@ export class ReviewService {
       if (!repoDetails) {
         throw new Error("Repository not found in database.");
       }
-
-      
-
       // 2. Fetch GitHub PR Data
       const prDetails = await githubService.getPullRequestDetails(
         clerkUserId,
@@ -159,6 +156,8 @@ export class ReviewService {
       );
 
       await client.query("COMMIT");
+
+      
 
       return { reviewId: newReviewId, ...aiReview };
     } catch (error) {

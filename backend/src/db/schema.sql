@@ -156,10 +156,61 @@ CREATE TABLE repository_embeddings (
 CREATE INDEX idx_repo_embeddings_repo_file ON repository_embeddings(repository_id, file_path);
 CREATE INDEX idx_repo_embeddings_commit ON repository_embeddings(repository_id, commit_sha);
 
-Adds the memory pointer for Delta Indexing
 ALTER TABLE repositories 
 ADD COLUMN last_indexed_sha VARCHAR(255);
 
 -- Adds UI tracking state (unindexed, indexing, completed, failed)
 ALTER TABLE repositories 
 ADD COLUMN indexing_status VARCHAR(50) DEFAULT 'unindexed';
+
+-- Enum for resumable workspace session types
+CREATE TYPE workspace_session_type AS ENUM (
+    'REVIEW_CHAT',
+    'REPOSITORY_QA',
+    'INTERVIEW'
+);
+
+-- Enum for discrete activity log events
+CREATE TYPE log_activity_type AS ENUM (
+    'REPOSITORY_IMPORTED',
+    'REPOSITORY_INDEXED',
+    'PR_REVIEW_STARTED',
+    'PR_REVIEW_COMPLETED',
+    'INTERVIEW_STARTED',
+    'INTERVIEW_COMPLETED',
+    'REPOSITORY_QA_STARTED'
+);
+
+CREATE TABLE workspace_sessions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    repository_id UUID NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+    session_id UUID NOT NULL, 
+    session_type workspace_session_type NOT NULL,
+    last_accessed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    
+    -- Constraint to enforce one active pointer per unique session, enabling clean UPSERTs
+    CONSTRAINT uq_workspace_session UNIQUE (user_id, session_type, session_id)
+);
+
+-- Index to optimize fetching the most recent workspaces for a specific user's dashboard
+CREATE INDEX idx_workspace_sessions_user_recent 
+ON workspace_sessions(user_id, last_accessed_at DESC);
+
+CREATE TABLE activity_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    repository_id UUID REFERENCES repositories(id) ON DELETE SET NULL,
+    activity_type log_activity_type NOT NULL,
+    metadata JSONB DEFAULT '{}'::jsonb NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Index to optimize fetching a global activity feed for a specific user
+CREATE INDEX idx_activity_logs_user_date 
+ON activity_logs(user_id, created_at DESC);
+
+-- Index to optimize fetching a scoped activity feed for a specific repository view
+CREATE INDEX idx_activity_logs_repo_date 
+ON activity_logs(repository_id, created_at DESC);

@@ -71,7 +71,7 @@ export const upsertRepositories = async (userId: string, repos: UpsertRepoInput[
       last_pushed_at = EXCLUDED.last_pushed_at,
       last_synced_at = EXCLUDED.last_synced_at,
       updated_at = NOW()
-    RETURNING *;
+      RETURNING *, (xmax = 0) AS is_new_record;
   `;
 
   // Run the upserts concurrently through the pg pool

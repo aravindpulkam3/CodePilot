@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { usersApi } from "@/services/api/users";
+import { usersApi } from "@/services/api/usersApi";
 
 /**
  * Fetches the application-specific user record (see backend `app_users`

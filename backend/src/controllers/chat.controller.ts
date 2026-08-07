@@ -6,7 +6,8 @@ import { getAuth } from '@clerk/express';
 export const handleRepositoryChat = async (req: Request, res: Response) => {
   const { repositoryId } = req.params;
   const { message, sessionId, type } = req.body;
-  const {userId:clerkUserId}=getAuth(req) ;
+  const userId = req.dbUser!.id;
+  const clerkUserId=req.dbUser!.clerkId
 
   let currentSessionId = sessionId;
   if (!currentSessionId) {
@@ -28,7 +29,6 @@ export const handleRepositoryChat = async (req: Request, res: Response) => {
     let fullAiResponse = "";
 
     // Call the service and pass a callback that writes directly to the response object [cite: 1485]
-    if(!clerkUserId) throw new Error("clerk user Id not authorised");
     await chatService.streamRepositoryChat(
       clerkUserId,
       repositoryId, 

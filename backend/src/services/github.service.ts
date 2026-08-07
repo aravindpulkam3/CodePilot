@@ -2,12 +2,14 @@ import { clerkClient } from '@clerk/express';
 import axios from 'axios';
 import * as repositoryService from './repository.service.js';
 import { FileChange } from './repositoryIndex.service.js';
+import { logActivity } from './dashboard.service.js';
+import { LogActivityType } from '../types/dashboardTypes.js';
 /**
  * Retrieves the GitHub OAuth access token from Clerk for a given user.
  */
-const getGitHubAccessToken = async (userId: string): Promise<string> => {
+export const getGitHubAccessToken = async (clerkUserId: string): Promise<string> => {
   try {
-    const response = await clerkClient.users.getUserOauthAccessToken(userId, 'github');
+    const response = await clerkClient.users.getUserOauthAccessToken(clerkUserId, 'github');
     
     // Access the tokens array via the 'data' property of the paginated response
     if (!response || !response.data || response.data.length === 0) {
@@ -25,8 +27,8 @@ const getGitHubAccessToken = async (userId: string): Promise<string> => {
 
  //Fetches the authenticated user's GitHub profile.
  
-export const getGitHubUserProfile = async (userId: string) => {
-  const token = await getGitHubAccessToken(userId);
+export const getGitHubUserProfile = async (clerkUserId: string) => {
+  const token = await getGitHubAccessToken(clerkUserId);
 
   try {
     const { data } = await axios.get('https://api.github.com/user', {
@@ -70,6 +72,23 @@ export const syncAndGetGitHubRepositories = async (clerkUserId: string, appUserI
 
     // 3. Upsert into Postgres
     const syncedRepos = await repositoryService.upsertRepositories(appUserId, reposToUpsert);
+
+    const newlyImportedRepos = syncedRepos.filter(repo => repo.is_new_record === true);
+
+    // 3. Log activity ONLY for the new ones
+    if (newlyImportedRepos.length > 0) {
+      const logPromises = newlyImportedRepos.map(repo => 
+        logActivity(
+          appUserId,
+          repo.id,
+          LogActivityType.REPOSITORY_IMPORTED,
+          { repoName: repo.name, provider: "github" }
+        )
+      );
+      
+      // Execute all logs concurrently without blocking the main thread return
+      Promise.all(logPromises).catch(err => console.error("Failed to log imports", err));
+    }
 
     return syncedRepos;
   } catch (error: any) {

@@ -1,11 +1,11 @@
 import { Router } from 'express';
 // Add .js extensions to relative imports
 import { getUser, getRepositories } from '../controllers/github.controller.js';
-import { requireAuthentication } from '../middleware/auth.middleware.js'; 
+import { requireAuth } from '../middleware/auth.middleware.js'; 
 
 const gitHubRouter = Router();
 
-gitHubRouter.use(requireAuthentication);
+gitHubRouter.use(requireAuth);
 
 gitHubRouter.get('/user', getUser);
 gitHubRouter.get('/repositories', getRepositories);

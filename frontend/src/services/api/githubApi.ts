@@ -1,4 +1,4 @@
-import { apiClient } from "./client.js";
+import { apiClient } from "./clientApi.js";
 import { GitHubUser, GitHubRepository } from "../../types/githubTypes.js";
 
 // 1. Fetch GitHub Profile
