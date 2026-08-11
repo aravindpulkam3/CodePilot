@@ -8,6 +8,7 @@ export interface FileSummary {
   path: string;
   module: string;
   purpose: string;
+  role: string; 
   summary: string;
   responsibilities: string[];
   technologies: string[];
@@ -26,6 +27,7 @@ export interface ComponentSummary {
   responsibilities: string[];
   technologies: string[];
   keywords: string[];
+  entryPoints: string[];
   importantFiles: string[];
   publicInterfaces: string[];
   relatedComponents: string[];
@@ -36,7 +38,8 @@ export interface ArchitectureSummary {
   summary: string;
   architectureStyle: string;
   majorLayers: string[];
-  majorFlows: string[];
+  requestFlows: string[];
+  dataFlows: string[];
   majorComponents: string[];
   crossCuttingConcerns: string[];
   technologies: string[];
@@ -49,6 +52,7 @@ export interface RepositorySummary {
   purpose: string;
   features: string[];
   techStack: string[];
+  interestingDesignDecisions: string[];
   keywords: string[];
 }
 
@@ -73,10 +77,10 @@ export interface StoredSummaryRow {
 
 // --- Pluggable clients (bring your own provider) --------------------------
 
-export interface LLMClient {
-  /** Must return parsed JSON matching the shape the prompt asked for. */
-  generateJSON<T>(system: string, prompt: string): Promise<T>;
-}
+// export interface LLMClient {
+//   /** Must return parsed JSON matching the shape the prompt asked for. */
+//   generateJSON<T>(system: string, prompt: string): Promise<T>;
+// }
 
 export interface EmbeddingClient {
   embed(text: string): Promise<number[]>;

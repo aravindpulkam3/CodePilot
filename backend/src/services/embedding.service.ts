@@ -63,7 +63,6 @@ export class EmbeddingService {
     }
   }
 
-  // Add this new method inside your existing EmbeddingService class:
   public async embedQuery(queryText: string): Promise<number[]> {
     try {
       const response = await this.ai.models.embedContent({
