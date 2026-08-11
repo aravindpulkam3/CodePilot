@@ -55,7 +55,7 @@ async function upsertIfChanged<T extends { nodeType: string }>(
   newContentHash: string,
   generate: () => Promise<T>,
 ): Promise<T> {
-  const existing = await deps.store.get(repositoryId, nodeKey);
+  const existing = await deps.store.get(repositoryId,nodeType, nodeKey);
   if (existing && existing.content_hash === newContentHash) {
     return existing.summary_json as unknown as T;
   }

@@ -214,3 +214,48 @@ ON activity_logs(user_id, created_at DESC);
 -- Index to optimize fetching a scoped activity feed for a specific repository view
 CREATE INDEX idx_activity_logs_repo_date 
 ON activity_logs(repository_id, created_at DESC);
+
+
+-- One table for every summary level, per spec. Not flattened — summary_json
+-- is stored exactly as the LLM returned it so it can become graph-node
+-- properties later without a migration.
+CREATE TABLE IF NOT EXISTS repository_summaries (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  repository_id UUID NOT NULL,
+  node_type     TEXT NOT NULL CHECK (node_type IN ('repository', 'architecture', 'component', 'file')),
+  node_key      TEXT NOT NULL,       -- file path | module name | 'architecture' | 'repository'
+  parent_key    TEXT,                -- NULL only for the repository row
+  summary_json  JSONB NOT NULL,
+  content_hash  TEXT NOT NULL,       -- addition beyond the spec's column list — Merkle-style hash
+                                      -- used to skip regenerating nodes whose inputs haven't changed
+  embedding     VECTOR(3072),        -- gemini-embedding-001 defaults to 3072 dims;
+                                      -- log embedding.length once and confirm before running
+                                      -- this migration, then adjust if you're requesting a
+                                      -- truncated output_dimensionality
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  UNIQUE (repository_id, node_type, node_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_repository_summaries_repo_type
+  ON repository_summaries (repository_id, node_type);
+
+CREATE INDEX IF NOT EXISTS idx_repository_summaries_parent
+  ON repository_summaries (repository_id, parent_key);
+
+-- NOT creating an HNSW/IVFFlat index on `embedding` here on purpose:
+-- gemini-embedding-001's default 3072 dimensions exceed what pgvector's ANN
+-- index types can index (practical cap is ~2000 dims). The column stores
+-- 3072-dim vectors fine; queries just fall back to a sequential scan, which
+-- is fine at the scale a first version runs at.
+--
+-- If/when you need an ANN index: request a truncated embedding via
+-- `outputDimensionality` (1536 is the usual choice) in embedding.service.ts,
+-- and manually normalize the result to unit length — gemini-embedding-001
+-- does NOT auto-normalize truncated vectors (only gemini-embedding-2 does).
+-- Then:
+-- CREATE INDEX IF NOT EXISTS idx_repository_summaries_embedding
+--   ON repository_summaries USING hnsw (embedding vector_cosine_ops);
+
+

@@ -1,7 +1,8 @@
 import { GoogleGenAI } from "@google/genai";
 import { ChunkMetadata } from "./astChunking.service.js";
+import type { EmbeddingClient } from "../types/summaryTypes.js";
 
-export class EmbeddingService {
+export class EmbeddingService implements EmbeddingClient {
   private ai: GoogleGenAI;
 
   constructor() {
@@ -84,6 +85,45 @@ export class EmbeddingService {
       console.error("Error embedding query:", error);
       throw error;
     }
+  }
+
+  // Generic single-text embed for anything that isn't a ChunkMetadata[] batch
+  // and isn't a query — e.g. repository/architecture/component/file summary
+  // text. Summaries are stored documents, so this defaults to
+  // RETRIEVAL_DOCUMENT, matching the task type generateEmbeddings() already
+  // uses for chunks.
+  public async embedText(
+    text: string,
+    taskType: "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY" = "RETRIEVAL_DOCUMENT",
+  ): Promise<number[]> {
+    try {
+      const response = await this.ai.models.embedContent({
+        model: "gemini-embedding-001",
+        contents: [text],
+        config: {
+          taskType,
+        },
+      });
+
+      const vectorValues = response.embeddings?.[0]?.values;
+      if (!vectorValues || vectorValues.length === 0) {
+        throw new Error("Failed to generate embedding for text.");
+      }
+
+      return vectorValues;
+    } catch (error) {
+      console.error("Error embedding text:", error);
+      throw error;
+    }
+  }
+
+  // This is what makes `implements EmbeddingClient` on the class above
+  // actually true — the interface requires a method literally named
+  // `embed` taking one string and returning Promise<number[]>. embedText()
+  // already does that work; this just satisfies the exact contract shape,
+  // defaulting to RETRIEVAL_DOCUMENT since summaries are stored documents.
+  public async embed(text: string): Promise<number[]> {
+    return this.embedText(text, "RETRIEVAL_DOCUMENT");
   }
 }
 

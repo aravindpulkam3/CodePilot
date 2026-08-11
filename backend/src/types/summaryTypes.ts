@@ -87,7 +87,7 @@ export interface EmbeddingClient {
 }
 
 export interface SummaryStore {
-  get(repositoryId: string, nodeKey: string): Promise<StoredSummaryRow | null>;
+  get(repositoryId: string, nodeType: NodeType, nodeKey: string): Promise<StoredSummaryRow | null>;
   upsert(row: Omit<StoredSummaryRow, "id" | "created_at" | "updated_at">): Promise<void>;
 }
 

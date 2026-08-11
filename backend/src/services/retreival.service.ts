@@ -25,10 +25,7 @@ export class RetrievalService {
     queryText: string,
     limit: number = 5,
   ): Promise<RetrievedContext[]> {
-    // 1. Convert the search string into a 3072-dimensional vector
-
     
-
     console.log(
         `[ReviewService] JIT Sync check for repository ${repositoryId}...`,
       );

@@ -1,5 +1,7 @@
 import path from "path";
-import type { FileASTMetadata, LLMClient } from "../types/summaryTypes.js";
+import { Type, Schema } from "@google/genai";
+import type { FileASTMetadata } from "../types/summaryTypes.js";
+import { LLMService, LLMMessage } from "./llm.service.js";
 
 // Folders that describe *layers*, not *features* — grouping purely by these
 // names produces a "controllers" module and a "services" module instead of
@@ -156,7 +158,7 @@ export function discoverModulesHeuristically(files: FileASTMetadata[]): ModuleAs
 export async function refineModulesWithLLM(
   assignments: ModuleAssignment[],
   files: FileASTMetadata[],
-  llm: LLMClient,
+  llm: LLMService,
 ): Promise<ModuleAssignment[]> {
   const importGraph = buildImportGraph(files);
   const byModule = new Map<string, string[]>();
@@ -182,8 +184,18 @@ export async function refineModulesWithLLM(
     "You only ever see file paths and import relationships, never source code. " +
     "Propose corrected module names/merges where the clustering is obviously wrong " +
     "(e.g. a module with 1-2 files that clearly belongs elsewhere, or a generic name " +
-    "that should reflect the actual feature). Keep modules you're not confident about unchanged. " +
-    'Return ONLY JSON: { "renames": { "<oldModuleName>": "<newModuleName>" } }';
+    "that should reflect the actual feature). Keep modules you're not confident about unchanged.";
+
+  const schema: Schema = {
+    type: Type.OBJECT,
+    properties: {
+      renames: {
+        type: Type.OBJECT,
+        description: "Mapping of old module names to new module names",
+      },
+    },
+    required: ["renames"],
+  };
 
   const prompt = JSON.stringify(
     {
@@ -194,8 +206,13 @@ export async function refineModulesWithLLM(
     2,
   );
 
+  const messages: LLMMessage[] = [
+    { role: 'system', content: system },
+    { role: 'user', content: prompt }
+  ];
+
   try {
-    const result = await llm.generateJSON<{ renames: Record<string, string> }>(system, prompt);
+    const result = await llm.generateStructured<{ renames: Record<string, string> }>(messages, schema);
     return assignments.map((a) => ({
       filePath: a.filePath,
       module: result.renames?.[a.module] ?? a.module,
