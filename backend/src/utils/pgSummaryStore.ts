@@ -48,6 +48,37 @@ export class PgSummaryStore implements SummaryStore {
     };
   }
 
+  public async getAllFiles(repositoryId: string): Promise<StoredSummaryRow[]> {
+    const result = await this.pool.query(
+      `SELECT id, repository_id, node_type, node_key, parent_key, summary_json,
+              content_hash, embedding::text AS embedding, created_at, updated_at
+       FROM repository_summaries
+       WHERE repository_id = $1 AND node_type = 'file'`,
+      [repositoryId],
+    );
+
+    return result.rows.map(row => ({
+      id: row.id,
+      repository_id: row.repository_id,
+      node_type: row.node_type,
+      node_key: row.node_key,
+      parent_key: row.parent_key,
+      summary_json: row.summary_json,
+      content_hash: row.content_hash,
+      embedding: parsePgVector(row.embedding),
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    }));
+  }
+
+  public async delete(repositoryId: string, nodeType: NodeType, nodeKey: string): Promise<void> {
+    await this.pool.query(
+      `DELETE FROM repository_summaries
+       WHERE repository_id = $1 AND node_type = $2 AND node_key = $3`,
+      [repositoryId, nodeType, nodeKey],
+    );
+  }
+
   public async upsert(
     row: Omit<StoredSummaryRow, "id" | "created_at" | "updated_at">,
   ): Promise<void> {

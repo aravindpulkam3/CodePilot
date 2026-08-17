@@ -1,10 +1,11 @@
 // src/services/chatService.ts
-import { retrievalService, RetrievedContext} from './retreival.service.js';
+import { retrievalService } from './retreival.service.js';
+import { CodeChunkSearchResult } from '../types/retrievalTypes.js';
 import { LLMMessage, llmService } from './llm.service.js';
 import { pool } from '../config/db.js';
 
 export type StreamChunk = 
-  | { type: 'sources'; data: RetrievedContext[] }
+  | { type: 'sources'; data: CodeChunkSearchResult[] }
   | { type: 'text'; data: string };
 
 export class ChatService {
@@ -73,13 +74,14 @@ export class ChatService {
     onChunk: (text: StreamChunk) => void
   ) {
     // 1. Get diverse context chunks
-    const sources = await retrievalService.searchRepository(clerkUserId,repositoryId, message);
+    const retrievedContext = await retrievalService.retrieveQAContext(clerkUserId, repositoryId, message);
+    const sources = retrievedContext.codeChunks;
 
     console.log(sources);
 
     // 2. Format the sources into a readable string for the prompt [cite: 1484]
     const contextString = sources.map((s, index) => 
-      `[Source ${index + 1}]: ${s.file_path} (Line ${s.start_line})\n\`\`\`\n${s.content}\n\`\`\`\n`
+      `[Source ${index + 1}]: ${s.filePath} (Line ${s.lineStart})\n\`\`\`\n${s.content}\n\`\`\`\n`
     ).join('\n');
 
     // 3. Build the System Prompt

@@ -1,6 +1,9 @@
 import {pool} from '../config/db.js';
 import { astChunker } from './astChunking.service.js';
 import { embedder } from './embedding.service.js';
+import { updateSummariesIncrementally } from './summaryPipeline.service.js';
+import { PgSummaryStore } from '../utils/pgSummaryStore.js';
+import { llmService } from './llm.service.js';
 
 export interface FileChange {
     path: string;
@@ -25,7 +28,7 @@ export class RepositoryIndexingService {
         try {
             // Lock indexing status
             await client.query(
-                `UPDATE repositories SET indexing_status = 'indexing' WHERE id = $1`,
+                `UPDATE repositories SET indexing_status = 'INDEXING' WHERE id = $1`,
                 [repositoryId]
             );
 
@@ -124,10 +127,24 @@ export class RepositoryIndexingService {
             // Finalize indexing status and advance the pointer
             await client.query(
                 `UPDATE repositories 
-                 SET last_indexed_sha = $1, indexing_status = 'completed' 
+                 SET last_indexed_sha = $1, indexing_status = 'INDEXED' 
                  WHERE id = $2`,
                 [commitSha, repositoryId]
             );
+
+            console.log("Triggering incremental summarization...");
+            const store = new PgSummaryStore(pool);
+            await updateSummariesIncrementally({
+                repositoryId,
+                changedFiles,
+                readme: null,
+                packageMetadata: null
+            }, {
+                llm: llmService,
+                embeddings: embedder,
+                store
+            });
+            console.log("Incremental summarization completed.");
 
             await client.query('COMMIT');
             
@@ -138,7 +155,7 @@ export class RepositoryIndexingService {
             // Mark as failed in DB so the UI can alert the user
             try {
                 await pool.query(
-                    `UPDATE repositories SET indexing_status = 'failed' WHERE id = $1`,
+                    `UPDATE repositories SET indexing_status = 'FAILED' WHERE id = $1`,
                     [repositoryId]
                 );
             } catch (e) {

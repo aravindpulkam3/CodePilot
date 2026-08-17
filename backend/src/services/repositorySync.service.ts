@@ -21,7 +21,7 @@ export class RepositorySyncService {
     const repo = rows[0];
 
     // Prevent concurrent indexing jobs for the same repo
-    if (repo.indexing_status === "indexing") {
+    if (repo.indexing_status === "INDEXING") {
       console.log(
         `Repository ${repo.name} is already currently indexing. Skipping trigger.`,
       );

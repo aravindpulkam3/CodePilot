@@ -57,7 +57,7 @@ function toTitleCase(s: string): string {
     .trim();
 }
 
-function initialModuleFor(filePath: string): string {
+export function initialModuleFor(filePath: string): string {
   const segments = directorySegments(filePath);
 
   for (const segment of segments) {

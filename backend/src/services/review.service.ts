@@ -45,30 +45,33 @@ export class ReviewService {
       );
       const headSha = prDetails.head_sha || "unknown_sha";
 
-      const changedFileNames = prDetails.files
-        .map((f: any) => f.filename)
-        .join(", ");
+      const changedFilePaths = prDetails.files.map((f: any) => f.filename);
+      const changedFileNames = changedFilePaths.join(", ");
       const ragQuery = `Pull Request Title: ${prDetails.title}. Description: ${prDetails.description || "None"}. Files modified: ${changedFileNames}`;
 
-      // Fetch top 5 chunks from your pgvector database
-      const codebaseChunks = await retrievalService.searchRepository(
+      // Fetch top 5 chunks using the review retrieval context
+      const retrievedContext = await retrievalService.retrieveReviewContext(
         clerkUserId,
         repositoryId,
         ragQuery,
-        5,
+        changedFilePaths,
+        { maxCodeChunks: 5 }
       );
+      
+      const codebaseChunks = retrievedContext.codeChunks;
 
-      console.log("lenght of codebase chunks",codebaseChunks.length)
+      console.log("length of codebase chunks", codebaseChunks.length)
 
       const codebaseContext = codebaseChunks
         .map(
           (chunk) =>
-            `// File: ${chunk.file_path}\n// Symbol: ${chunk.symbol_name} (${chunk.symbol_type})\n${chunk.content}`,
+            `// File: ${chunk.filePath}\n// Symbol: ${chunk.symbolName} (${chunk.symbolType})\n${chunk.content}`,
         )
         .join("\n\n");
-        codebaseChunks.map((chunk)=>{
-          console.log("relevant context files",chunk.file_path);
-        })
+        
+      codebaseChunks.forEach((chunk)=>{
+        console.log("relevant context files", chunk.filePath);
+      });
 
       // 3. Build Prompt & Schema
       const messages = CodeReviewPromptBuilder.buildReviewPrompt(

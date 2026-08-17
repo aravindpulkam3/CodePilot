@@ -8,7 +8,7 @@ export interface FileSummary {
   path: string;
   module: string;
   purpose: string;
-  role: string; 
+  role: string;
   summary: string;
   responsibilities: string[];
   technologies: string[];
@@ -56,7 +56,11 @@ export interface RepositorySummary {
   keywords: string[];
 }
 
-export type SummaryJSON = FileSummary | ComponentSummary | ArchitectureSummary | RepositorySummary;
+export type SummaryJSON =
+  | FileSummary
+  | ComponentSummary
+  | ArchitectureSummary
+  | RepositorySummary;
 export type NodeType = SummaryJSON["nodeType"];
 
 // One row per node. `content_hash` is the one deliberate addition beyond the
@@ -87,8 +91,20 @@ export interface EmbeddingClient {
 }
 
 export interface SummaryStore {
-  get(repositoryId: string, nodeType: NodeType, nodeKey: string): Promise<StoredSummaryRow | null>;
-  upsert(row: Omit<StoredSummaryRow, "id" | "created_at" | "updated_at">): Promise<void>;
+  get(
+    repositoryId: string,
+    nodeType: NodeType,
+    nodeKey: string,
+  ): Promise<StoredSummaryRow | null>;
+  getAllFiles(repositoryId: string): Promise<StoredSummaryRow[]>;
+  delete(
+    repositoryId: string,
+    nodeType: NodeType,
+    nodeKey: string,
+  ): Promise<void>;
+  upsert(
+    row: Omit<StoredSummaryRow, "id" | "created_at" | "updated_at">,
+  ): Promise<void>;
 }
 
 export interface RepoFile {

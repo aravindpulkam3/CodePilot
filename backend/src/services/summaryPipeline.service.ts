@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import { astChunker } from "./astChunking.service.js";
-import { discoverModulesHeuristically, refineModulesWithLLM } from "./moduleDiscovery.service.js";
+import { discoverModulesHeuristically, refineModulesWithLLM, initialModuleFor } from "./moduleDiscovery.service.js";
 import {
   generateArchitectureSummary,
   generateComponentSummary,
@@ -21,6 +21,7 @@ import type {
   SummaryStore,
 } from "../types/summaryTypes.js";
 import { LLMService } from "./llm.service.js";
+import { FileChange } from "./repositoryIndex.service.js";
 
 export interface PipelineDeps {
   llm: LLMService;
@@ -32,6 +33,13 @@ export interface PipelineDeps {
 export interface PipelineInput {
   repositoryId: string;
   files: RepoFile[];
+  readme: string | null;
+  packageMetadata: Record<string, unknown> | null;
+}
+
+export interface IncrementalPipelineInput {
+  repositoryId: string;
+  changedFiles: FileChange[];
   readme: string | null;
   packageMetadata: Record<string, unknown> | null;
 }
@@ -164,6 +172,101 @@ export async function runSummarizationPipeline(input: PipelineInput, deps: Pipel
   );
 
   // --- Stage 6: repository summary ----------------------------------------
+  const repoHash = combineHashes([architectureHash, hash(readme ?? ""), hash(JSON.stringify(packageMetadata ?? {}))]);
+  const repositorySummary = await upsertIfChanged(
+    deps,
+    repositoryId,
+    "repository",
+    "repository",
+    null,
+    repoHash,
+    () => generateRepositorySummary(architectureSummary, componentSummaries, readme, packageMetadata, deps.llm),
+  );
+
+  return { fileSummaries, componentSummaries, architectureSummary, repositorySummary };
+}
+
+export async function updateSummariesIncrementally(input: IncrementalPipelineInput, deps: PipelineDeps): Promise<{
+  fileSummaries: FileSummary[];
+  componentSummaries: ComponentSummary[];
+  architectureSummary: ArchitectureSummary;
+  repositorySummary: RepositorySummary;
+}> {
+  const { repositoryId, changedFiles, readme, packageMetadata } = input;
+
+  // --- Stage 1 & 2 & 3: AST extraction, module discovery, and file summaries for changed files ---
+  for (const file of changedFiles) {
+    if (file.status === 'removed') {
+      await deps.store.delete(repositoryId, 'file', file.path);
+      continue;
+    }
+
+    if (!file.content) continue;
+
+    const meta = await astChunker.extractFileAstMetadata(file.path, file.content);
+    if (!meta) continue;
+
+    // Use heuristic path-based assignment for incremental processing
+    const moduleName = initialModuleFor(file.path);
+    const contentHash = meta.sourceHash;
+
+    await upsertIfChanged(
+      deps,
+      repositoryId,
+      "file",
+      meta.filePath,
+      moduleName,
+      contentHash,
+      () => generateFileSummary(meta, file.content!, moduleName, deps.llm),
+    );
+  }
+
+  // --- Re-aggregation setup ---
+  // Fetch ALL current file summaries from DB
+  const allStoredFiles = await deps.store.getAllFiles(repositoryId);
+  const fileSummaries = allStoredFiles.map(row => row.summary_json as unknown as FileSummary);
+  const fileHashByPath = new Map(allStoredFiles.map(row => [row.node_key, row.content_hash]));
+
+  const filesByModule = new Map<string, FileSummary[]>();
+  for (const fs of fileSummaries) {
+    if (!filesByModule.has(fs.module)) filesByModule.set(fs.module, []);
+    filesByModule.get(fs.module)!.push(fs);
+  }
+
+  // --- Stage 4: Component Summaries ---
+  const componentSummaries: ComponentSummary[] = [];
+  const componentHashByModule = new Map<string, string>();
+
+  for (const [moduleName, moduleFileSummaries] of filesByModule) {
+    const childHashes = moduleFileSummaries.map(fs => fileHashByPath.get(fs.path)!);
+    const componentHash = combineHashes(childHashes);
+    componentHashByModule.set(moduleName, componentHash);
+
+    const summary = await upsertIfChanged(
+      deps,
+      repositoryId,
+      "component",
+      moduleName,
+      "architecture",
+      componentHash,
+      () => generateComponentSummary(moduleName, moduleFileSummaries, deps.llm),
+    );
+    componentSummaries.push(summary);
+  }
+
+  // --- Stage 5: Architecture Summary ---
+  const architectureHash = combineHashes([...componentHashByModule.values()]);
+  const architectureSummary = await upsertIfChanged(
+    deps,
+    repositoryId,
+    "architecture",
+    "architecture",
+    "repository",
+    architectureHash,
+    () => generateArchitectureSummary(componentSummaries, deps.llm),
+  );
+
+  // --- Stage 6: Repository Summary ---
   const repoHash = combineHashes([architectureHash, hash(readme ?? ""), hash(JSON.stringify(packageMetadata ?? {}))]);
   const repositorySummary = await upsertIfChanged(
     deps,

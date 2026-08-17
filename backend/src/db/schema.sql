@@ -258,4 +258,9 @@ CREATE INDEX IF NOT EXISTS idx_repository_summaries_parent
 -- CREATE INDEX IF NOT EXISTS idx_repository_summaries_embedding
 --   ON repository_summaries USING hnsw (embedding vector_cosine_ops);
 
+-- Tracks the last commit a repo was fully indexed at. This is the
+-- repo-level check the pipeline itself does NOT do: before calling
+-- runSummarizationPipeline at all, compare the current HEAD sha to this
+-- table and skip the whole run — no file parsing, no hashing, no per-file
+-- DB reads — if nothing has changed since last time.
 
