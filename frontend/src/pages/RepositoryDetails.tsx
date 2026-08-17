@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import {
   useRepositoryDetails,
   useRepositoryPullRequests,
@@ -27,6 +27,7 @@ import { cn } from "@/utils/cn";
 import { useQueryClient } from "@tanstack/react-query";
 import { sendChatMessageStream } from "@/services/api/repositoryApi";
 import { useAuth } from "@clerk/clerk-react";
+import { Button } from "@/components/ui/Button";
 
 // The chat-history endpoint has been seen to send the sender under different
 // keys/casing depending on which layer produced the row (e.g. "user" vs
@@ -40,6 +41,7 @@ export default function RepositoryDetailsPage() {
   const { repositoryId } = useParams<{ repositoryId: string }>();
   const queryClient = useQueryClient();
   const { getToken } = useAuth();
+  const navigate = useNavigate();
 
   const { data: repo, isLoading: isRepoLoading } = useRepositoryDetails(
     repositoryId!,
@@ -47,7 +49,7 @@ export default function RepositoryDetailsPage() {
   const { data: pulls = [], isLoading: isPullsLoading } =
     useRepositoryPullRequests(repositoryId!);
 
-  const [activeTab, setActiveTab] = useState<"prs" | "chat">("prs");
+  const [activeTab, setActiveTab] = useState<"prs" | "chat" | "interview">("prs");
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
@@ -61,7 +63,7 @@ export default function RepositoryDetailsPage() {
   const { data: history = [], isLoading: isHistoryLoading } =
     useChatHistory(activeSessionId);
 
-  console.log(history);
+  // console.log(history);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -226,7 +228,7 @@ export default function RepositoryDetailsPage() {
           className={cn(
             "pb-3 text-sm font-medium transition-colors border-b-2",
             activeTab === "prs"
-              ? "border-brand-500 text-ink-light dark:text-ink-dark"
+              ? "border-signal-500 text-ink-light dark:text-ink-dark"
               : "border-transparent text-muted-light hover:text-ink-light dark:text-muted-dark dark:hover:text-ink-dark",
           )}
         >
@@ -237,11 +239,22 @@ export default function RepositoryDetailsPage() {
           className={cn(
             "pb-3 text-sm font-medium flex items-center gap-2 transition-colors border-b-2",
             activeTab === "chat"
-              ? "border-brand-500 text-ink-light dark:text-ink-dark"
+              ? "border-signal-500 text-ink-light dark:text-ink-dark"
               : "border-transparent text-muted-light hover:text-ink-light dark:text-muted-dark dark:hover:text-ink-dark",
           )}
         >
           <Terminal className="h-4 w-4" /> Codebase Q&A
+        </button>
+        <button
+          onClick={() => setActiveTab("interview")}
+          className={cn(
+            "pb-3 text-sm font-medium transition-colors border-b-2",
+            activeTab === "interview"
+              ? "border-signal-500 text-ink-light dark:text-ink-dark"
+              : "border-transparent text-muted-light hover:text-ink-light dark:text-muted-dark dark:hover:text-ink-dark",
+          )}
+        >
+          Interview
         </button>
       </div>
 
@@ -288,7 +301,7 @@ export default function RepositoryDetailsPage() {
             ))
           )}
         </div>
-      ) : (
+      ) : activeTab === "chat" ? (
         /* Codebase Q&A Interface */
         <Card className="flex h-[600px] overflow-hidden">
           {/* Chat Sidebar */}
@@ -296,7 +309,7 @@ export default function RepositoryDetailsPage() {
             <div className="p-4 border-b border-border-light dark:border-border-dark">
               <button
                 onClick={() => setActiveSessionId(null)}
-                className="flex w-full items-center justify-center gap-2 rounded-md bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-600 transition-colors"
+                className="flex w-full items-center justify-center gap-2 rounded-md bg-signal-500 px-3 py-2 text-sm font-medium text-white hover:bg-signal-600 transition-colors"
               >
                 <Plus className="h-4 w-4" /> New Chat
               </button>
@@ -374,7 +387,7 @@ export default function RepositoryDetailsPage() {
                         </div>
                       </div>
                       {fromUser && (
-                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-100 dark:bg-brand-500/20 text-brand-600 dark:text-brand-400">
+                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-signal-100 dark:bg-signal-500/20 text-signal-600 dark:text-signal-400">
                           <User className="h-4 w-4" />
                         </div>
                       )}
@@ -386,10 +399,10 @@ export default function RepositoryDetailsPage() {
               {/* Optimistic User Message */}
               {optimisticUserMessage && (
                 <div className="flex items-end justify-end gap-2">
-                  <div className="max-w-[80%] rounded-xl bg-brand-500 px-4 py-3 text-sm text-white shadow-sm">
+                  <div className="max-w-[80%] rounded-xl bg-signal-500 px-4 py-3 text-sm text-white shadow-sm">
                     {optimisticUserMessage}
                   </div>
-                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-100 dark:bg-brand-500/20 text-brand-600 dark:text-brand-400">
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-signal-100 dark:bg-signal-500/20 text-signal-600 dark:text-signal-400">
                     <User className="h-4 w-4" />
                   </div>
                 </div>
@@ -410,7 +423,7 @@ export default function RepositoryDetailsPage() {
                             key={i}
                             className="flex items-center gap-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2.5 py-1 text-xs"
                           >
-                            <Code className="h-3 w-3 text-brand-500" />
+                            <Code className="h-3 w-3 text-signal-500" />
                             <span className="font-mono text-muted-light dark:text-muted-dark">
                               {source.file_path.split("/").pop()}
                             </span>
@@ -425,7 +438,7 @@ export default function RepositoryDetailsPage() {
                     {/* Render Streaming Text */}
                     <div className="whitespace-pre-wrap">{streamedText}</div>
                     {isStreaming && (
-                      <span className="inline-block w-1.5 h-4 ml-1 bg-brand-500 animate-pulse" />
+                      <span className="inline-block w-1.5 h-4 ml-1 bg-signal-500 animate-pulse" />
                     )}
                   </div>
                 </div>
@@ -447,13 +460,13 @@ export default function RepositoryDetailsPage() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   placeholder="Ask a question about the codebase..."
-                  className="flex-1 rounded-md border border-border-light dark:border-border-dark bg-white dark:bg-slate-950 px-4 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                  className="flex-1 rounded-md border border-border-light dark:border-border-dark bg-white dark:bg-slate-950 px-4 py-2 text-sm focus:border-signal-500 focus:outline-none focus:ring-1 focus:ring-signal-500"
                   disabled={isStreaming}
                 />
                 <button
                   type="submit"
                   disabled={isStreaming || !input.trim()}
-                  className="flex items-center justify-center rounded-md bg-brand-500 px-4 py-2 text-white hover:bg-brand-600 disabled:opacity-50 transition-colors"
+                  className="flex items-center justify-center rounded-md bg-signal-500 px-4 py-2 text-white hover:bg-signal-600 disabled:opacity-50 transition-colors"
                 >
                   <Send className="h-4 w-4" />
                 </button>
@@ -461,6 +474,12 @@ export default function RepositoryDetailsPage() {
             </div>
           </div>
         </Card>
+      ) : (
+        <div className="mt-6 flex justify-center">
+          <Button onClick={() => navigate(`/repositories/${repositoryId}/interview`)}>
+            Start Technical Interview
+          </Button>
+        </div>
       )}
     </div>
   );

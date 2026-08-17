@@ -3,7 +3,7 @@ import { astChunker } from './astChunking.service.js';
 import { embedder } from './embedding.service.js';
 import { updateSummariesIncrementally } from './summaryPipeline.service.js';
 import { PgSummaryStore } from '../utils/pgSummaryStore.js';
-import { llmService } from './llm.service.js';
+import { llmService, ollamaService } from './llm.service.js';
 
 export interface FileChange {
     path: string;
@@ -140,7 +140,7 @@ export class RepositoryIndexingService {
                 readme: null,
                 packageMetadata: null
             }, {
-                llm: llmService,
+                llm: ollamaService,
                 embeddings: embedder,
                 store
             });

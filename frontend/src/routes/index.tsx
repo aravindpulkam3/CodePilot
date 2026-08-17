@@ -15,6 +15,7 @@ import Settings from "@/pages/Settings";
 import NotFound from "@/pages/NotFound";
 import RepositoryDetailsPage from "@/pages/RepositoryDetails";
 import PullRequestDetailsPage from "@/pages/PullRequestDetails";
+import { InterviewPage } from "@/pages/InterviewPage";
 
 /**
  * Route tree, grouped by access level:
@@ -43,6 +44,7 @@ export function AppRoutes() {
             <Route path={ROUTES.dashboard} element={<Dashboard />} />
             <Route path={ROUTES.repositories} element={<Repositories />} />
             <Route path={ROUTES.repositoryPage} element={<RepositoryDetailsPage />} />
+            <Route path={ROUTES.interviewPage} element={<InterviewPage />} />
             <Route path={ROUTES.pullRequestDetails} element={<PullRequestDetailsPage/>}/>
             <Route path={ROUTES.documentation} element={<Documentation />} />
             <Route path={ROUTES.profile} element={<Profile />} />

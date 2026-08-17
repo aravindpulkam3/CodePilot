@@ -1,21 +1,24 @@
-import { GoogleGenAI, Type, Schema } from '@google/genai';
+import { GoogleGenAI, Type, Schema } from "@google/genai";
+import ollama from "ollama";
 import dotenv from "dotenv";
 dotenv.config();
 
 export interface LLMMessage {
-  role: 'system' | 'user' | 'assistant';
+  role: "system" | "user" | "assistant";
   content: string;
 }
 
 export interface LLMService {
   generate(messages: LLMMessage[]): Promise<string>;
   generateStructured<T>(messages: LLMMessage[], schema: Schema): Promise<T>;
-  stream(messages: LLMMessage[]): AsyncGenerator<{ text: string }, void, unknown>;
+  stream(
+    messages: LLMMessage[],
+  ): AsyncGenerator<{ text: string }, void, unknown>;
 }
 
 export class GeminiLLMService implements LLMService {
   private ai: GoogleGenAI;
-  private modelName = 'gemini-3.6-flash'; 
+  private modelName = "gemini-3.6-flash";
 
   constructor() {
     this.ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -26,12 +29,14 @@ export class GeminiLLMService implements LLMService {
    * Gemini treats 'system' instructions differently than standard conversation turns.
    */
   private formatMessages(messages: LLMMessage[]) {
-    const systemInstruction = messages.find(m => m.role === 'system')?.content;
+    const systemInstruction = messages.find(
+      (m) => m.role === "system",
+    )?.content;
     const contents = messages
-      .filter(m => m.role !== 'system')
-      .map(m => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: m.content }]
+      .filter((m) => m.role !== "system")
+      .map((m) => ({
+        role: m.role === "assistant" ? "model" : "user",
+        parts: [{ text: m.content }],
       }));
 
     return { systemInstruction, contents };
@@ -46,13 +51,16 @@ export class GeminiLLMService implements LLMService {
       config: {
         systemInstruction,
         temperature: 0.2, // Keep it low for analytical tasks like code review
-      }
+      },
     });
 
-    return response.text || '';
+    return response.text || "";
   }
 
-  async generateStructured<T>(messages: LLMMessage[], schema: Schema): Promise<T> {
+  async generateStructured<T>(
+    messages: LLMMessage[],
+    schema: Schema,
+  ): Promise<T> {
     const { systemInstruction, contents } = this.formatMessages(messages);
 
     console.log("came to generate ai response");
@@ -63,9 +71,9 @@ export class GeminiLLMService implements LLMService {
       config: {
         systemInstruction,
         temperature: 0.1,
-        responseMimeType: 'application/json',
+        responseMimeType: "application/json",
         responseSchema: schema,
-      }
+      },
     });
 
     const textResult = response.text;
@@ -75,7 +83,9 @@ export class GeminiLLMService implements LLMService {
     return JSON.parse(textResult) as T;
   }
 
-  async *stream(messages: LLMMessage[]): AsyncGenerator<{ text: string }, void, unknown> {
+  async *stream(
+    messages: LLMMessage[],
+  ): AsyncGenerator<{ text: string }, void, unknown> {
     const { systemInstruction, contents } = this.formatMessages(messages);
 
     // Use generateContentStream instead of generateContent
@@ -84,8 +94,8 @@ export class GeminiLLMService implements LLMService {
       contents,
       config: {
         systemInstruction,
-        temperature: 0.2, 
-      }
+        temperature: 0.2,
+      },
     });
 
     // Iterate over the stream and yield each chunk as it arrives
@@ -94,6 +104,98 @@ export class GeminiLLMService implements LLMService {
         yield { text: chunk.text };
       }
     }
+  }
 }
+
+export class OllamaLLMService implements LLMService {
+  private modelName = "qwen2.5-coder:7b";
+
+  private convertToStandardJsonSchema(googleSchema: any): any {
+    if (!googleSchema || typeof googleSchema !== "object") return googleSchema;
+
+    const newSchema = { ...googleSchema };
+
+    if (newSchema.type && typeof newSchema.type === "string") {
+      newSchema.type = newSchema.type.toLowerCase();
+    }
+
+    // 2. Recursively fix all nested properties (for Objects)
+    if (newSchema.properties) {
+      newSchema.properties = { ...newSchema.properties };
+      for (const key in newSchema.properties) {
+        newSchema.properties[key] = this.convertToStandardJsonSchema(
+          newSchema.properties[key],
+        );
+      }
+    }
+
+    // 3. Recursively fix the 'items' field (for Arrays)
+    if (newSchema.items) {
+      newSchema.items = this.convertToStandardJsonSchema(newSchema.items);
+    }
+
+    return newSchema;
+  }
+
+  async generate(messages: LLMMessage[]): Promise<string> {
+    const response = await ollama.chat({
+      model: this.modelName,
+      messages: messages,
+      options: {
+        temperature: 0.2,
+      },
+    });
+
+    return response.message.content || "";
+  }
+
+  async generateStructured<T>(
+    messages: LLMMessage[],
+    schema: Schema,
+  ): Promise<T> {
+    console.log("came to generate Ollama structured response");
+
+    const standardSchema = this.convertToStandardJsonSchema(schema);
+
+    const response = await ollama.chat({
+      model: this.modelName,
+      messages: messages,
+      // Recent versions of Ollama support passing a standard JSON schema object
+      // to the format parameter to force structured outputs. We cast it as 'any'
+      // here just to bypass TypeScript complaining about Google's specific Schema type.
+      format: standardSchema as any,
+      options: {
+        temperature: 0.1,
+      },
+    });
+
+    const textResult = response.message.content;
+    console.log(textResult);
+    if (!textResult) throw new Error("Ollama returned an empty response.");
+
+    return JSON.parse(textResult) as T;
+  }
+
+  async *stream(
+    messages: LLMMessage[],
+  ): AsyncGenerator<{ text: string }, void, unknown> {
+    const responseStream = await ollama.chat({
+      model: this.modelName,
+      messages: messages,
+      stream: true,
+      options: {
+        temperature: 0.2,
+      },
+    });
+
+    // Iterate over the async iterable stream returned by Ollama
+    for await (const chunk of responseStream) {
+      if (chunk.message?.content) {
+        yield { text: chunk.message.content };
+      }
+    }
+  }
 }
+
 export const llmService = new GeminiLLMService();
+export const ollamaService = new OllamaLLMService();

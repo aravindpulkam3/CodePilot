@@ -1,4 +1,3 @@
-
 /**
  * Central route path registry. Every path used in a <Link>, <Navigate>,
  * or route definition should come from here — no hardcoded strings —
@@ -13,6 +12,7 @@ export const ROUTES = {
   documentation: "/documentation",
   profile: "/profile",
   settings: "/settings",
-  repositoryPage:"/repositories/:repositoryId",
-  pullRequestDetails:"/repositories/:repositoryId/pulls/:pullNumber"
+  repositoryPage: "/repositories/:repositoryId",
+  pullRequestDetails: "/repositories/:repositoryId/pulls/:pullNumber",
+  interviewPage: "/repositories/:repositoryId/interview",
 } as const;

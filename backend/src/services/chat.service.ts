@@ -10,23 +10,23 @@ export type StreamChunk =
 
 export class ChatService {
   
-  async createSession(repositoryId: string, type: 'QA' | 'REVIEW' | 'INTERVIEW'): Promise<string> {
+  async createSession(userId: string, repositoryId: string | null, type: 'QA' | 'REVIEW' | 'INTERVIEW'): Promise<string> {
     const { rows } = await pool.query(`
-      INSERT INTO chat_sessions (repository_id, session_type)
-      VALUES ($1, $2)
+      INSERT INTO chat_sessions (user_id, repository_id, session_type)
+      VALUES ($1, $2, $3)
       RETURNING id;
-    `, [repositoryId, type]);
+    `, [userId, repositoryId, type]);
     
     return rows[0].id;
   }
 
-  async getSessionsByRepository(repositoryId: string, type: 'QA' | 'REVIEW' | 'INTERVIEW') {
+  async getSessionsByRepository(userId: string, repositoryId: string, type: 'QA' | 'REVIEW' | 'INTERVIEW') {
     const { rows } = await pool.query(`
       SELECT id, repository_id, session_type, created_at 
       FROM chat_sessions 
-      WHERE repository_id = $1 AND session_type = $2 
+      WHERE user_id = $1 AND repository_id = $2 AND session_type = $3 
       ORDER BY created_at DESC;
-    `, [repositoryId, type]);
+    `, [userId, repositoryId, type]);
     
     return rows;
   }
@@ -42,11 +42,11 @@ export class ChatService {
     return rows;
   }
 
-  async saveMessage(sessionId: string, role: 'user' | 'assistant' | 'system', content: string): Promise<void> {
+  async saveMessage(sessionId: string, role: 'user' | 'assistant' | 'system', content: string, metadata: any = {}): Promise<void> {
     await pool.query(`
-      INSERT INTO chat_messages (session_id, role, content)
-      VALUES ($1, $2, $3);
-    `, [sessionId, role, content]);
+      INSERT INTO chat_messages (session_id, role, content, metadata)
+      VALUES ($1, $2, $3, $4);
+    `, [sessionId, role, content, JSON.stringify(metadata)]);
   }
 
   async getRecentHistory(sessionId: string, limit: number = 10): Promise<LLMMessage[]> {

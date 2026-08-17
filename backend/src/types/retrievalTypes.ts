@@ -35,6 +35,7 @@ export interface RetrievedContext {
     mode: RetrievalMode;
     usedFallback: boolean;
     query: string;
+    retrievalStage?: "start" | "follow_up";
   };
 }
 
@@ -43,4 +44,5 @@ export interface RetrievalOptions {
   maxFiles?: number;
   maxCodeChunks?: number;
   similarityThreshold?: number;
+  includeCode?: boolean;
 }

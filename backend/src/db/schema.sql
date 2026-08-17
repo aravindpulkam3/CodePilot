@@ -124,7 +124,7 @@ CREATE INDEX IF NOT EXISTS review_findings_review_id_idx ON review_findings(revi
 CREATE EXTENSION IF NOT EXISTS vector;
 
 -- 2. Create the unified repository_embeddings table
-CREATE TABLE repository_embeddings (
+CREATE TABLE IF NOT EXISTS repository_embeddings (
     -- Standard Identifiers
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     repository_id UUID NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
@@ -153,8 +153,8 @@ CREATE TABLE repository_embeddings (
 
 -- 3. Create basic indexes for fast metadata lookups
 -- (Used heavily during the Orphan Cleanup phase)
-CREATE INDEX idx_repo_embeddings_repo_file ON repository_embeddings(repository_id, file_path);
-CREATE INDEX idx_repo_embeddings_commit ON repository_embeddings(repository_id, commit_sha);
+CREATE INDEX IF NOT EXISTS idx_repo_embeddings_repo_file ON repository_embeddings(repository_id, file_path);
+CREATE INDEX IF NOT EXISTS idx_repo_embeddings_commit ON repository_embeddings(repository_id, commit_sha);
 
 ALTER TABLE repositories 
 ADD COLUMN last_indexed_sha VARCHAR(255);
@@ -164,24 +164,34 @@ ALTER TABLE repositories
 ADD COLUMN indexing_status VARCHAR(50) DEFAULT 'unindexed';
 
 -- Enum for resumable workspace session types
-CREATE TYPE workspace_session_type AS ENUM (
-    'REVIEW_CHAT',
-    'REPOSITORY_QA',
-    'INTERVIEW'
-);
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'workspace_session_type') THEN
+        CREATE TYPE workspace_session_type AS ENUM (
+            'REVIEW_CHAT',
+            'REPOSITORY_QA',
+            'INTERVIEW'
+        );
+    END IF;
+END$$;
 
 -- Enum for discrete activity log events
-CREATE TYPE log_activity_type AS ENUM (
-    'REPOSITORY_IMPORTED',
-    'REPOSITORY_INDEXED',
-    'PR_REVIEW_STARTED',
-    'PR_REVIEW_COMPLETED',
-    'INTERVIEW_STARTED',
-    'INTERVIEW_COMPLETED',
-    'REPOSITORY_QA_STARTED'
-);
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'log_activity_type') THEN
+        CREATE TYPE log_activity_type AS ENUM (
+            'REPOSITORY_IMPORTED',
+            'REPOSITORY_INDEXED',
+            'PR_REVIEW_STARTED',
+            'PR_REVIEW_COMPLETED',
+            'INTERVIEW_STARTED',
+            'INTERVIEW_COMPLETED',
+            'REPOSITORY_QA_STARTED'
+        );
+    END IF;
+END$$;
 
-CREATE TABLE workspace_sessions (
+CREATE TABLE IF NOT EXISTS workspace_sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
     repository_id UUID NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
@@ -195,10 +205,10 @@ CREATE TABLE workspace_sessions (
 );
 
 -- Index to optimize fetching the most recent workspaces for a specific user's dashboard
-CREATE INDEX idx_workspace_sessions_user_recent 
+CREATE INDEX IF NOT EXISTS idx_workspace_sessions_user_recent 
 ON workspace_sessions(user_id, last_accessed_at DESC);
 
-CREATE TABLE activity_logs (
+CREATE TABLE IF NOT EXISTS activity_logs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
     repository_id UUID REFERENCES repositories(id) ON DELETE SET NULL,
@@ -208,11 +218,11 @@ CREATE TABLE activity_logs (
 );
 
 -- Index to optimize fetching a global activity feed for a specific user
-CREATE INDEX idx_activity_logs_user_date 
+CREATE INDEX IF NOT EXISTS idx_activity_logs_user_date 
 ON activity_logs(user_id, created_at DESC);
 
 -- Index to optimize fetching a scoped activity feed for a specific repository view
-CREATE INDEX idx_activity_logs_repo_date 
+CREATE INDEX IF NOT EXISTS idx_activity_logs_repo_date 
 ON activity_logs(repository_id, created_at DESC);
 
 
@@ -263,4 +273,32 @@ CREATE INDEX IF NOT EXISTS idx_repository_summaries_parent
 -- runSummarizationPipeline at all, compare the current HEAD sha to this
 -- table and skip the whole run — no file parsing, no hashing, no per-file
 -- DB reads — if nothing has changed since last time.
+
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    repository_id UUID REFERENCES repositories(id) ON DELETE CASCADE,
+    session_type TEXT NOT NULL,
+    title TEXT,
+    status TEXT,
+    state JSONB DEFAULT '{}'::jsonb NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_user_id ON chat_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_repository_id ON chat_sessions(repository_id);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id UUID NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    sequence_number INTEGER,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session_id ON chat_messages(session_id);
+
 

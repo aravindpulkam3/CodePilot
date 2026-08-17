@@ -1,7 +1,7 @@
 // import React from "react";
 import { useParams } from "react-router-dom";
 import { usePullRequestDetail } from "@/hooks/useRepository";
-import { useTriggerAiReview,usePullRequestReviews, ReviewHistoryItem } from "@/hooks/useReview";
+import { useTriggerAiReview, usePullRequestReviews } from "@/hooks/useReview";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card, CardBody,CardHeader } from "@/components/ui/Card";
 import { AlertTriangle, RefreshCw, CheckCircle2 } from "lucide-react";

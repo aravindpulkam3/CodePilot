@@ -80,6 +80,8 @@ export class EmbeddingService implements EmbeddingClient {
         throw new Error("Failed to generate embedding for query.");
       }
 
+      console.log(vectorValues);
+
       return vectorValues;
     } catch (error) {
       console.error("Error embedding query:", error);

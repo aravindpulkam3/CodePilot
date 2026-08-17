@@ -30,7 +30,7 @@ import {
 export default function Dashboard() {
   // Existing User & Repo Hooks
   const { data: user } = useCurrentUser();
-  const { data: githubUser, isLoading: isUserLoading } = useGitHubUser();
+  const { data: githubUser } = useGitHubUser();
   const {
     data: repositories = [],
     isLoading: isReposLoading,

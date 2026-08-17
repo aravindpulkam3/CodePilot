@@ -40,6 +40,7 @@ export class RepositoryRetrievalService {
     limit: number = 5,
     threshold: number = 0.6,
   ): Promise<SummarySearchResult[]> {
+    console.log("came to search summaries")
     const client = await pool.connect();
     try {
       let query = `
@@ -64,7 +65,6 @@ export class RepositoryRetrievalService {
       params.push(limit);
 
       const { rows } = await client.query(query, params);
-
       return rows.map((r) => ({
         nodeType: r.node_type,
         nodeKey: r.node_key,
@@ -260,6 +260,7 @@ export class RepositoryRetrievalService {
     await this.ensureSynced(clerkUserId, repositoryId);
 
     const queryVectorStr = await this.getQueryVectorStr(query);
+
     const context: RetrievedContext = {
       repository: null,
       architecture: null,
@@ -272,6 +273,8 @@ export class RepositoryRetrievalService {
         query,
       },
     };
+
+
 
     // 1. Semantic search over components and files
     const summaryResults = await this.searchSummaries(
@@ -315,6 +318,8 @@ export class RepositoryRetrievalService {
     context.components = context.components.slice(0, options.maxComponents);
     context.files = context.files.slice(0, options.maxFiles);
 
+    console.log(relevantFilePaths);
+
     // 2. Fallback check
     if (relevantFilePaths.size === 0) {
       context.metadata.usedFallback = true;
@@ -334,23 +339,94 @@ export class RepositoryRetrievalService {
       );
     }
 
+    console.log(context.codeChunks.length);
+
     return context;
   }
 
-  /**
-   * Interview Retrieval Mode:
-   * Prefer architecture/component summaries.
-   * Only fetch code chunks if explicitly targeting implementation details.
-   */
-  public async retrieveInterviewContext(
+  public async retrieveInterviewStartContext(
+    clerkUserId: string,
+    repositoryId: string,
+    opts?: RetrievalOptions,
+  ): Promise<RetrievedContext> {
+    const options = { ...DEFAULT_OPTIONS, ...opts };
+    await this.ensureSynced(clerkUserId, repositoryId);
+
+    const context: RetrievedContext = {
+      repository: null,
+      architecture: null,
+      components: [],
+      files: [],
+      codeChunks: [],
+      metadata: {
+        mode: "interview",
+        usedFallback: false,
+        query: "",
+        retrievalStage: "start"
+      },
+    };
+
+    const client = await pool.connect();
+    try {
+      // 1. Fetch Repository Summary
+      const { rows: repoRows } = await client.query(
+        `SELECT summary_json FROM repository_summaries WHERE repository_id = $1 AND node_type = 'repository' AND node_key = 'repository'`,
+        [repositoryId]
+      );
+      if (repoRows.length > 0) {
+        context.repository = repoRows[0].summary_json as RepositorySummary;
+      }
+
+      // 2. Fetch Architecture Summary
+      const { rows: archRows } = await client.query(
+        `SELECT summary_json FROM repository_summaries WHERE repository_id = $1 AND node_type = 'architecture' AND node_key = 'architecture'`,
+        [repositoryId]
+      );
+      if (archRows.length > 0) {
+        context.architecture = archRows[0].summary_json as ArchitectureSummary;
+      }
+
+      // 3. Fetch Components
+      let componentKeys: string[] = [];
+      if (context.architecture && context.architecture.majorComponents) {
+        componentKeys = context.architecture.majorComponents;
+      }
+
+      const limit = options.maxComponents || 3;
+      if (componentKeys.length > 0) {
+        const { rows: compRows } = await client.query(
+          `SELECT summary_json FROM repository_summaries WHERE repository_id = $1 AND node_type = 'component' AND node_key = ANY($2) LIMIT $3`,
+          [repositoryId, componentKeys, limit]
+        );
+        context.components = compRows.map(r => r.summary_json as ComponentSummary);
+      }
+
+      // Fallback if no components were found via architecture
+      if (context.components.length === 0) {
+        const { rows: compRows } = await client.query(
+          `SELECT summary_json FROM repository_summaries WHERE repository_id = $1 AND node_type = 'component' LIMIT $2`,
+          [repositoryId, limit]
+        );
+        context.components = compRows.map(r => r.summary_json as ComponentSummary);
+        context.metadata.usedFallback = true;
+      }
+
+    } finally {
+      client.release();
+    }
+
+    return context;
+  }
+
+  public async retrieveInterviewFollowUpContext(
     clerkUserId: string,
     repositoryId: string,
     query: string,
     opts?: RetrievalOptions,
   ): Promise<RetrievedContext> {
     const options = { ...DEFAULT_OPTIONS, ...opts };
-    await this.ensureSynced(clerkUserId, repositoryId);
-
+    // Skip ensureSynced for follow-ups to avoid expensive index triggers during interview
+    
     const queryVectorStr = await this.getQueryVectorStr(query);
     const context: RetrievedContext = {
       repository: null,
@@ -362,23 +438,11 @@ export class RepositoryRetrievalService {
         mode: "interview",
         usedFallback: false,
         query,
+        retrievalStage: "follow_up"
       },
     };
 
-    // Always fetch Repo and Architecture summaries for interview mode initially
-    const topLevel = await this.searchSummaries(
-      repositoryId,
-      queryVectorStr,
-      undefined,
-      2,
-      0.0,
-    );
-    const repoRes = topLevel.find((r) => r.nodeType === "repository");
-    const archRes = topLevel.find((r) => r.nodeType === "architecture");
-    if (repoRes) context.repository = repoRes.summary as RepositorySummary;
-    if (archRes) context.architecture = archRes.summary as ArchitectureSummary;
-
-    // Get relevant components
+    // 1. Semantic search for Components
     const components = await this.searchSummaries(
       repositoryId,
       queryVectorStr,
@@ -388,27 +452,47 @@ export class RepositoryRetrievalService {
     );
     context.components = components.map((c) => c.summary as ComponentSummary);
 
-    // If we have components, only fetch code chunks if they ask for implementation details
-    const interviewOpts = { ...options, maxCodeChunks: 3 };
-    const relevantFiles = await this.searchSummaries(
-      repositoryId,
-      queryVectorStr,
-      "file",
-      options.maxFiles,
-      options.similarityThreshold,
-    );
-    context.files = relevantFiles.map((f) => f.summary as FileSummary);
+    const componentKeys = components.map(c => c.nodeKey);
 
-    const filePaths = context.files.map(
-      (f) => (f as any).filePath || (f as any).path,
-    );
+    if (componentKeys.length > 0) {
+      // 2. Semantic search for Files restricted by component parents
+      const client = await pool.connect();
+      try {
+        const fileLimit = options.maxFiles || 5;
+        const threshold = options.similarityThreshold || 0.6;
+        const { rows } = await client.query(`
+          SELECT 
+            node_key, 
+            summary_json,
+            1 - (embedding <=> $1::vector) AS similarity
+          FROM repository_summaries
+          WHERE repository_id = $2 
+            AND node_type = 'file' 
+            AND parent_key = ANY($3)
+            AND (1 - (embedding <=> $1::vector)) >= $4
+          ORDER BY embedding <=> $1::vector 
+          LIMIT $5
+        `, [queryVectorStr, repositoryId, componentKeys, threshold, fileLimit]);
+        
+        context.files = rows.map((r) => r.summary_json as FileSummary);
+      } finally {
+        client.release();
+      }
+    }
 
-    context.codeChunks = await this.searchCodeChunks(
-      repositoryId,
-      queryVectorStr,
-      interviewOpts,
-      filePaths.length > 0 ? filePaths : undefined,
-    );
+    // 3. Optional Code Chunk search
+    if (options.includeCode) {
+      const filePaths = context.files.map(
+        (f) => f.path || (f as any).filePath
+      ).filter(Boolean);
+
+      context.codeChunks = await this.searchCodeChunks(
+        repositoryId,
+        queryVectorStr,
+        options,
+        filePaths.length > 0 ? filePaths : undefined,
+      );
+    }
 
     return context;
   }

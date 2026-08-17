@@ -11,7 +11,7 @@ export const handleRepositoryChat = async (req: Request, res: Response) => {
 
   let currentSessionId = sessionId;
   if (!currentSessionId) {
-    currentSessionId = await chatService.createSession(repositoryId, type);
+    currentSessionId = await chatService.createSession(userId, repositoryId, type);
   }
 
   await chatService.saveMessage(currentSessionId, 'user', message);
@@ -62,7 +62,8 @@ export const getSessions = async (req: Request, res: Response) => {
     const { repositoryId } = req.params;
     const type = (req.query.type as 'QA' | 'REVIEW' | 'INTERVIEW') || 'QA';
 
-    const sessions = await chatService.getSessionsByRepository(repositoryId, type);
+    const userId = req.dbUser!.id;
+    const sessions = await chatService.getSessionsByRepository(userId, repositoryId, type);
     res.json(sessions);
   } catch (error) {
     console.error("Error fetching sessions:", error);
