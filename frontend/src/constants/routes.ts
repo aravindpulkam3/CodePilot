@@ -15,4 +15,5 @@ export const ROUTES = {
   repositoryPage: "/repositories/:repositoryId",
   pullRequestDetails: "/repositories/:repositoryId/pulls/:pullNumber",
   interviewPage: "/repositories/:repositoryId/interview",
+  interviewSessionPage: "/repositories/:repositoryId/interview/:sessionId",
 } as const;

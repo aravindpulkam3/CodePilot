@@ -19,7 +19,6 @@ app.use(cors({ origin: env.corsOrigin, credentials: true }));
 // Webhooks need the raw body for signature verification, so they're
 // mounted BEFORE the json() body parser below.
 app.use("/api/webhooks", webhookRoutes);
-
 app.use(express.json());
 app.use(attachClerkAuth);
 

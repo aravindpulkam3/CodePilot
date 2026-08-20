@@ -48,7 +48,8 @@ Ask the very first interview question to get started. For a repository interview
       { role: "system", content: systemPrompt },
       {
         role: "user",
-        content: "Please generate the first interview question based on the provided context.",
+        content:
+          "Please generate the first interview question based on the provided context.",
       },
     ];
   }
@@ -70,11 +71,13 @@ Ask the very first interview question to get started. For a repository interview
       }
       if (context.codeChunks && context.codeChunks.length > 0) {
         // Only include code chunk summaries or truncated chunks to avoid exceeding limits
-        const truncated = this.truncateContext(context.codeChunks, 5).map(c => ({
-          file_path: c.file_path,
-          summary: c.summary,
-          code: c.content?.substring(0, 1500) // Truncate very long code blocks
-        }));
+        const truncated = this.truncateContext(context.codeChunks, 5).map(
+          (c) => ({
+            file_path: c.file_path,
+            summary: c.summary,
+            code: c.content?.substring(0, 1500), // Truncate very long code blocks
+          }),
+        );
         contextStr += `Code Snippets:\n${JSON.stringify(truncated, null, 2)}\n\n`;
       }
     }
@@ -91,12 +94,42 @@ ${contextStr ? `Repository Context for reference (Do NOT leak the code directly,
 
 Evaluate the candidate's latest answer, decide whether to drill deeper, clarify, or move to a new topic. Adjust difficulty if adaptive. 
 You must score their response, identify strengths/weaknesses, and generate the next question.
+CRITICAL: As a preparation-focused interviewer, if the candidate's answer is incorrect, incomplete, or missing key concepts, you MUST provide corrective teaching feedback in the 'correction' field of your response. Set 'needed' to true, provide a clear 'explanation', and list 'keyPoints' they should remember.
 Respond ONLY using the provided structured JSON schema.`;
 
-    return [
-      { role: "system", content: systemPrompt },
-      ...history,
-    ];
+    return [{ role: "system", content: systemPrompt }, ...history];
+  }
+
+  public buildFinalReviewPrompt(
+    state: InterviewState,
+    history: any[]
+  ): LLMMessage[] {
+    const formattedHistory = history.map(msg => {
+      let content = msg.role === 'assistant' ? msg.content : `Candidate Answer: ${msg.content}`;
+      
+      if (msg.role === 'assistant' && msg.metadata) {
+        try {
+          const meta = typeof msg.metadata === 'string' ? JSON.parse(msg.metadata) : msg.metadata;
+          if (meta.evaluation) {
+            content += `\n[Internal Evaluation: Score ${meta.evaluation.score}/10, Quality: ${meta.evaluation.answerQuality}, Strengths: ${meta.evaluation.strengths?.join(', ')}, Weaknesses: ${meta.evaluation.weaknesses?.join(', ')}]`;
+          }
+        } catch (e) {
+          // ignore parsing errors
+        }
+      }
+      return { role: msg.role, content };
+    });
+
+    const systemPrompt = `You are an expert technical interviewer. The interview has just concluded.
+Your task is to review the entire interview transcript and the internal per-turn evaluations, and generate a comprehensive final assessment of the candidate.
+
+Topics Covered: ${state.topicsCovered.join(", ")}
+Final Difficulty: ${state.difficulty}
+
+Provide a structured final review with an overall assessment, key strengths, primary weaknesses (areas for improvement), and a final score (0-10).
+Respond ONLY using the provided structured JSON schema.`;
+
+    return [{ role: "system", content: systemPrompt }, ...formattedHistory];
   }
 }
 

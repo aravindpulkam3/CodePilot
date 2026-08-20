@@ -276,29 +276,43 @@ CREATE INDEX IF NOT EXISTS idx_repository_summaries_parent
 
 CREATE TABLE IF NOT EXISTS chat_sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    repository_id UUID NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
-    repository_id UUID REFERENCES repositories(id) ON DELETE CASCADE,
-    session_type TEXT NOT NULL,
-    title TEXT,
-    status TEXT,
-    state JSONB DEFAULT '{}'::jsonb NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    
+    type VARCHAR(50) NOT NULL DEFAULT 'QA',
+    
+    status VARCHAR(50) NOT NULL DEFAULT 'active',
+    
+    state JSONB DEFAULT '{}'::jsonb,
+    
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
-
-CREATE INDEX IF NOT EXISTS idx_chat_sessions_user_id ON chat_sessions(user_id);
-CREATE INDEX IF NOT EXISTS idx_chat_sessions_repository_id ON chat_sessions(repository_id);
-
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_repo_user ON chat_sessions(repository_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_type ON chat_sessions(type);
 CREATE TABLE IF NOT EXISTS chat_messages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     session_id UUID NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-    role TEXT NOT NULL,
+    
+    role VARCHAR(50) NOT NULL,
+    
     content TEXT NOT NULL,
-    sequence_number INTEGER,
+    
     metadata JSONB DEFAULT '{}'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
-
-CREATE INDEX IF NOT EXISTS idx_chat_messages_session_id ON chat_messages(session_id);
-
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, created_at ASC);
+-- ---------------------------------------------------------------------------------
+-- MIGRATION COMMANDS (If your tables already exist but are missing columns)
+-- Run these ONLY if you need to update existing tables instead of dropping them:
+-- ---------------------------------------------------------------------------------
+/*
+ALTER TABLE chat_sessions 
+ADD COLUMN IF NOT EXISTS type VARCHAR(50) NOT NULL DEFAULT 'QA',
+ADD COLUMN IF NOT EXISTS status VARCHAR(50) NOT NULL DEFAULT 'active',
+ADD COLUMN IF NOT EXISTS state JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE chat_messages
+ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
+*/
 

@@ -1,10 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { getChatHistory, getChatSessions } from "@/services/api/repositoryApi";
 
-export function useChatSessions(repositoryId: string) {
+export function useChatSessions(repositoryId: string, type: string = "QA") {
   return useQuery({
-    queryKey: ["chatSessions", repositoryId],
-    queryFn: () => getChatSessions(repositoryId),
+    queryKey: ["chatSessions", repositoryId, type],
+    queryFn: () => getChatSessions(repositoryId, type),
     enabled: !!repositoryId,
   });
 }

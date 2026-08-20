@@ -40,7 +40,7 @@ export class RepositoryRetrievalService {
     limit: number = 5,
     threshold: number = 0.6,
   ): Promise<SummarySearchResult[]> {
-    console.log("came to search summaries")
+    console.log("came to search summaries");
     const client = await pool.connect();
     try {
       let query = `
@@ -274,8 +274,6 @@ export class RepositoryRetrievalService {
       },
     };
 
-
-
     // 1. Semantic search over components and files
     const summaryResults = await this.searchSummaries(
       repositoryId,
@@ -350,6 +348,8 @@ export class RepositoryRetrievalService {
     opts?: RetrievalOptions,
   ): Promise<RetrievedContext> {
     const options = { ...DEFAULT_OPTIONS, ...opts };
+
+    console.log("came to retrieve the starting context for the interview");
     await this.ensureSynced(clerkUserId, repositoryId);
 
     const context: RetrievedContext = {
@@ -362,7 +362,7 @@ export class RepositoryRetrievalService {
         mode: "interview",
         usedFallback: false,
         query: "",
-        retrievalStage: "start"
+        retrievalStage: "start",
       },
     };
 
@@ -371,7 +371,7 @@ export class RepositoryRetrievalService {
       // 1. Fetch Repository Summary
       const { rows: repoRows } = await client.query(
         `SELECT summary_json FROM repository_summaries WHERE repository_id = $1 AND node_type = 'repository' AND node_key = 'repository'`,
-        [repositoryId]
+        [repositoryId],
       );
       if (repoRows.length > 0) {
         context.repository = repoRows[0].summary_json as RepositorySummary;
@@ -380,7 +380,7 @@ export class RepositoryRetrievalService {
       // 2. Fetch Architecture Summary
       const { rows: archRows } = await client.query(
         `SELECT summary_json FROM repository_summaries WHERE repository_id = $1 AND node_type = 'architecture' AND node_key = 'architecture'`,
-        [repositoryId]
+        [repositoryId],
       );
       if (archRows.length > 0) {
         context.architecture = archRows[0].summary_json as ArchitectureSummary;
@@ -396,21 +396,24 @@ export class RepositoryRetrievalService {
       if (componentKeys.length > 0) {
         const { rows: compRows } = await client.query(
           `SELECT summary_json FROM repository_summaries WHERE repository_id = $1 AND node_type = 'component' AND node_key = ANY($2) LIMIT $3`,
-          [repositoryId, componentKeys, limit]
+          [repositoryId, componentKeys, limit],
         );
-        context.components = compRows.map(r => r.summary_json as ComponentSummary);
+        context.components = compRows.map(
+          (r) => r.summary_json as ComponentSummary,
+        );
       }
 
       // Fallback if no components were found via architecture
       if (context.components.length === 0) {
         const { rows: compRows } = await client.query(
           `SELECT summary_json FROM repository_summaries WHERE repository_id = $1 AND node_type = 'component' LIMIT $2`,
-          [repositoryId, limit]
+          [repositoryId, limit],
         );
-        context.components = compRows.map(r => r.summary_json as ComponentSummary);
+        context.components = compRows.map(
+          (r) => r.summary_json as ComponentSummary,
+        );
         context.metadata.usedFallback = true;
       }
-
     } finally {
       client.release();
     }
@@ -426,7 +429,7 @@ export class RepositoryRetrievalService {
   ): Promise<RetrievedContext> {
     const options = { ...DEFAULT_OPTIONS, ...opts };
     // Skip ensureSynced for follow-ups to avoid expensive index triggers during interview
-    
+
     const queryVectorStr = await this.getQueryVectorStr(query);
     const context: RetrievedContext = {
       repository: null,
@@ -438,7 +441,7 @@ export class RepositoryRetrievalService {
         mode: "interview",
         usedFallback: false,
         query,
-        retrievalStage: "follow_up"
+        retrievalStage: "follow_up",
       },
     };
 
@@ -452,7 +455,7 @@ export class RepositoryRetrievalService {
     );
     context.components = components.map((c) => c.summary as ComponentSummary);
 
-    const componentKeys = components.map(c => c.nodeKey);
+    const componentKeys = components.map((c) => c.nodeKey);
 
     if (componentKeys.length > 0) {
       // 2. Semantic search for Files restricted by component parents
@@ -460,7 +463,8 @@ export class RepositoryRetrievalService {
       try {
         const fileLimit = options.maxFiles || 5;
         const threshold = options.similarityThreshold || 0.6;
-        const { rows } = await client.query(`
+        const { rows } = await client.query(
+          `
           SELECT 
             node_key, 
             summary_json,
@@ -472,8 +476,10 @@ export class RepositoryRetrievalService {
             AND (1 - (embedding <=> $1::vector)) >= $4
           ORDER BY embedding <=> $1::vector 
           LIMIT $5
-        `, [queryVectorStr, repositoryId, componentKeys, threshold, fileLimit]);
-        
+        `,
+          [queryVectorStr, repositoryId, componentKeys, threshold, fileLimit],
+        );
+
         context.files = rows.map((r) => r.summary_json as FileSummary);
       } finally {
         client.release();
@@ -482,9 +488,9 @@ export class RepositoryRetrievalService {
 
     // 3. Optional Code Chunk search
     if (options.includeCode) {
-      const filePaths = context.files.map(
-        (f) => f.path || (f as any).filePath
-      ).filter(Boolean);
+      const filePaths = context.files
+        .map((f) => f.path || (f as any).filePath)
+        .filter(Boolean);
 
       context.codeChunks = await this.searchCodeChunks(
         repositoryId,

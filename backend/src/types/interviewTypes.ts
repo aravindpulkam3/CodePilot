@@ -18,6 +18,14 @@ export interface InterviewState {
     questionCount: number;
     depth: 'repository' | 'architecture' | 'component' | 'file' | 'implementation';
     lastQuestionType: 'initial' | 'follow_up' | 'depth' | 'topic_transition';
+    assessment?: InterviewFinalAssessment;
+}
+
+export interface InterviewFinalAssessment {
+    overallAssessment: string;
+    strengths: string[];
+    weaknesses: string[];
+    score: number;
 }
 
 export interface InterviewTurnEvaluation {
@@ -33,4 +41,9 @@ export interface InterviewTurnEvaluation {
     nextDifficulty: 'easy' | 'medium' | 'hard';
     nextQuestionType: 'follow_up' | 'depth' | 'topic_transition';
     nextQuestion: string;
+    correction: {
+        needed: boolean;
+        explanation: string;
+        keyPoints: string[];
+    };
 }

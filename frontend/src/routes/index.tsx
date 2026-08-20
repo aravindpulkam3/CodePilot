@@ -45,6 +45,7 @@ export function AppRoutes() {
             <Route path={ROUTES.repositories} element={<Repositories />} />
             <Route path={ROUTES.repositoryPage} element={<RepositoryDetailsPage />} />
             <Route path={ROUTES.interviewPage} element={<InterviewPage />} />
+            <Route path={ROUTES.interviewSessionPage} element={<InterviewPage />} />
             <Route path={ROUTES.pullRequestDetails} element={<PullRequestDetailsPage/>}/>
             <Route path={ROUTES.documentation} element={<Documentation />} />
             <Route path={ROUTES.profile} element={<Profile />} />

@@ -6,6 +6,7 @@ import {
   InterviewConfig,
   InterviewState,
   InterviewTurnEvaluation,
+  InterviewFinalAssessment,
 } from "../types/interviewTypes.js";
 import { interviewPromptBuilder } from "../promptBuilders/interviewPromptBuilder.js";
 
@@ -36,6 +37,15 @@ const interviewEvaluationSchema: Schema = {
       enum: ["follow_up", "depth", "topic_transition"],
     },
     nextQuestion: { type: Type.STRING },
+    correction: {
+      type: Type.OBJECT,
+      properties: {
+        needed: { type: Type.BOOLEAN },
+        explanation: { type: Type.STRING },
+        keyPoints: { type: Type.ARRAY, items: { type: Type.STRING } },
+      },
+      required: ["needed", "explanation", "keyPoints"],
+    },
   },
   required: [
     "score",
@@ -50,7 +60,19 @@ const interviewEvaluationSchema: Schema = {
     "nextDifficulty",
     "nextQuestionType",
     "nextQuestion",
+    "correction",
   ],
+};
+
+export const interviewFinalAssessmentSchema: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    overallAssessment: { type: Type.STRING },
+    strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
+    weaknesses: { type: Type.ARRAY, items: { type: Type.STRING } },
+    score: { type: Type.NUMBER, description: "Score from 0-10" },
+  },
+  required: ["overallAssessment", "strengths", "weaknesses", "score"],
 };
 
 export class InterviewService {
@@ -62,7 +84,7 @@ export class InterviewService {
     // 1. Create the session
     const { rows } = await pool.query(
       `
-      INSERT INTO chat_sessions (user_id, repository_id, session_type, state)
+      INSERT INTO chat_sessions (user_id, repository_id, type, state)
       VALUES ($1, $2, $3, $4)
       RETURNING id;
     `,
@@ -101,6 +123,8 @@ export class InterviewService {
       config,
       contextData,
     );
+
+    console.log("length of the system prompt",messages[0].content.length);
 
     const decision =
       await llmService.generateStructured<InterviewTurnEvaluation>(
@@ -145,7 +169,7 @@ export class InterviewService {
     userId: string,
     answer: string,
     clerkUserId?: string,
-  ): Promise<{ nextQuestion?: string; assessment?: any }> {
+  ): Promise<{ nextQuestion?: string; assessment?: any; correction?: any }> {
     // 1. Get session state and config
     const sessionRes = await pool.query(
       `SELECT repository_id, state FROM chat_sessions WHERE id = $1 AND user_id = $2`,
@@ -167,9 +191,11 @@ export class InterviewService {
       [sessionId, "user", answer, JSON.stringify({ type: "answer" })],
     );
 
-    // Check completion
+    // We no longer automatically end based on questionCount since the user wants manual control.
+    // However, if we do have a hard upper limit, we can keep it (e.g. 50).
+    // Let's remove the automatic completion condition for now, relying on the user to end it.
+    /*
     if (state.questionCount >= 10) {
-      // Default limit or from config
       await pool.query(
         `UPDATE chat_sessions SET status = 'completed' WHERE id = $1`,
         [sessionId],
@@ -182,6 +208,7 @@ export class InterviewService {
         },
       };
     }
+    */
 
     // 3. Get chat history
     const historyRes = await pool.query(
@@ -274,7 +301,53 @@ export class InterviewService {
       client.release();
     }
 
-    return { nextQuestion: decision.nextQuestion };
+    return { nextQuestion: decision.nextQuestion, correction: decision.correction };
+  }
+
+  public async endInterview(sessionId: string, userId: string): Promise<void> {
+    await pool.query(
+      `UPDATE chat_sessions SET status = 'completed' WHERE id = $1 AND user_id = $2`,
+      [sessionId, userId]
+    );
+  }
+
+  public async generateInsights(sessionId: string, userId: string): Promise<InterviewFinalAssessment> {
+    // 1. Get session state
+    const sessionRes = await pool.query(
+      `SELECT state FROM chat_sessions WHERE id = $1 AND user_id = $2`,
+      [sessionId, userId],
+    );
+    if (sessionRes.rows.length === 0) throw new Error("Session not found");
+    const state = sessionRes.rows[0].state as InterviewState;
+
+    // 2. If already generated, just return it
+    if (state.assessment) {
+      return state.assessment;
+    }
+
+    // 3. Get full chat history with metadata
+    const historyRes = await pool.query(
+      `SELECT role, content, metadata FROM chat_messages WHERE session_id = $1 ORDER BY created_at ASC`,
+      [sessionId],
+    );
+
+    // 4. Construct prompt for final review
+    const messages = interviewPromptBuilder.buildFinalReviewPrompt(state, historyRes.rows);
+
+    // 5. Generate final review
+    const assessment = await llmService.generateStructured<InterviewFinalAssessment>(
+      messages,
+      interviewFinalAssessmentSchema,
+    );
+
+    // 6. Save back to state
+    const newState = { ...state, assessment };
+    await pool.query(
+      `UPDATE chat_sessions SET state = $2 WHERE id = $1`,
+      [sessionId, JSON.stringify(newState)]
+    );
+
+    return assessment;
   }
 }
 

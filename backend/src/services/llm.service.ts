@@ -156,7 +156,7 @@ export class OllamaLLMService implements LLMService {
     console.log("came to generate Ollama structured response");
 
     const standardSchema = this.convertToStandardJsonSchema(schema);
-
+    console.log("going to generate response");
     const response = await ollama.chat({
       model: this.modelName,
       messages: messages,

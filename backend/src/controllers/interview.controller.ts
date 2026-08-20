@@ -48,3 +48,27 @@ export const answerQuestion = async (req: Request, res: Response) => {
     res.status(500).json({ error: "Failed to process answer" });
   }
 };
+
+export const endInterview = async (req: Request, res: Response) => {
+  try {
+    const { sessionId } = req.params;
+    const userId = req.dbUser!.id;
+    await interviewService.endInterview(sessionId, userId);
+    res.json({ message: "Interview ended" });
+  } catch (error) {
+    console.error("End Interview Error:", error);
+    res.status(500).json({ error: "Failed to end interview" });
+  }
+};
+
+export const generateInsights = async (req: Request, res: Response) => {
+  try {
+    const { sessionId } = req.params;
+    const userId = req.dbUser!.id;
+    const assessment = await interviewService.generateInsights(sessionId, userId);
+    res.json(assessment);
+  } catch (error) {
+    console.error("Generate Insights Error:", error);
+    res.status(500).json({ error: "Failed to generate insights" });
+  }
+};

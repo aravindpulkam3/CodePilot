@@ -1,7 +1,7 @@
 // src/services/chatService.ts
 import { retrievalService } from './retreival.service.js';
 import { CodeChunkSearchResult } from '../types/retrievalTypes.js';
-import { LLMMessage, llmService } from './llm.service.js';
+import { LLMMessage, llmService, ollamaService } from './llm.service.js';
 import { pool } from '../config/db.js';
 
 export type StreamChunk = 
@@ -12,7 +12,7 @@ export class ChatService {
   
   async createSession(userId: string, repositoryId: string | null, type: 'QA' | 'REVIEW' | 'INTERVIEW'): Promise<string> {
     const { rows } = await pool.query(`
-      INSERT INTO chat_sessions (user_id, repository_id, session_type)
+      INSERT INTO chat_sessions (user_id, repository_id, type)
       VALUES ($1, $2, $3)
       RETURNING id;
     `, [userId, repositoryId, type]);
@@ -22,9 +22,9 @@ export class ChatService {
 
   async getSessionsByRepository(userId: string, repositoryId: string, type: 'QA' | 'REVIEW' | 'INTERVIEW') {
     const { rows } = await pool.query(`
-      SELECT id, repository_id, session_type, created_at 
+      SELECT id, repository_id, type, status, state, created_at 
       FROM chat_sessions 
-      WHERE user_id = $1 AND repository_id = $2 AND session_type = $3 
+      WHERE user_id = $1 AND repository_id = $2 AND type = $3 
       ORDER BY created_at DESC;
     `, [userId, repositoryId, type]);
     
@@ -77,7 +77,7 @@ export class ChatService {
     const retrievedContext = await retrievalService.retrieveQAContext(clerkUserId, repositoryId, message);
     const sources = retrievedContext.codeChunks;
 
-    console.log(sources);
+    // console.log(sources);
 
     // 2. Format the sources into a readable string for the prompt [cite: 1484]
     const contextString = sources.map((s, index) => 

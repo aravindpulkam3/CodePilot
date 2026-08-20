@@ -11,31 +11,18 @@ import {
   Lock,
   Globe,
   GitBranch,
-  GitPullRequest,
   ArrowLeft,
+  GitPullRequest,
   ExternalLink,
-  MessageSquare,
-  Plus,
-  Send,
-  Code,
   Terminal,
-  User,
-  Bot,
-  Loader2,
 } from "lucide-react";
 import { cn } from "@/utils/cn";
 import { useQueryClient } from "@tanstack/react-query";
 import { sendChatMessageStream } from "@/services/api/repositoryApi";
 import { useAuth } from "@clerk/clerk-react";
 import { Button } from "@/components/ui/Button";
+import { ChatInterface } from "@/components/chat/ChatInterface";
 
-// The chat-history endpoint has been seen to send the sender under different
-// keys/casing depending on which layer produced the row (e.g. "user" vs
-// "human", or "role" vs "type"). Normalizing here means the UI keeps working
-// even if that shape drifts, instead of silently dropping user turns.
-function isUserMessage(msg: any): boolean {
-  return msg?.role?.trim().toLowerCase() === "user";
-}
 
 export default function RepositoryDetailsPage() {
   const { repositoryId } = useParams<{ repositoryId: string }>();
@@ -49,7 +36,9 @@ export default function RepositoryDetailsPage() {
   const { data: pulls = [], isLoading: isPullsLoading } =
     useRepositoryPullRequests(repositoryId!);
 
-  const [activeTab, setActiveTab] = useState<"prs" | "chat" | "interview">("prs");
+  const [activeTab, setActiveTab] = useState<"prs" | "chat" | "interview">(
+    "prs",
+  );
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
@@ -59,11 +48,13 @@ export default function RepositoryDetailsPage() {
   const [streamedSources, setStreamedSources] = useState<any[]>([]);
   const [optimisticUserMessage, setOptimisticUserMessage] = useState("");
 
-  const { data: sessions = [] } = useChatSessions(repositoryId!);
+  const { data: chatSessions = [] } = useChatSessions(repositoryId!, 'QA');
+  const { data: interviewSessions = [] } = useChatSessions(repositoryId!, 'INTERVIEW');
   const { data: history = [], isLoading: isHistoryLoading } =
     useChatHistory(activeSessionId);
 
   // console.log(history);
+  console.log(interviewSessions);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -72,11 +63,10 @@ export default function RepositoryDetailsPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [history, streamedText, optimisticUserMessage]);
 
-  const handleSendMessage = async () => {
-    if (!repositoryId || !input.trim() || isStreaming) return;
+  const handleSendMessage = async (msgToSend: string) => {
+    if (!repositoryId || !msgToSend.trim() || isStreaming) return;
 
-    const userMessage = input;
-    setInput("");
+    const userMessage = msgToSend;
     setOptimisticUserMessage(userMessage);
     setStreamedText("");
     setStreamedSources([]);
@@ -302,183 +292,77 @@ export default function RepositoryDetailsPage() {
           )}
         </div>
       ) : activeTab === "chat" ? (
-        /* Codebase Q&A Interface */
-        <Card className="flex h-[600px] overflow-hidden">
-          {/* Chat Sidebar */}
-          <div className="w-64 border-r border-border-light dark:border-border-dark bg-slate-50 dark:bg-slate-900/50 flex flex-col">
-            <div className="p-4 border-b border-border-light dark:border-border-dark">
-              <button
-                onClick={() => setActiveSessionId(null)}
-                className="flex w-full items-center justify-center gap-2 rounded-md bg-signal-500 px-3 py-2 text-sm font-medium text-white hover:bg-signal-600 transition-colors"
-              >
-                <Plus className="h-4 w-4" /> New Chat
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-2 space-y-1">
-              {sessions.length === 0 ? (
-                <p className="px-2 py-3 text-center text-xs text-muted-light dark:text-muted-dark">
-                  No conversations yet.
-                </p>
-              ) : (
-                sessions.map((session: any) => (
-                  <button
-                    key={session.id}
-                    onClick={() => setActiveSessionId(session.id)}
-                    className={cn(
-                      "flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-left transition-colors truncate",
-                      activeSessionId === session.id
-                        ? "bg-slate-200 dark:bg-slate-800 text-ink-light dark:text-ink-dark"
-                        : "text-muted-light dark:text-muted-dark hover:bg-slate-100 dark:hover:bg-slate-800/50",
-                    )}
-                  >
-                    <MessageSquare className="h-4 w-4 shrink-0" />
-                    <span className="truncate">
-                      Chat {new Date(session.created_at).toLocaleDateString()}
-                    </span>
-                  </button>
-                ))
-              )}
-            </div>
-          </div>
-
-          {/* Chat Main Area */}
-          <div className="flex-1 flex flex-col">
-            <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-white dark:bg-slate-950">
-              {isHistoryLoading ? (
-                <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-light dark:text-muted-dark">
-                  <Loader2 className="h-4 w-4 animate-spin" /> Loading
-                  conversation...
-                </div>
-              ) : history.length === 0 &&
-                !optimisticUserMessage &&
-                !isStreaming ? (
-                <div className="flex h-full items-center justify-center text-sm text-muted-light dark:text-muted-dark">
-                  Ask a question about the codebase to get started.
-                </div>
-              ) : (
-                history.map((msg: any, idx: number) => {
-                  const fromUser = isUserMessage(msg);
-                  console.log(msg.role, fromUser);
-                  return (
-                    <div
-                      key={msg.id ?? idx}
-                      className={cn(
-                        "flex items-end gap-2",
-                        fromUser ? "justify-end" : "justify-start",
-                      )}
-                    >
-                      {!fromUser && (
-                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-200 dark:bg-slate-800 text-muted-light dark:text-muted-dark">
-                          <Bot className="h-4 w-4" />
-                        </div>
-                      )}
-                      <div
-                        className={cn(
-                          "max-w-[80%] rounded-xl px-4 py-3 text-sm shadow-sm",
-                          fromUser
-                            ? "bg-blue-500 text-white"
-                            : "bg-slate-100 text-black",
-                        )}
-                      >
-                        <div className="whitespace-pre-wrap">
-                          <strong>{msg.role}</strong>
-                          <br />
-                          {msg.content}
-                        </div>
-                      </div>
-                      {fromUser && (
-                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-signal-100 dark:bg-signal-500/20 text-signal-600 dark:text-signal-400">
-                          <User className="h-4 w-4" />
-                        </div>
-                      )}
-                    </div>
-                  );
-                })
-              )}
-
-              {/* Optimistic User Message */}
-              {optimisticUserMessage && (
-                <div className="flex items-end justify-end gap-2">
-                  <div className="max-w-[80%] rounded-xl bg-signal-500 px-4 py-3 text-sm text-white shadow-sm">
-                    {optimisticUserMessage}
-                  </div>
-                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-signal-100 dark:bg-signal-500/20 text-signal-600 dark:text-signal-400">
-                    <User className="h-4 w-4" />
-                  </div>
-                </div>
-              )}
-
-              {/* Streaming Assistant Response */}
-              {(isStreaming || streamedText) && (
-                <div className="flex items-end justify-start gap-2">
-                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-200 dark:bg-slate-800 text-muted-light dark:text-muted-dark">
-                    <Bot className="h-4 w-4" />
-                  </div>
-                  <div className="max-w-[80%] rounded-xl bg-slate-100 dark:bg-slate-900 px-4 py-3 text-sm text-ink-light dark:text-ink-dark shadow-sm">
-                    {/* Render Sources First */}
-                    {streamedSources.length > 0 && (
-                      <div className="mb-3 flex flex-wrap gap-2">
-                        {streamedSources.map((source, i) => (
-                          <div
-                            key={i}
-                            className="flex items-center gap-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2.5 py-1 text-xs"
-                          >
-                            <Code className="h-3 w-3 text-signal-500" />
-                            <span className="font-mono text-muted-light dark:text-muted-dark">
-                              {source.file_path.split("/").pop()}
-                            </span>
-                            <span className="text-[10px] text-slate-400">
-                              L{source.start_line}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Render Streaming Text */}
-                    <div className="whitespace-pre-wrap">{streamedText}</div>
-                    {isStreaming && (
-                      <span className="inline-block w-1.5 h-4 ml-1 bg-signal-500 animate-pulse" />
-                    )}
-                  </div>
-                </div>
-              )}
-              <div ref={messagesEndRef} />
-            </div>
-
-            {/* Input Area */}
-            <div className="p-4 border-t border-border-light dark:border-border-dark bg-slate-50 dark:bg-slate-900/50">
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  handleSendMessage();
-                }}
-                className="flex gap-2"
-              >
-                <input
-                  type="text"
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  placeholder="Ask a question about the codebase..."
-                  className="flex-1 rounded-md border border-border-light dark:border-border-dark bg-white dark:bg-slate-950 px-4 py-2 text-sm focus:border-signal-500 focus:outline-none focus:ring-1 focus:ring-signal-500"
-                  disabled={isStreaming}
-                />
-                <button
-                  type="submit"
-                  disabled={isStreaming || !input.trim()}
-                  className="flex items-center justify-center rounded-md bg-signal-500 px-4 py-2 text-white hover:bg-signal-600 disabled:opacity-50 transition-colors"
-                >
-                  <Send className="h-4 w-4" />
-                </button>
-              </form>
-            </div>
-          </div>
-        </Card>
+        <ChatInterface
+          mode="QA"
+          messages={history}
+          isStreaming={isStreaming}
+          streamedText={streamedText}
+          streamedSources={streamedSources}
+          onSendMessage={(msg) => {
+            handleSendMessage(msg);
+          }}
+          isLoadingHistory={isHistoryLoading}
+          showSidebar={true}
+          sessions={chatSessions}
+          activeSessionId={activeSessionId}
+          onSelectSession={setActiveSessionId}
+          onNewSession={() => setActiveSessionId(null)}
+          emptyStateMessage="Ask a question about the codebase to get started."
+          placeholder="Ask a question about the codebase..."
+        />
       ) : (
-        <div className="mt-6 flex justify-center">
-          <Button onClick={() => navigate(`/repositories/${repositoryId}/interview`)}>
-            Start Technical Interview
-          </Button>
+        <div className="mt-6 flex flex-col gap-6">
+          <div className="flex justify-between items-center bg-slate-50 dark:bg-slate-900 border border-border-light dark:border-border-dark p-6 rounded-xl shadow-sm">
+            <div>
+              <h3 className="text-lg font-semibold text-ink-light dark:text-ink-dark">Preparation-focused Interviews</h3>
+              <p className="text-sm text-muted-light">Run context-aware technical interviews to prepare yourself.</p>
+            </div>
+            <Button
+              onClick={() => navigate(`/repositories/${repositoryId}/interview`)}
+              size="lg"
+            >
+              Start New Technical Interview
+            </Button>
+          </div>
+
+          <div className="space-y-4">
+            <h3 className="text-md font-semibold text-ink-light dark:text-ink-dark">Past Interviews</h3>
+            
+            {interviewSessions.length === 0 ? (
+              <p className="text-sm text-muted-light">No past interview sessions found.</p>
+            ) : (
+              interviewSessions.map((s: any) => {
+                const state = typeof s.state === 'string' ? JSON.parse(s.state) : s.state;
+                const isCompleted = s.status === 'completed';
+                
+                return (
+                  <Card key={s.id} className="transition-colors hover:border-slate-300 dark:hover:border-slate-700">
+                    <CardBody className="p-5 flex justify-between items-center">
+                      <div>
+                        <h4 className="font-semibold text-ink-light dark:text-ink-dark mb-1 capitalize">{state?.currentTopic || 'General'} Interview</h4>
+                        <div className="flex gap-4 text-xs text-muted-light">
+                          <span>{new Date(s.created_at).toLocaleDateString()}</span>
+                          <span className="capitalize text-signal-500">Difficulty: {state?.difficulty}</span>
+                          {isCompleted ? <span className="text-green-600 font-medium">Completed</span> : <span className="text-amber-500 font-medium">In Progress</span>}
+                        </div>
+                      </div>
+                      <div className="flex gap-4 items-center">
+                        {state?.assessment && (
+                          <div className="text-right mr-4">
+                            <span className="block text-xl font-bold text-signal-500">{state.assessment.score}/10</span>
+                            <span className="text-xs text-muted-light">Final Score</span>
+                          </div>
+                        )}
+                        <Button variant="secondary" onClick={() => navigate(`/repositories/${repositoryId}/interview/${s.id}`)}>
+                          {isCompleted ? "Review Transcript" : "Resume"}
+                        </Button>
+                      </div>
+                    </CardBody>
+                  </Card>
+                );
+              })
+            )}
+          </div>
         </div>
       )}
     </div>
