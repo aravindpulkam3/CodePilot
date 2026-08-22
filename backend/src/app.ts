@@ -9,7 +9,8 @@ import { webhookRoutes } from "./routes/webhook.routes.js";
 import gitHubRouter from "./routes/github.routes.js";
 import repoRouter from "./routes/repository.routes.js";
 import reviewRouter from "./routes/review.routes.js";
-import chatRouter from "./routes/chat.routes.js";
+// import chatRouter from "./routes/chat.routes.js";
+import unifiedChatRouter from "./modules/chat/chat.routes.js";
 import interviewRouter from "./routes/interview.routes.js";
 
 export const app = express();
@@ -25,10 +26,12 @@ app.use(attachClerkAuth);
 app.use("/api/health", healthRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/github",gitHubRouter);
-app.use('/api', chatRouter);
+app.use("/api/chat", unifiedChatRouter);
+// app.use('/api', chatRouter);
 app.use("/api/repositories",repoRouter);
 app.use("/api/reviews",reviewRouter);
 app.use("/api/interview", interviewRouter);
+
 
 // Reserved mount points for future modules — kept here, unregistered,
 // so adding a module is "uncomment a line" rather than a routing

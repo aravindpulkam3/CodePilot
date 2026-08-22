@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { MessageSquare, Plus, Send, User, Bot, Loader2 } from "lucide-react";
 import { cn } from "@/utils/cn";
 import { SourceList } from "./SourceList";
+import { MarkdownRenderer } from "../ui/MarkdownRenderer";
 
 export interface Message {
   id?: string;
@@ -199,7 +200,11 @@ export function ChatInterface({
                         : "bg-slate-50 border border-slate-200 text-slate-800 dark:bg-slate-900 dark:border-slate-800 dark:text-slate-200 rounded-tl-sm",
                     )}
                   >
-                    <div className="whitespace-pre-wrap">{msg.content}</div>
+                    {fromUser ? (
+                      <div className="whitespace-pre-wrap">{msg.content}</div>
+                    ) : (
+                      <MarkdownRenderer content={msg.content} />
+                    )}
 
                     {mode !== "INTERVIEW" &&
                       msg.sources &&
@@ -254,7 +259,7 @@ export function ChatInterface({
                     </div>
                   )}
 
-                <div className="whitespace-pre-wrap">{streamedText}</div>
+                <MarkdownRenderer content={streamedText} />
                 {isStreaming && (
                   <span className="inline-block w-2 h-4 ml-1 bg-signal-500 animate-pulse align-middle" />
                 )}

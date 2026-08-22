@@ -15,6 +15,8 @@ import {
 } from "lucide-react";
 import { cn } from "@/utils/cn";
 import { ChatInterface } from "@/components/chat/ChatInterface";
+import { FindingCard, Finding } from "@/components/review/FindingCard";
+import { FindingDiscussionDrawer } from "@/components/chat/FindingDiscussionDrawer";
 import { useAuth } from "@clerk/clerk-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { sendChatMessageStream } from "@/services/api/repositoryApi";
@@ -26,6 +28,7 @@ export default function PullRequestDetailsPage() {
   }>();
   const [activeTab, setActiveTab] = useState<"findings" | "chat">("findings");
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [activeFinding, setActiveFinding] = useState<Finding | null>(null);
 
   const queryClient = useQueryClient();
   const { getToken } = useAuth();
@@ -67,7 +70,6 @@ export default function PullRequestDetailsPage() {
     let resolvedSessionId = activeSessionId;
 
     try {
-      // NOTE: We may need to pass pullNumber to the backend in the future so it knows which PR to review
       const response = await sendChatMessageStream(
         repositoryId,
         userMessage,
@@ -123,6 +125,13 @@ export default function PullRequestDetailsPage() {
     }
   };
 
+  const handleJumpToCode = (filePath: string) => {
+    const element = document.getElementById(`diff-${filePath}`);
+    if (element) {
+      element.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  };
+
   if (isPrLoading || isReviewsLoading)
     return <div className="p-8">Loading PR details...</div>;
   if (!pr) return <div className="p-8">Pull Request not found.</div>;
@@ -136,7 +145,7 @@ export default function PullRequestDetailsPage() {
   const isOutdated = !!latest && pr.head_sha !== latest.head_sha;
 
   return (
-    <div className="max-w-6xl mx-auto p-6 space-y-6 flex flex-col h-full min-h-screen">
+    <div className="max-w-6xl mx-auto p-6 space-y-6 flex flex-col h-full min-h-screen relative">
       <div>
         <Link
           to={`/repositories/${repositoryId}`}
@@ -194,7 +203,7 @@ export default function PullRequestDetailsPage() {
                 })
               }
               disabled={isGenerating}
-              className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 disabled:opacity-50 text-sm font-medium transition-colors"
+              className="flex items-center gap-2 bg-signal-600 hover:bg-signal-700 text-white px-4 py-2 rounded-lg disabled:opacity-50 text-sm font-medium transition-colors shadow-sm"
             >
               <RefreshCw
                 className={`w-4 h-4 ${isGenerating ? "animate-spin" : ""}`}
@@ -229,7 +238,7 @@ export default function PullRequestDetailsPage() {
             </div>
           )}
 
-          {/* --- UP-TO-DATE BADGE (Optional indicator when review matches head_sha) --- */}
+          {/* --- UP-TO-DATE BADGE --- */}
           {latest && !isOutdated && (
             <div className="flex items-center gap-2 text-xs font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 px-3 py-1.5 rounded-md w-fit">
               <CheckCircle2 className="w-4 h-4" />
@@ -240,7 +249,7 @@ export default function PullRequestDetailsPage() {
           {/* --- Latest AI Review Display --- */}
           {latest && (
             <Card
-              className={`border ${isOutdated ? "border-amber-200 dark:border-amber-900 opacity-90" : "border-blue-200 dark:border-blue-900"}`}
+              className={`border ${isOutdated ? "border-amber-200 dark:border-amber-900 opacity-90" : "border-slate-200 dark:border-slate-800"}`}
             >
               <CardHeader>
                 <div className="flex justify-between items-center">
@@ -259,45 +268,29 @@ export default function PullRequestDetailsPage() {
                 </p>
               </CardHeader>
               <CardBody className="space-y-4">
-                <p className="text-gray-700 dark:text-gray-300 leading-relaxed">
+                <p className="text-gray-700 dark:text-gray-300 leading-relaxed text-sm">
                   {latest.summary}
                 </p>
 
-                {/* Inline Findings */}
-                <div className="space-y-3 mt-4">
+                {/* Modular Finding Cards with "Discuss with AI" actions */}
+                <div className="space-y-4 mt-6">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                      Findings ({latest.findings?.length || 0})
+                    </h3>
+                    <span className="text-xs text-slate-400">
+                      Click &ldquo;Discuss with AI&rdquo; on any finding to ask questions
+                    </span>
+                  </div>
+
                   {latest.findings?.map((finding: any) => (
-                    <div
+                    <FindingCard
                       key={finding.id}
-                      className="p-3.5 border rounded-lg bg-white dark:bg-slate-800 border-gray-200 dark:border-gray-700"
-                    >
-                      <div className="flex items-center justify-between mb-1">
-                        <span
-                          className={`text-xs font-bold uppercase tracking-wider ${
-                            finding.category === "security"
-                              ? "text-red-500"
-                              : finding.category === "correctness"
-                                ? "text-amber-600"
-                                : "text-blue-500"
-                          }`}
-                        >
-                          {finding.category} • {finding.severity}
-                        </span>
-                      </div>
-                      <p className="font-semibold text-sm text-gray-900 dark:text-gray-100">
-                        {finding.title}
-                      </p>
-                      <p className="text-xs font-mono text-gray-500 mt-0.5">
-                        {finding.file_path}:{finding.line_number}
-                      </p>
-                      <p className="text-sm text-gray-700 dark:text-gray-300 mt-2">
-                        {finding.description}
-                      </p>
-                      {finding.code_suggestion && (
-                        <pre className="mt-2.5 bg-gray-900 text-gray-100 p-3 text-xs rounded-md overflow-x-auto font-mono">
-                          <code>{finding.code_suggestion}</code>
-                        </pre>
-                      )}
-                    </div>
+                      finding={finding}
+                      isActive={activeFinding?.id === finding.id}
+                      onDiscuss={(f) => setActiveFinding(f)}
+                      onJumpToCode={handleJumpToCode}
+                    />
                   ))}
                 </div>
               </CardBody>
@@ -313,18 +306,23 @@ export default function PullRequestDetailsPage() {
               {pr.files?.map((file: any) => (
                 <div
                   key={file.filename}
-                  className="mb-4 border rounded overflow-hidden border-gray-200 dark:border-gray-700"
+                  id={`diff-${file.filename}`}
+                  className="mb-4 border rounded-xl overflow-hidden border-gray-200 dark:border-gray-700"
                 >
-                  <div className="bg-gray-100 dark:bg-gray-800 p-2 text-xs font-mono font-semibold border-b border-gray-200 dark:border-gray-700">
-                    {file.filename}
+                  <div className="bg-gray-100 dark:bg-gray-800 p-2.5 text-xs font-mono font-semibold border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+                    <span>{file.filename}</span>
+                    <span className="text-slate-500 text-[11px]">
+                      +{file.additions} / -{file.deletions}
+                    </span>
                   </div>
-                  <pre className="p-3 text-xs font-mono overflow-x-auto bg-slate-900 text-slate-100 leading-normal">
+                  <pre className="p-3.5 text-xs font-mono overflow-x-auto bg-slate-900 text-slate-100 leading-normal">
                     {file.patch}
                   </pre>
                 </div>
               ))}
             </CardBody>
           </Card>
+
 
           {/* --- Review History List --- */}
           {reviewHistory && reviewHistory.length > 0 && (
@@ -375,6 +373,15 @@ export default function PullRequestDetailsPage() {
           />
         </div>
       )}
+
+      {/* Scoped Finding Discussion Drawer */}
+      <FindingDiscussionDrawer
+        finding={activeFinding}
+        isOpen={!!activeFinding}
+        onClose={() => setActiveFinding(null)}
+        repositoryId={repositoryId}
+      />
     </div>
   );
 }
+

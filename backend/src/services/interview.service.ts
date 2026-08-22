@@ -335,7 +335,7 @@ export class InterviewService {
     const messages = interviewPromptBuilder.buildFinalReviewPrompt(state, historyRes.rows);
 
     // 5. Generate final review
-    const assessment = await llmService.generateStructured<InterviewFinalAssessment>(
+    const assessment = await ollamaService.generateStructured<InterviewFinalAssessment>(
       messages,
       interviewFinalAssessmentSchema,
     );
