@@ -10,7 +10,7 @@ export class RepositorySyncService {
   public async syncRepository(clerkUserId: string, repositoryId: string) {
     // 1. Fetch current database state
     const { rows } = await pool.query(
-      `SELECT name, owner, last_indexed_sha, indexing_status 
+      `SELECT name, owner, last_indexed_sha, indexing_status, source_type 
              FROM repositories WHERE id = $1`,
       [repositoryId],
     );
@@ -28,8 +28,18 @@ export class RepositorySyncService {
       return { status: "already_indexing" };
     }
 
+    // Fetch token only if it's a connected repository
+    let token: string | undefined = undefined;
+    if (repo.source_type === "connected") {
+      try {
+        token = await githubService.getGitHubAccessToken(clerkUserId);
+      } catch (err) {
+        console.warn(`Could not get token for connected repo ${repo.name}`, err);
+      }
+    }
+
     const latestCommit = await githubService.getLatestCommit(
-      clerkUserId,
+      token,
       repo.owner,
       repo.name,
     );
@@ -54,7 +64,7 @@ export class RepositorySyncService {
       // INITIAL SYNC: The database has no SHA. We must fetch the entire repository tree.
       console.log("[INITIAL SYNC]:fetching all files");
       filesToIndex = await githubService.fetchAllRepositoryFiles(
-        clerkUserId,
+        token,
         repo.owner,
         repo.name,
         latestSha,
@@ -64,7 +74,7 @@ export class RepositorySyncService {
       // Fetch ONLY the files that were added, modified, or deleted.
       console.log("code changed")
       filesToIndex = await githubService.getChangedFilesBetweenCommits(
-        clerkUserId,
+        token,
         repo.owner,
         repo.name,
         repo.last_indexed_sha,

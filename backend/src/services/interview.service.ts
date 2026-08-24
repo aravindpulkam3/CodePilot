@@ -9,6 +9,7 @@ import {
   InterviewFinalAssessment,
 } from "../types/interviewTypes.js";
 import { interviewPromptBuilder } from "../promptBuilders/interviewPromptBuilder.js";
+import { activityLogService } from "./activityLog.service.js";
 
 const interviewEvaluationSchema: Schema = {
   type: Type.OBJECT,
@@ -108,6 +109,13 @@ export class InterviewService {
 
     const sessionId = rows[0].id;
 
+    await activityLogService.logEvent({
+      userId,
+      repositoryId: config.repositoryId || undefined,
+      activityType: "INTERVIEW_STARTED",
+      metadata: { sessionId, title: "Technical Interview" }
+    });
+
     // 2. Fetch context if repository mode
     let contextData: any = null;
     if (config.mode === "repository" && config.repositoryId && clerkUserId) {
@@ -127,7 +135,7 @@ export class InterviewService {
     console.log("length of the system prompt",messages[0].content.length);
 
     const decision =
-      await llmService.generateStructured<InterviewTurnEvaluation>(
+      await ollamaService.generateStructured<InterviewTurnEvaluation>(
         messages,
         interviewEvaluationSchema,
       );
@@ -240,7 +248,7 @@ export class InterviewService {
     );
 
     const decision =
-      await llmService.generateStructured<InterviewTurnEvaluation>(
+      await ollamaService.generateStructured<InterviewTurnEvaluation>(
         messages,
         interviewEvaluationSchema,
       );
@@ -287,7 +295,7 @@ export class InterviewService {
       await client.query(
         `
         UPDATE chat_sessions 
-        SET state = $2
+        SET state = $2, last_accessed_at = NOW()
         WHERE id = $1;
       `,
         [sessionId, JSON.stringify(newState)],
@@ -306,9 +314,15 @@ export class InterviewService {
 
   public async endInterview(sessionId: string, userId: string): Promise<void> {
     await pool.query(
-      `UPDATE chat_sessions SET status = 'completed' WHERE id = $1 AND user_id = $2`,
+      `UPDATE chat_sessions SET status = 'completed', last_accessed_at = NOW() WHERE id = $1 AND user_id = $2`,
       [sessionId, userId]
     );
+
+    await activityLogService.logEvent({
+      userId,
+      activityType: "INTERVIEW_COMPLETED",
+      metadata: { sessionId }
+    });
   }
 
   public async generateInsights(sessionId: string, userId: string): Promise<InterviewFinalAssessment> {
@@ -343,7 +357,7 @@ export class InterviewService {
     // 6. Save back to state
     const newState = { ...state, assessment };
     await pool.query(
-      `UPDATE chat_sessions SET state = $2 WHERE id = $1`,
+      `UPDATE chat_sessions SET state = $2, last_accessed_at = NOW() WHERE id = $1`,
       [sessionId, JSON.stringify(newState)]
     );
 

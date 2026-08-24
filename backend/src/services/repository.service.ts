@@ -2,6 +2,7 @@ import { pool } from '../config/db.js'; // Adjust path to where pool is exported
 
 export interface UpsertRepoInput {
   userId: string; // Internal app_users UUID
+  sourceType?: string; // 'connected' | 'public_import'
   githubRepoId: number;
   owner: string;
   name: string;
@@ -17,6 +18,7 @@ export interface UpsertRepoInput {
 export interface RepositoryRow {
   id: string;
   user_id: string;
+  source_type: string;
   github_repo_id: number;
   owner: string;
   name: string;
@@ -43,6 +45,7 @@ export const upsertRepositories = async (userId: string, repos: UpsertRepoInput[
   const queryText = `
     INSERT INTO repositories (
       user_id,
+      source_type,
       github_repo_id,
       owner,
       name,
@@ -57,9 +60,10 @@ export const upsertRepositories = async (userId: string, repos: UpsertRepoInput[
       created_at,
       updated_at
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
     ON CONFLICT (user_id, github_repo_id)
     DO UPDATE SET
+      source_type = EXCLUDED.source_type,
       owner = EXCLUDED.owner,
       name = EXCLUDED.name,
       description = EXCLUDED.description,
@@ -78,6 +82,7 @@ export const upsertRepositories = async (userId: string, repos: UpsertRepoInput[
   const upsertPromises = repos.map((repo) => {
     const values = [
       userId,
+      repo.sourceType || 'connected',
       repo.githubRepoId,
       repo.owner,
       repo.name,
@@ -106,5 +111,23 @@ export const findRepositoryById = async (id: string): Promise<RepositoryRow | nu
     [id]
   );
   return rows[0] ?? null;
+};
+
+export const findRepositoriesByUserId = async (userId: string): Promise<RepositoryRow[]> => {
+  const { rows } = await pool.query<RepositoryRow>(
+    `SELECT * FROM repositories WHERE user_id = $1 ORDER BY updated_at DESC`,
+    [userId]
+  );
+  return rows;
+};
+
+/**
+ * Creates or updates a public repository record.
+ */
+export const createPublicRepository = async (userId: string, repo: UpsertRepoInput): Promise<RepositoryRow> => {
+  const results = await upsertRepositories(userId, [
+    { ...repo, sourceType: 'public_import' }
+  ]);
+  return results[0];
 };
 

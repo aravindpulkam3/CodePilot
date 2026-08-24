@@ -54,7 +54,8 @@ export default function RepositoryDetailsPage() {
     useChatHistory(activeSessionId);
 
   // console.log(history);
-  console.log(interviewSessions);
+  console.log(interviewSessions,chatSessions);
+
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -65,7 +66,7 @@ export default function RepositoryDetailsPage() {
 
   const handleSendMessage = async (msgToSend: string) => {
     if (!repositoryId || !msgToSend.trim() || isStreaming) return;
-
+    console.log("handling send message",msgToSend);
     const userMessage = msgToSend;
     setOptimisticUserMessage(userMessage);
     setStreamedText("");

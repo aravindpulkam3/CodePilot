@@ -3,10 +3,13 @@ import { apiClient } from "@/services/api/clientApi";
 
 export interface RecentWork {
   id: string;
+  type: string;
+  repositoryId: string;
   repositoryName: string;
-  activityType: "Review Chat" | "Interview Session" | "Ask Repository" | "Code Generation";
+  title: string;
   timeAgo: string;
-  url: string;
+  route: string;
+  lastAccessedAt: string;
 }
 
 export const useRecentWork = () => {

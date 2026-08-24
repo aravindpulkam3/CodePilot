@@ -201,6 +201,12 @@ export const getReviewsForPullRequest = async (
     [latest.id],
   );
 
+  // 4. Bump last_accessed_at for the latest review
+  await pool.query(
+    `UPDATE reviews SET last_accessed_at = NOW() WHERE id = $1`,
+    [latest.id]
+  );
+
   return {
     latest: {
       ...latest,

@@ -10,29 +10,54 @@ import { getGitHubAccessToken } from "../services/github.service.js"; // Your to
  */
 export const getRecentWork = async (req: Request, res: Response) => {
   try {
-    const userId = req.dbUser!.id; // From auth middleware
+    const userId = req.dbUser!.id;
 
-    // Example: Querying a 'chat_sessions' or 'user_activities' table
     const query = `
       SELECT 
-        id, 
-        repo_name AS "repositoryName", 
-        activity_type AS "activityType", 
-        updated_at
-      FROM user_workspaces
-      WHERE user_id = $1
-      ORDER BY updated_at DESC
-      LIMIT 2;
+        r.id, 
+        'REVIEW' as type, 
+        r.repository_id as "repositoryId", 
+        repo.name as "repositoryName",
+        'PR #' || r.pull_number as title, 
+        r.last_accessed_at as "lastAccessedAt",
+        '/repositories/' || r.repository_id || '/pulls/' || r.pull_number as route
+      FROM reviews r
+      JOIN repositories repo ON r.repository_id = repo.id
+      WHERE repo.user_id = $1 
+        AND r.is_latest = TRUE
+
+      UNION ALL
+
+      SELECT 
+        c.id, 
+        c.type, 
+        c.repository_id as "repositoryId", 
+        repo.name as "repositoryName",
+        c.title, 
+        c.last_accessed_at as "lastAccessedAt",
+        CASE 
+          WHEN c.type = 'INTERVIEW' THEN '/repositories/' || c.repository_id || '/interview/' || c.id
+          WHEN c.type = 'REPO_QA' THEN '/repositories/' || c.repository_id || '?tab=chat'
+          ELSE '/repositories/' || c.repository_id
+        END as route
+      FROM chat_sessions c
+      LEFT JOIN repositories repo ON c.repository_id = repo.id
+      WHERE c.user_id = $1
+
+      ORDER BY "lastAccessedAt" DESC NULLS LAST
+      LIMIT 5;
     `;
     const { rows } = await pool.query(query, [userId]);
 
-    // Format for frontend
     const formattedWork = rows.map(row => ({
       id: row.id,
-      repositoryName: row.repositoryName,
-      activityType: row.activityType,
-      timeAgo: calculateTimeAgo(row.updated_at), // Helper function below
-      url: `/repositories/${row.id}`
+      type: row.type,
+      repositoryId: row.repositoryId,
+      repositoryName: row.repositoryName || "Unknown",
+      title: row.title,
+      timeAgo: calculateTimeAgo(row.lastAccessedAt),
+      route: row.route,
+      lastAccessedAt: row.lastAccessedAt
     }));
 
     res.json(formattedWork);
@@ -86,21 +111,28 @@ export const getRecentActivity = async (req: Request, res: Response) => {
   try {
     const userId = req.dbUser!.id;
 
-    // Example: Querying an 'activity_logs' table
     const query = `
-      SELECT id, description, type, created_at
-      FROM activity_logs
-      WHERE user_id = $1
-      ORDER BY created_at DESC
-      LIMIT 5;
+      SELECT 
+        a.id, 
+        a.activity_type as type, 
+        a.metadata, 
+        a.created_at,
+        repo.name as "repositoryName"
+      FROM activity_logs a
+      LEFT JOIN repositories repo ON a.repository_id = repo.id
+      WHERE a.user_id = $1
+      ORDER BY a.created_at DESC
+      LIMIT 20;
     `;
     const { rows } = await pool.query(query, [userId]);
 
     const formattedActivity = rows.map(row => ({
       id: row.id,
-      description: row.description,
       type: row.type,
+      metadata: row.metadata,
+      repositoryName: row.repositoryName,
       timeAgo: calculateTimeAgo(row.created_at),
+      createdAt: row.created_at
     }));
 
     res.json(formattedActivity);

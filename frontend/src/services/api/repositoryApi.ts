@@ -39,7 +39,7 @@ export const getChatSessions = async (
   type: string = "QA",
 ): Promise<ChatSession[]> => {
   const { data } = await apiClient.get<ChatSession[]>(
-    `/repositories/${repositoryId}/sessions?type=${type}`,
+    `/chat/sessions?repositoryId=${repositoryId}&type=${type}`,
   );
   return data;
 };
@@ -48,7 +48,7 @@ export const getChatHistory = async (
   sessionId: string,
 ): Promise<ChatMessage[]> => {
   const { data } = await apiClient.get<ChatMessage[]>(
-    `/sessions/${sessionId}/messages`,
+    `/chat/sessions/${sessionId}/messages`,
   );
   return data;
 };
@@ -63,12 +63,16 @@ export const sendChatMessageStream = async (
   // We return the raw fetch Response so the frontend component can attach a reader to the stream.
   console.log("inside Chat Stream connecting to baceknd");
   const baseUrl = import.meta.env.VITE_API_BASE_URL || "";
-  return fetch(`${baseUrl}/repositories/${repositoryId}/chat`, {
+  const url = sessionId
+    ? `${baseUrl}/chat/sessions/${sessionId}/stream`
+    : `${baseUrl}/chat/stream`;
+
+  return fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`, // <--- 2. MANUALLY ATTACH IT HERE
     },
-    body: JSON.stringify({ message, sessionId, type }),
+    body: JSON.stringify({ message, sessionId, type, repositoryId }),
   });
 };

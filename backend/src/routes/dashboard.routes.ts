@@ -6,12 +6,12 @@ import {
 } from "../controllers/dashboard.controller.js";
 import { requireAuth } from "../middleware/auth.middleware.js";
 
-const router = Router();
+const dashboardRouter = Router();
 
-router.use(requireAuth);
+dashboardRouter.use(requireAuth);
 
-router.get("/recent-work", getRecentWork);
-router.get("/pending-prs", getPendingPRs);
-router.get("/activity", getRecentActivity);
+dashboardRouter.get("/recent-work", getRecentWork);
+dashboardRouter.get("/pending-prs", getPendingPRs);
+dashboardRouter.get("/activity", getRecentActivity);
 
-export default router;
+export default dashboardRouter;

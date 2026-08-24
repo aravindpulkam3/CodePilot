@@ -12,6 +12,7 @@ import reviewRouter from "./routes/review.routes.js";
 // import chatRouter from "./routes/chat.routes.js";
 import unifiedChatRouter from "./modules/chat/chat.routes.js";
 import interviewRouter from "./routes/interview.routes.js";
+import dashboardRouter from "./routes/dashboard.routes.js";
 
 export const app = express();
 
@@ -25,6 +26,7 @@ app.use(attachClerkAuth);
 
 app.use("/api/health", healthRoutes);
 app.use("/api/users", userRoutes);
+app.use("/api/dashboard",dashboardRouter);
 app.use("/api/github",gitHubRouter);
 app.use("/api/chat", unifiedChatRouter);
 // app.use('/api', chatRouter);

@@ -12,3 +12,9 @@ export const fetchGitHubRepos = async () => {
   const { data } = await apiClient.get<GitHubRepository[]>("/github/repositories");
   return data;
 };
+
+// 3. Import Public Repository
+export const importPublicRepository = async (repositoryUrl: string) => {
+  const { data } = await apiClient.post<{ repository: GitHubRepository }>("/github/import", { repositoryUrl });
+  return data.repository;
+};

@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { getAuth } from "@clerk/express";
 import * as reviewServiceModule from "../services/review.service.js";
+import { activityLogService } from "../services/activityLog.service.js";
 
 export const generateReview = async (req: Request, res: Response) => {
   const clerkUserId=req.dbUser!.clerkId;
@@ -13,8 +14,22 @@ export const generateReview = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "repositoryId and pullNumber are required" });
     }
 
+    await activityLogService.logEvent({
+      userId: req.dbUser!.id,
+      repositoryId,
+      activityType: "PR_REVIEW_STARTED",
+      metadata: { pullNumber }
+    });
+
     const reviewResult = await reviewServiceModule.reviewService.generateAndStoreReview(clerkUserId, repositoryId, pullNumber);
     
+    await activityLogService.logEvent({
+      userId: req.dbUser!.id,
+      repositoryId,
+      activityType: "PR_REVIEW_COMPLETED",
+      metadata: { pullNumber, reviewId: reviewResult.reviewId }
+    });
+
     return res.status(200).json(reviewResult);
   } catch (error: any) {
     console.error("Error in generateReview controller:", error);

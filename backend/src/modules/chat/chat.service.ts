@@ -1,5 +1,5 @@
 import { pool } from "../../config/db.js";
-import { llmService, LLMMessage } from "../../services/llm.service.js";
+import { llmService, LLMMessage, ollamaService } from "../../services/llm.service.js";
 import {
   ChatSessionRecord,
   ChatSessionType,
@@ -9,6 +9,7 @@ import { RepositoryContextProvider } from "./providers/repositoryContext.provide
 import { ReviewContextProvider } from "./providers/reviewContext.provider.js";
 import { IssueContextProvider } from "./providers/issueContext.provider.js";
 import { InterviewContextProvider } from "./providers/interviewContext.provider.js";
+import { activityLogService } from "../../services/activityLog.service.js";
 
 export type StreamChunk =
   | { type: "sources"; data: any[] }
@@ -99,6 +100,17 @@ export class ChatService {
       );
     }
 
+    // 4. Log the creation activity
+    await activityLogService.logEvent({
+      userId,
+      repositoryId: repositoryId || null,
+      activityType: `${normalizedType}_STARTED`,
+      metadata: {
+        title: defaultTitle,
+        sessionId: session.id,
+      },
+    });
+
     return session;
   }
 
@@ -107,7 +119,7 @@ export class ChatService {
     userId: string
   ): Promise<ChatSessionRecord> {
     const { rows } = await pool.query(
-      `SELECT * FROM chat_sessions WHERE id = $1 AND user_id = $2`,
+      `UPDATE chat_sessions SET last_accessed_at = NOW() WHERE id = $1 AND user_id = $2 RETURNING *`,
       [sessionId, userId]
     );
     if (rows.length === 0) {
@@ -245,7 +257,7 @@ export class ChatService {
 
     // 5. Stream LLM tokens
     let fullAiResponse = "";
-    const stream = llmService.stream(messages);
+    const stream = ollamaService.stream(messages);
 
     for await (const chunk of stream) {
       if (chunk.text) {
@@ -264,7 +276,7 @@ export class ChatService {
 
     // 7. Update session timestamp
     await pool.query(
-      `UPDATE chat_sessions SET updated_at = NOW() WHERE id = $1`,
+      `UPDATE chat_sessions SET updated_at = NOW(), last_accessed_at = NOW() WHERE id = $1`,
       [session.id]
     );
 

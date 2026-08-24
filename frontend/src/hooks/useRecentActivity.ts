@@ -3,9 +3,11 @@ import { apiClient } from "@/services/api/clientApi";
 
 export interface RecentActivity {
   id: string;
-  description: string;
+  type: string;
+  metadata: Record<string, any>;
+  repositoryName?: string;
   timeAgo: string;
-  type: "pr_review" | "index_success" | "index_failed" | "chat" | "interview";
+  createdAt: string;
 }
 
 export const useRecentActivity = () => {

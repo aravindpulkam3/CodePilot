@@ -201,14 +201,18 @@ export const getPullRequestDetails = async (
   };
 };
 
-async function fetchRawFileContent(token: string, owner: string, repo: string, path: string, ref: string): Promise<string | null> {
+async function fetchRawFileContent(token: string | undefined, owner: string, repo: string, path: string, ref: string): Promise<string | null> {
     const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${ref}`;
-    const response = await fetch(url, {
-        headers: {
-            'Authorization': `Bearer ${token}`,
-            'Accept': 'application/vnd.github.v3.raw' // Crucial: gets the raw text, not the base64 JSON
-        }
-    });
+    
+    const headers: Record<string, string> = {
+        'Accept': 'application/vnd.github.v3.raw' // Crucial: gets the raw text, not the base64 JSON
+    };
+
+    if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const response = await fetch(url, { headers });
 
     if (!response.ok) {
         if (response.status === 404) return null;
@@ -220,21 +224,18 @@ async function fetchRawFileContent(token: string, owner: string, repo: string, p
 /**
  * 1. Gets the latest commit SHA for the repository's default branch.
  */
-export async function getLatestCommit(clerkUserId:string, owner: string, repo: string) {
-    const token = await getGitHubAccessToken(clerkUserId); 
+export async function getLatestCommit(token: string | undefined, owner: string, repo: string) {
+    const headers: Record<string, string> = { 'Accept': 'application/vnd.github.v3+json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
     
     // Get repo details to find the default branch (usually 'main' or 'master')
-    const repoRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, {
-        headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github.v3+json' }
-    });
+    const repoRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, { headers });
     if (!repoRes.ok) throw new Error("Failed to fetch repository details");
     const repoData = await repoRes.json();
     const defaultBranch = repoData.default_branch;
 
     // Get the latest commit on the default branch
-    const branchRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/branches/${defaultBranch}`, {
-        headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github.v3+json' }
-    });
+    const branchRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/branches/${defaultBranch}`, { headers });
     if (!branchRes.ok) throw new Error("Failed to fetch branch details");
     const branchData = await branchRes.json();
     
@@ -245,18 +246,17 @@ export async function getLatestCommit(clerkUserId:string, owner: string, repo: s
  * 2. Compares two commits and returns ONLY the files that changed, with their new content.
  */
 export async function getChangedFilesBetweenCommits(
-    clerkUserId: string, 
+    token: string | undefined, 
     owner: string, 
     repo: string, 
     baseSha: string, 
     headSha: string
 ): Promise<FileChange[]> {
-    const token = await getGitHubAccessToken(clerkUserId); 
+    const headers: Record<string, string> = { 'Accept': 'application/vnd.github.v3+json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
 
     const url = `https://api.github.com/repos/${owner}/${repo}/compare/${baseSha}...${headSha}`;
-    const response = await fetch(url, {
-        headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github.v3+json' }
-    });
+    const response = await fetch(url, { headers });
 
     if (!response.ok) throw new Error("Failed to compare commits");
     const data = await response.json();
@@ -289,18 +289,17 @@ export async function getChangedFilesBetweenCommits(
  * 3. Does a deep clone of the entire repository tree for the initial sync.
  */
 export async function fetchAllRepositoryFiles(
-    clerkUserId: string, 
+    token: string | undefined, 
     owner: string, 
     repo: string, 
     sha: string
 ): Promise<FileChange[]> {
-    const token = await getGitHubAccessToken(clerkUserId);
+    const headers: Record<string, string> = { 'Accept': 'application/vnd.github.v3+json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
 
     // Use the Git Trees API with recursive=1 to get all files in one request
     const url = `https://api.github.com/repos/${owner}/${repo}/git/trees/${sha}?recursive=1`;
-    const response = await fetch(url, {
-        headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github.v3+json' }
-    });
+    const response = await fetch(url, { headers });
 
     if (!response.ok) throw new Error("Failed to fetch repository tree");
     const data = await response.json();
