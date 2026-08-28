@@ -8,6 +8,7 @@ import type { AppUser } from "@/types/user";
  */
 export const usersApi = {
   getMe: async (): Promise<AppUser> => {
+    console.log("came to userAPI service");
     const { data } = await apiClient.get<AppUser>("/users/me");
     return data;
   },

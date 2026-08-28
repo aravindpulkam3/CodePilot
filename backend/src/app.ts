@@ -4,7 +4,7 @@ import { env } from "./config/env.js";
 import { attachClerkAuth } from "./middleware/auth.middleware.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { healthRoutes } from "./routes/health.routes.js";
-import { userRoutes } from "./routes/user.routes.js";
+import userRouter from "./routes/user.routes.js";
 import { webhookRoutes } from "./routes/webhook.routes.js";
 import gitHubRouter from "./routes/github.routes.js";
 import repoRouter from "./routes/repository.routes.js";
@@ -25,7 +25,7 @@ app.use(express.json());
 app.use(attachClerkAuth);
 
 app.use("/api/health", healthRoutes);
-app.use("/api/users", userRoutes);
+app.use("/api/users", userRouter);
 app.use("/api/dashboard",dashboardRouter);
 app.use("/api/github",gitHubRouter);
 app.use("/api/chat", unifiedChatRouter);

@@ -13,7 +13,7 @@ export async function getMe(req: Request, res: Response) {
 
     const { rows } = await pool.query(
       "SELECT * FROM app_users WHERE clerk_id = $1",
-      [clerkId]
+      [clerkId],
     );
 
     let user = rows[0];
@@ -21,7 +21,7 @@ export async function getMe(req: Request, res: Response) {
     if (!user) {
       user = await userService.upsertFromClerk({
         clerkId: clerkId,
-        email: "", 
+        email: "",
         name: null,
         avatarUrl: null,
         githubConnected: false,
@@ -31,7 +31,6 @@ export async function getMe(req: Request, res: Response) {
 
     // 4. Return the user
     return res.json(toUserDto(user));
-
   } catch (error) {
     console.error("Error in getMe:", error);
     return res.status(500).json({ error: "Internal Server Error" });

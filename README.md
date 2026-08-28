@@ -1,379 +1,378 @@
-# AI-Powered Code Review & Codebase Intelligence Platform
+# CodePilot: AI Codebase Intelligence & Review Platform
 
-A production-grade platform that automates pull request reviews, performs intelligent repository indexing, and enables natural language interaction with entire codebases using Retrieval-Augmented Generation (RAG).
+**A repository-aware AI platform for automated pull request reviews and natural language interaction with codebases.**
 
-The platform combines AST-aware code parsing, vector search, structured LLM outputs, and GitHub integration to deliver senior engineer-level code reviews while allowing developers to ask questions about their repositories in real time.
+![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=for-the-badge&logo=typescript&logoColor=white)
+![Node.js](https://img.shields.io/badge/Node.js-43853D?style=for-the-badge&logo=node.js&logoColor=white)
+![React](https://img.shields.io/badge/React-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-316192?style=for-the-badge&logo=postgresql&logoColor=white)
 
----
-
-# Features
-
-- Automated AI-powered pull request reviews
-- Repository-wide Codebase Q&A using RAG
-- AST-aware code chunking using Tree-sitter
-- Incremental (Delta) indexing for fast embedding updates
-- Semantic code search using pgvector
-- Structured JSON AI responses with schema validation
-- Commit staleness detection
-- Persistent review history and chat sessions
-- Multi-provider LLM architecture
-- Modular SOLID-based backend design
+CodePilot combines **AST-aware code parsing**, **hierarchical repository summarization**, **structural dependency indexing**, **exact symbol retrieval**, **vector search**, and **hybrid Retrieval-Augmented Generation (RAG)** to provide context-aware reviews and answers grounded in the actual codebase.
 
 ---
 
-# System Architecture
+## 📖 Table of Contents
 
-```
-                               React Frontend
-      (Dashboard • Diff Viewer • Repository Chat • Review History)
-                                      │
-                             HTTP / REST / SSE
-                                      │
-┌────────────────────────────────────────────────────────────────────────┐
-│                         Express.js Backend                             │
-│                                                                        │
-│  Clerk Authentication                                                  │
-│  GitHub OAuth & REST APIs                                              │
-│  GitHub Push Webhooks                                                  │
-│                                                                        │
-│               Review Service (Business Logic)                          │
-│                        │                │                               │
-│                        │                │                               │
-│        Prompt Builder  │      Retrieval Service                        │
-│                        │                │                               │
-│                 Repository Indexing Service                            │
-│                        │                │                               │
-│                 Tree-sitter AST Parser                                 │
-│                        │                │                               │
-│              Generic LLM Service Interface                             │
-│          (Gemini / OpenRouter / Groq Providers)                        │
-└────────────────────────────────────────────────────────────────────────┘
-                                      │
-                                      ▼
-                      PostgreSQL + pgvector Database
-```
+- [CodePilot: AI Codebase Intelligence \& Review Platform](#codepilot-ai-codebase-intelligence--review-platform)
+  - [📖 Table of Contents](#-table-of-contents)
+  - [🚀 Key Features](#-key-features)
+  - [🏗️ System Architecture](#️-system-architecture)
+  - [🧠 How Repository Intelligence Works](#-how-repository-intelligence-works)
+    - [1. Repository Indexing](#1-repository-indexing)
+      - [Generation Outside the Transaction](#generation-outside-the-transaction)
+      - [Atomic Persistence](#atomic-persistence)
+  - [🧩 Hierarchical Summarization](#-hierarchical-summarization)
+  - [🔍 Hybrid Retrieval Pipeline](#-hybrid-retrieval-pipeline)
+    - [Retrieval Stages Overview](#retrieval-stages-overview)
+  - [🕸️ Structural Repository Graph](#️-structural-repository-graph)
+  - [⚡ Incremental Delta Indexing](#-incremental-delta-indexing)
+  - [🛠️ Technology Stack](#️-technology-stack)
+  - [📂 Project Structure](#-project-structure)
+  - [🚀 Getting Started](#-getting-started)
+    - [Prerequisites](#prerequisites)
+    - [1. Database Setup](#1-database-setup)
+    - [2. Environment Variables](#2-environment-variables)
+    - [3. Tree-sitter Parsers](#3-tree-sitter-parsers)
+    - [4. Run the Platform](#4-run-the-platform)
+  - [🗺️ Roadmap](#️-roadmap)
+    - [Planned](#planned)
+  - [🎯 Design Principles](#-design-principles)
 
 ---
 
-# Engineering Highlights
+## 🚀 Key Features
 
-## AST-Based Semantic Code Chunking
+- **Automated AI-Powered Pull Request Reviews**  
+  Analyzes code changes with repository-aware context to identify potential bugs, performance issues, maintainability concerns, and security problems.
 
-Instead of splitting files using fixed character limits, the platform parses source code into Abstract Syntax Trees using Tree-sitter.
+- **Repository-Wide Codebase Q&A**  
+  Ask natural language questions about a repository and retrieve relevant code, module summaries, and architectural context.
 
-Each embedding represents complete language-native structures such as:
+- **AST-Aware Code Chunking**  
+  Uses Tree-sitter to split source files into syntax-aware units such as functions, classes, methods, and interfaces instead of arbitrary text chunks.
 
-- Functions
-- Methods
-- Classes
-- Arrow Functions
+- **Hierarchical Repository Summarization**  
+  Builds structured knowledge across multiple levels: Repository ➔ Architecture ➔ Components ➔ Files ➔ Code Chunks.
 
-Supported languages include:
+- **Feature-Oriented Module Discovery**  
+  Groups files into logical domain modules rather than simply mirroring technical folder structures such as `controllers/`, `services/`, and `routes/`.
 
-- TypeScript
-- JavaScript
-- Python
-- Go
-- C++
+- **Structural Repository Graph**  
+  Indexes deterministic cross-file import relationships and enables bounded structural traversal during retrieval.
 
-Each chunk is enriched with metadata including:
+- **Hybrid Retrieval Engine**  
+  Combines exact symbol-definition lookup, structural dependency retrieval, related test discovery, dense vector search, and hierarchical semantic summaries.
 
-- File path
-- Language
-- Symbol type
-- Symbol name
+- **Changed Symbol Analysis**  
+  Maps PR changes back to the functions, classes, and symbols affected by the diff.
 
-This preserves syntactic integrity and significantly improves retrieval quality.
+- **Candidate Merging and Provenance-Based Reranking**  
+  Combines context retrieved from multiple strategies, removes duplicates, preserves retrieval provenance, and prioritizes the strongest evidence.
 
----
+- **Token-Aware Context Budgeting**  
+  Builds the final LLM context under a controlled token budget while reserving priority for the most relevant code.
 
-## Delta Indexing Pipeline
-
-Re-indexing an entire repository after every commit is inefficient.
-
-The platform performs **incremental indexing** using the GitHub Compare API.
-
-Pipeline:
-
-1. Compare latest indexed commit with repository HEAD
-2. Detect added, modified and deleted files
-3. Re-embed only changed files
-4. Remove embeddings belonging to deleted files
-5. Update `last_indexed_sha` after successful completion
-
-Benefits:
-
-- Faster indexing
-- Lower embedding cost
-- Reduced API token consumption
-- Production-friendly scalability
+- **Incremental Delta Indexing & Transactional Updates**  
+  Uses Git-based change detection to avoid re-indexing an entire repository unnecessarily and safeguards data integrity via atomic database updates.
 
 ---
 
-## Intelligent Code Retrieval
+## 🏗️ System Architecture
 
-Repository knowledge is stored using **pgvector** inside PostgreSQL.
+```mermaid
+flowchart TB
+    subgraph Frontend
+        UI["React Dashboard & Diff Viewer"]
+    end
 
-Retrieval pipeline:
+    subgraph Backend ["Express.js Backend"]
+        Auth["Clerk Auth & GitHub API"]
+        
+        subgraph Core ["Services"]
+            direction TB
+            IDX["Indexing & Graph<br/>• Tree-sitter AST<br/>• Module Discovery<br/>• Summary Pipeline"]
+            RET["Retrieval Engine<br/>• Semantic Search<br/>• Symbol & Graph Retrieval<br/>• Reranker & Context Budget"]
+            REV["Review Services<br/>• PR Analysis<br/>• Impact Analysis<br/>• Test Discovery"]
+        end
+        
+        LLM["LLM Interface<br/>Gemini / OpenRouter / Groq"]
+    end
+    
+    DB[("PostgreSQL + pgvector<br/>Repository Graph")]
 
-- Cosine similarity search
-- MMR-inspired diversity filtering
-- File diversity threshold
-- Context ranking before LLM inference
-
-This prevents repetitive utility files from dominating the context window while improving answer diversity.
-
----
-
-## AI Code Review Engine
-
-Every review follows a structured pipeline.
-
-Features include:
-
-- JSON Schema enforced LLM outputs
-- Categorized review findings
-- Atomic PostgreSQL transactions
-- Persistent review history
-- Audit logging
-- Commit hash tracking
-
-Review categories:
-
-- Correctness
-- Security
-- Performance
-- Maintainability
-- Testing
-- Best Practices
-
----
-
-## Repository Chat (RAG)
-
-Developers can ask natural language questions about an indexed repository.
-
-Examples:
-
-- Explain the authentication flow
-- Where is JWT validation implemented?
-- Which service creates embeddings?
-- How is repository synchronization handled?
-
-The retrieval pipeline automatically fetches the most relevant AST chunks before generating answers.
-
----
-
-## Commit Staleness Detection
-
-Each review stores the corresponding Git commit SHA.
-
-Whenever new commits are pushed:
-
-- Older reviews are automatically marked as stale
-- Users are prompted to generate a fresh review
-- Prevents developers from relying on outdated AI feedback
-
----
-
-# Technology Stack
-
-## Backend
-
-- Node.js
-- TypeScript
-- Express.js
-- PostgreSQL
-- pgvector
-- Clerk Authentication
-- Tree-sitter (WebAssembly)
-- Google Gemini API
-- GitHub REST API
-
----
-
-## Frontend
-
-- React
-- TypeScript
-- Vite
-- Tailwind CSS
-- TanStack React Query
-- Lucide React
-
----
-
-# Project Structure
-
-```
-backend/
-│
-├── parsers/
-│
-├── src/
-│   ├── config/
-│   ├── controllers/
-│   ├── middleware/
-│   ├── promptBuilders/
-│   ├── routes/
-│   └── services/
-│       ├── astChunking.service.ts
-│       ├── chat.service.ts
-│       ├── github.service.ts
-│       ├── llm.service.ts
-│       ├── repositoryIndex.service.ts
-│       ├── repositorySync.service.ts
-│       ├── retrieval.service.ts
-│       └── review.service.ts
-│
-└── docker-compose.yml
-
-
-frontend/
-│
-├── src/
-│   ├── components/
-│   ├── hooks/
-│   ├── pages/
-│   ├── services/
-│   └── types/
-│
-└── vite.config.ts
+    UI <-->|"HTTP / REST / SSE"| Backend
+    Auth --> Core
+    Core --> LLM
+    Core <--> DB
 ```
 
 ---
 
-# Getting Started
+## 🧠 How Repository Intelligence Works
 
-## Prerequisites
+### 1. Repository Indexing
+
+When a repository branch is synchronized, CodePilot builds both a semantic representation and a structural representation of the codebase.
+
+The indexing pipeline follows:
+
+```mermaid
+flowchart TD
+    A["Repository Sync"] --> B["Git Change Detection"]
+    B --> C["Consistency Snapshot"]
+    
+    subgraph Generation ["Off-Transaction Processing"]
+        D["AST Parsing & Chunking"]
+        E["Import Resolution"]
+        F["Embedding Generation"]
+        G["Hierarchical Summary Generation"]
+        H["Relationship Generation"]
+    end
+    
+    C --> D
+    D --> E --> F --> G --> H
+    
+    H --> I["In-Memory Transaction Buffer"]
+    
+    subgraph Atomic ["Database Transaction"]
+        J["Verify Snapshot Consistency"]
+        K["Delete Stale Data"]
+        L["Insert New Data"]
+    end
+    
+    I --> J
+    J --> K --> L
+    L --> M(("Commit"))
+```
+
+#### Generation Outside the Transaction
+
+Potentially slow operations happen before a PostgreSQL transaction begins (AST analysis, Chunking, Embeddings, Summarization, Relationships). This prevents database transactions from remaining open while waiting for external LLM APIs.
+
+#### Atomic Persistence
+
+After generation completes, the system verifies the repository snapshot is unchanged, deletes stale entries, and inserts new ones within a short-lived transaction. If the repository state changed during generation, the transaction is rolled back.
+
+---
+
+## 🧩 Hierarchical Summarization
+
+Large repositories cannot be passed directly into an LLM context window. CodePilot creates a hierarchical representation:
+
+```mermaid
+flowchart TD
+    A["Repository Summary"] --> B["Architecture Summary"]
+    B --> C["Component / Module Summaries"]
+    C --> D["File Summaries"]
+    D --> E["AST Code Chunks"]
+    
+    style A fill:#2e026d,stroke:#fff,stroke-width:2px,color:#fff
+    style B fill:#4a148c,stroke:#fff,stroke-width:2px,color:#fff
+    style C fill:#7b1fa2,stroke:#fff,stroke-width:2px,color:#fff
+    style D fill:#9c27b0,stroke:#fff,stroke-width:2px,color:#fff
+    style E fill:#ba68c8,stroke:#fff,stroke-width:2px,color:#fff
+```
+
+- **Repository Level**: Overall purpose, features, tech stack, high-level design.
+- **Architecture Level**: Architecture style, major layers, system/data flows.
+- **Component Level**: Logical domains (e.g., Authentication, Payments).
+- **File Level**: File purpose, responsibilities, important classes/functions.
+- **Code Level**: Syntax-aware AST chunks with symbol types, vectors, and ranges.
+
+---
+
+## 🔍 Hybrid Retrieval Pipeline
+
+Code retrieval requires more than semantic similarity. For PR reviews, CodePilot uses a multi-stage retrieval pipeline:
+
+```mermaid
+flowchart TD
+    A["Changed Code"] --> B["Changed Symbol Analysis"]
+    B --> C["Exact Symbol Retrieval"]
+    C --> D["1-Hop Structural Expansion"]
+    D --> E["Related Test Discovery"]
+    E --> F["Global Semantic Retrieval"]
+    F --> G["Candidate Merge & Deduplication"]
+    G --> H["Provenance-Based Reranking"]
+    H --> I["Greedy Context Budgeting"]
+    I --> J["Final LLM Context"]
+    J --> K(("AI Code Review"))
+```
+
+### Retrieval Stages Overview
+
+1. **Changed Code Analysis**: Identifies changed symbols, classes, methods, and functions.
+2. **Exact Symbol Retrieval**: Resolves relevant symbols to their authoritative indexed definitions.
+3. **Structural Graph Expansion**: Bounded one-hop traversal to identify direct dependencies and dependents.
+4. **Related Test Discovery**: Finds test files via structural relationships and naming conventions.
+5. **Global Semantic Retrieval**: Discovers semantically related code lacking explicit structural relationships.
+6. **Candidate Merging and Deduplication**: Merges results from all strategies while preserving provenance (e.g., `graph_dependency`, `semantic`).
+7. **Provenance-Based Reranking**: Prioritizes candidates based on retrieval strength (Exact Match > Structural > Test > Semantic).
+8. **Context Budgeting**: A greedy allocator that reserves space for high-priority candidates first.
+
+---
+
+## 🕸️ Structural Repository Graph
+
+The repository graph represents deterministic structural relationships (currently via `IMPORTS` and `RELATED_COMPONENT`).
+
+Hierarchical ownership remains represented separately through a `parent_key` to avoid duplicating hierarchy inside the relationship graph.
+
+```text
+repository_relationships
+        │
+        └── IMPORTS
+             File ──────► File
+```
+
+The current review pipeline performs bounded one-hop traversal, while the schema can support future bounded multi-hop strategies.
+
+---
+
+## ⚡ Incremental Delta Indexing
+
+Re-indexing an entire repository after every change is expensive. CodePilot detects added, modified, and deleted files.
+
+Only affected parts of the index are regenerated. The hierarchical summary pipeline propagates updates upward only when necessary.
+
+---
+
+## 🛠️ Technology Stack
+
+| Domain | Technologies |
+|---|---|
+| **Backend** | Node.js, TypeScript, Express.js |
+| **Database** | PostgreSQL, pgvector |
+| **AI / NLP** | Tree-sitter (WebAssembly), Multi-provider LLM abstraction (Gemini, etc.) |
+| **Frontend** | React, TypeScript, Vite, Tailwind CSS, TanStack React Query, Lucide React, Clerk Auth |
+| **Infrastructure** | Docker, Git Webhooks |
+
+---
+
+## 📂 Project Structure
+
+```text
+backend/src/
+├── services/
+│   ├── Indexing & Summarization
+│   │   ├── astChunking.service.ts
+│   │   ├── moduleDiscovery.service.ts
+│   │   └── summaryPipeline.service.ts
+│   ├── Graph & Relationships
+│   │   └── repositoryGraph.service.ts
+│   ├── Retrieval
+│   │   ├── semanticRetrieval.service.ts
+│   │   ├── candidateMerger.service.ts
+│   │   └── contextBudget.service.ts
+│   └── Code Review & Impact Analysis
+│       ├── review.service.ts
+│       └── relatedTestDiscovery.service.ts
+├── utils/
+│   └── transactionBuffer.ts
+├── types/
+└── db/
+    └── schema.sql
+```
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
 
 - Node.js 18+
-- Docker Desktop
-- PostgreSQL (via Docker)
-- Clerk Account
-- Google AI Studio API Key
+- Docker Desktop (for PostgreSQL)
+- Clerk account
+- LLM API key
 
----
-
-## Backend Environment
-
-```env
-PORT=5000
-
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ai_code_review
-
-CLERK_SECRET_KEY=your_clerk_secret_key
-
-GEMINI_API_KEY=your_gemini_api_key
-```
-
----
-
-## Frontend Environment
-
-```env
-VITE_CLERK_PUBLISHABLE_KEY=your_clerk_publishable_key
-
-VITE_API_BASE_URL=http://localhost:5000/api
-```
-
----
-
-## Database Setup
-
-Start PostgreSQL using Docker.
+### 1. Database Setup
 
 ```bash
 cd backend
-
 docker-compose up -d
 ```
 
-Enable pgvector.
+Enable pgvector and initialize the schema:
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
-Initialize the project schema.
+### 2. Environment Variables
 
----
-
-## Install Tree-sitter Parsers
-
-Place the following `.wasm` files inside:
-
-```
-backend/parsers/
+**`backend/.env`**
+```env
+PORT=5000
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ai_code_review
+CLERK_SECRET_KEY=your_clerk_secret_key
+GEMINI_API_KEY=your_gemini_api_key
 ```
 
-- tree-sitter-typescript.wasm
-- tree-sitter-javascript.wasm
-- tree-sitter-python.wasm
-- tree-sitter-go.wasm
-- tree-sitter-cpp.wasm
+**`frontend/.env`**
+```env
+VITE_CLERK_PUBLISHABLE_KEY=your_clerk_publishable_key
+VITE_API_BASE_URL=http://localhost:5000/api
+```
 
----
+### 3. Tree-sitter Parsers
 
-## Running the Project
+Place the required `.wasm` parser files inside `backend/parsers/` (e.g., `tree-sitter-typescript.wasm`).
 
-### Backend
+### 4. Run the Platform
 
+**Backend:**
 ```bash
 cd backend
-
 npm install
-
 npm run dev
 ```
 
-### Frontend
-
+**Frontend:**
 ```bash
 cd frontend
-
 npm install
-
 npm run dev
 ```
 
 ---
 
-# Roadmap
+## 🗺️ Roadmap
 
-### Completed
-
-- GitHub OAuth & Repository Synchronization
-- Pull Request Diff Viewer
-- AI Code Review Engine
-- Structured Review Persistence
-- Tree-sitter AST Chunking
-- Delta Repository Indexing
-- pgvector-based Semantic Retrieval
-- Repository Codebase Chat
-
-### In Progress
-
-- Server-Sent Events (Streaming Responses)
-- Clickable Source Citations
-- Sliding Window Conversation Memory
+- [x] AST-aware code chunking
+- [x] Vector-based code retrieval
+- [x] Feature-oriented module discovery
+- [x] Hierarchical repository summarization
+- [x] Incremental repository indexing
+- [x] Structural relationship indexing
+- [x] Exact symbol retrieval
+- [x] Hybrid retrieval pipeline
+- [x] Candidate merging and provenance tracking
+- [x] Context reranking and budgeting
+- [x] Changed symbol analysis
+- [x] Related test discovery
+- [x] Transaction-safe indexing with consistency guards
 
 ### Planned
 
-- Inline AI Discussion Threads for Review Findings
-- AI Interview Mode using Repository Context
-- Multi-Repository Knowledge Workspace
-- Support for Additional LLM Providers
-- Advanced Repository Analytics
+- [ ] Server-Sent Events for streaming responses
+- [ ] Inline AI discussion threads for review findings
+- [ ] Multi-repository knowledge workspaces
+- [ ] Cross-repository retrieval
+- [ ] Additional AST relationship types such as `CALLS`
+- [ ] Bounded multi-hop graph retrieval
+- [ ] Retrieval quality evaluation benchmarks
 
 ---
 
-# Design Principles
+## 🎯 Design Principles
 
-- SOLID Architecture
-- Separation of Concerns
-- Provider-Agnostic LLM Layer
-- Transactional Data Integrity
-- Incremental Indexing
-- Retrieval-Augmented Generation
-- Production-Ready Backend Design
+CodePilot is designed around:
+
+- **Separation of Concerns & SOLID Architecture**
+- **Repository-Aware RAG**: Vector search alone is not enough for code intelligence.
+- **AST-Based Code Understanding**
+- **Deterministic + Semantic Retrieval**
+- **Incremental Processing & Transactional Data Integrity**
+- **Bounded Context Construction & Extensible LLM Provider Architecture**
+
+> The central design principle is that **vector search alone is not enough for code intelligence**. CodePilot combines semantic similarity with the explicit structure of a repository to retrieve code that is not only relevant in meaning, but also relevant in how the code actually connects and behaves.

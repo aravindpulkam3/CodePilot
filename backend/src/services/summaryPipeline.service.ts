@@ -22,11 +22,14 @@ import type {
 } from "../types/summaryTypes.js";
 import { LLMService } from "./llm.service.js";
 import { FileChange } from "./repositoryIndex.service.js";
+import { extractLocalImports } from "../utils/importResolver.js";
+import type { IRelationshipIndexer } from "../utils/transactionBuffer.js";
 
 export interface PipelineDeps {
   llm: LLMService;
   embeddings: EmbeddingClient;
   store: SummaryStore;
+  relationshipIndexer?: IRelationshipIndexer;
   useLLMModuleRefinement?: boolean; // off by default — extra LLM call, only helps on messy repos
 }
 
@@ -118,6 +121,7 @@ export async function runSummarizationPipeline(input: PipelineInput, deps: Pipel
   // --- Stage 3: file summaries (skip regeneration for unchanged files) ---
   const fileSummaries: FileSummary[] = [];
   const fileHashByPath = new Map<string, string>();
+  const knownPaths = new Set(files.map((f) => f.path));
 
   for (const meta of astMetadata) {
     const module = moduleByPath.get(meta.filePath)!;
@@ -134,6 +138,11 @@ export async function runSummarizationPipeline(input: PipelineInput, deps: Pipel
       () => generateFileSummary(meta, sourceByPath.get(meta.filePath)!, module, deps.llm),
     );
     fileSummaries.push(summary);
+
+    if (deps.relationshipIndexer) {
+      const localImports = extractLocalImports(meta.filePath, meta.imports, knownPaths);
+      await deps.relationshipIndexer.indexFileRelationships(repositoryId, meta.filePath, localImports);
+    }
   }
 
   // --- Stage 4: component summaries (built ONLY from file summaries) -----
@@ -195,9 +204,19 @@ export async function updateSummariesIncrementally(input: IncrementalPipelineInp
   const { repositoryId, changedFiles, readme, packageMetadata } = input;
 
   // --- Stage 1 & 2 & 3: AST extraction, module discovery, and file summaries for changed files ---
+  const allStoredFiles = await deps.store.getAllFiles(repositoryId);
+  const knownPaths = new Set(allStoredFiles.map(row => row.node_key));
+  // Add new files from changedFiles to knownPaths
+  for (const f of changedFiles) {
+    if (f.status !== 'removed') knownPaths.add(f.path);
+  }
+
   for (const file of changedFiles) {
     if (file.status === 'removed') {
       await deps.store.delete(repositoryId, 'file', file.path);
+      if (deps.relationshipIndexer) {
+        await deps.relationshipIndexer.deleteFileRelationships(repositoryId, file.path);
+      }
       continue;
     }
 
@@ -219,13 +238,18 @@ export async function updateSummariesIncrementally(input: IncrementalPipelineInp
       contentHash,
       () => generateFileSummary(meta, file.content!, moduleName, deps.llm),
     );
+
+    if (deps.relationshipIndexer) {
+      const localImports = extractLocalImports(meta.filePath, meta.imports, knownPaths);
+      await deps.relationshipIndexer.indexFileRelationships(repositoryId, meta.filePath, localImports);
+    }
   }
 
   // --- Re-aggregation setup ---
-  // Fetch ALL current file summaries from DB
-  const allStoredFiles = await deps.store.getAllFiles(repositoryId);
-  const fileSummaries = allStoredFiles.map(row => row.summary_json as unknown as FileSummary);
-  const fileHashByPath = new Map(allStoredFiles.map(row => [row.node_key, row.content_hash]));
+  // Re-fetch all files because some were just upserted/deleted
+  const updatedStoredFiles = await deps.store.getAllFiles(repositoryId);
+  const fileSummaries = updatedStoredFiles.map(row => row.summary_json as unknown as FileSummary);
+  const fileHashByPath = new Map(updatedStoredFiles.map(row => [row.node_key, row.content_hash]));
 
   const filesByModule = new Map<string, FileSummary[]>();
   for (const fs of fileSummaries) {

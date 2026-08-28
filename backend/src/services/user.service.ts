@@ -9,13 +9,6 @@ import type { AppUserRow } from "../types/user.js";
  */
 export const userService = {
 
-
-  /**
-   * Upserts the application-side user row from a Clerk identity. Called
-   * from the `user.created` / `user.updated` webhook handlers so
-   * `app_users` stays in sync with Clerk without the frontend ever
-   * writing auth data directly.
-   */
   async upsertFromClerk(input: {
     clerkId: string;
     email: string;

@@ -2,6 +2,7 @@ import path from "path";
 import { Type, Schema } from "@google/genai";
 import type { FileASTMetadata } from "../types/summaryTypes.js";
 import { LLMService, LLMMessage } from "./llm.service.js";
+import { resolveLocalImport } from "../utils/importResolver.js";
 
 // Folders that describe *layers*, not *features* — grouping purely by these
 // names produces a "controllers" module and a "services" module instead of
@@ -74,16 +75,6 @@ export function initialModuleFor(filePath: string): string {
   // roots like "src"/"app" that carry no feature meaning on their own.
   const meaningful = segments.filter((s) => !["src", "app", "source"].includes(s.toLowerCase()));
   return toTitleCase(meaningful[meaningful.length - 1] ?? "Root");
-}
-
-// Best-effort resolution of a relative import specifier to a repo-relative
-// file path, so the import graph only contains edges between files that
-// actually exist in this repo (external packages are dropped).
-function resolveLocalImport(fromFile: string, specifier: string, knownPaths: Set<string>): string | null {
-  if (!specifier.startsWith(".")) return null; // not a relative import -> external package
-  const base = path.normalize(path.join(path.dirname(fromFile), specifier));
-  const candidates = [base, `${base}.ts`, `${base}.tsx`, `${base}.js`, `${base}.jsx`, `${base}/index.ts`, `${base}/index.js`];
-  return candidates.find((c) => knownPaths.has(c)) ?? null;
 }
 
 function buildImportGraph(files: FileASTMetadata[]): Map<string, Set<string>> {

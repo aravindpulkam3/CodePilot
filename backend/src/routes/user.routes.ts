@@ -1,7 +1,11 @@
 import { Router } from "express";
 import { getMe } from "../controllers/user.controller.js";
 import { requireAuth } from "@clerk/express";
+import { Request, Response, NextFunction } from "express";
 
-export const userRoutes = Router();
+const userRouter = Router();
 
-userRoutes.get("/me", requireAuth, getMe);
+userRouter.get("/me",getMe);
+
+export default userRouter;
+

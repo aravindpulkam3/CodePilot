@@ -23,7 +23,6 @@ import { useAuth } from "@clerk/clerk-react";
 import { Button } from "@/components/ui/Button";
 import { ChatInterface } from "@/components/chat/ChatInterface";
 
-
 export default function RepositoryDetailsPage() {
   const { repositoryId } = useParams<{ repositoryId: string }>();
   const queryClient = useQueryClient();
@@ -48,14 +47,16 @@ export default function RepositoryDetailsPage() {
   const [streamedSources, setStreamedSources] = useState<any[]>([]);
   const [optimisticUserMessage, setOptimisticUserMessage] = useState("");
 
-  const { data: chatSessions = [] } = useChatSessions(repositoryId!, 'QA');
-  const { data: interviewSessions = [] } = useChatSessions(repositoryId!, 'INTERVIEW');
+  const { data: chatSessions = [] } = useChatSessions(repositoryId!, "QA");
+  const { data: interviewSessions = [] } = useChatSessions(
+    repositoryId!,
+    "INTERVIEW",
+  );
   const { data: history = [], isLoading: isHistoryLoading } =
     useChatHistory(activeSessionId);
 
   // console.log(history);
-  console.log(interviewSessions,chatSessions);
-
+  console.log(interviewSessions, chatSessions);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -66,7 +67,7 @@ export default function RepositoryDetailsPage() {
 
   const handleSendMessage = async (msgToSend: string) => {
     if (!repositoryId || !msgToSend.trim() || isStreaming) return;
-    console.log("handling send message",msgToSend);
+    console.log("handling send message", msgToSend);
     const userMessage = msgToSend;
     setOptimisticUserMessage(userMessage);
     setStreamedText("");
@@ -315,11 +316,17 @@ export default function RepositoryDetailsPage() {
         <div className="mt-6 flex flex-col gap-6">
           <div className="flex justify-between items-center bg-slate-50 dark:bg-slate-900 border border-border-light dark:border-border-dark p-6 rounded-xl shadow-sm">
             <div>
-              <h3 className="text-lg font-semibold text-ink-light dark:text-ink-dark">Preparation-focused Interviews</h3>
-              <p className="text-sm text-muted-light">Run context-aware technical interviews to prepare yourself.</p>
+              <h3 className="text-lg font-semibold text-ink-light dark:text-ink-dark">
+                Preparation-focused Interviews
+              </h3>
+              <p className="text-sm text-muted-light">
+                Run context-aware technical interviews to prepare yourself.
+              </p>
             </div>
             <Button
-              onClick={() => navigate(`/repositories/${repositoryId}/interview`)}
+              onClick={() =>
+                navigate(`/repositories/${repositoryId}/interview`)
+              }
               size="lg"
             >
               Start New Technical Interview
@@ -327,34 +334,67 @@ export default function RepositoryDetailsPage() {
           </div>
 
           <div className="space-y-4">
-            <h3 className="text-md font-semibold text-ink-light dark:text-ink-dark">Past Interviews</h3>
-            
+            <h3 className="text-md font-semibold text-ink-light dark:text-ink-dark">
+              Past Interviews
+            </h3>
+
             {interviewSessions.length === 0 ? (
-              <p className="text-sm text-muted-light">No past interview sessions found.</p>
+              <p className="text-sm text-muted-light">
+                No past interview sessions found.
+              </p>
             ) : (
               interviewSessions.map((s: any) => {
-                const state = typeof s.state === 'string' ? JSON.parse(s.state) : s.state;
-                const isCompleted = s.status === 'completed';
-                
+                const state =
+                  typeof s.state === "string" ? JSON.parse(s.state) : s.state;
+                const isCompleted = s.status === "completed";
+
                 return (
-                  <Card key={s.id} className="transition-colors hover:border-slate-300 dark:hover:border-slate-700">
+                  <Card
+                    key={s.id}
+                    className="transition-colors hover:border-slate-300 dark:hover:border-slate-700"
+                  >
                     <CardBody className="p-5 flex justify-between items-center">
                       <div>
-                        <h4 className="font-semibold text-ink-light dark:text-ink-dark mb-1 capitalize">{state?.currentTopic || 'General'} Interview</h4>
+                        <h4 className="font-semibold text-ink-light dark:text-ink-dark mb-1 capitalize">
+                          {state?.currentTopic || "General"} Interview
+                        </h4>
                         <div className="flex gap-4 text-xs text-muted-light">
-                          <span>{new Date(s.created_at).toLocaleDateString()}</span>
-                          <span className="capitalize text-signal-500">Difficulty: {state?.difficulty}</span>
-                          {isCompleted ? <span className="text-green-600 font-medium">Completed</span> : <span className="text-amber-500 font-medium">In Progress</span>}
+                          <span>
+                            {new Date(s.created_at).toLocaleDateString()}
+                          </span>
+                          <span className="capitalize text-signal-500">
+                            Difficulty: {state?.difficulty}
+                          </span>
+                          {isCompleted ? (
+                            <span className="text-green-600 font-medium">
+                              Completed
+                            </span>
+                          ) : (
+                            <span className="text-amber-500 font-medium">
+                              In Progress
+                            </span>
+                          )}
                         </div>
                       </div>
                       <div className="flex gap-4 items-center">
                         {state?.assessment && (
                           <div className="text-right mr-4">
-                            <span className="block text-xl font-bold text-signal-500">{state.assessment.score}/10</span>
-                            <span className="text-xs text-muted-light">Final Score</span>
+                            <span className="block text-xl font-bold text-signal-500">
+                              {state.assessment.score}/10
+                            </span>
+                            <span className="text-xs text-muted-light">
+                              Final Score
+                            </span>
                           </div>
                         )}
-                        <Button variant="secondary" onClick={() => navigate(`/repositories/${repositoryId}/interview/${s.id}`)}>
+                        <Button
+                          variant="secondary"
+                          onClick={() =>
+                            navigate(
+                              `/repositories/${repositoryId}/interview/${s.id}`,
+                            )
+                          }
+                        >
                           {isCompleted ? "Review Transcript" : "Resume"}
                         </Button>
                       </div>

@@ -1,239 +1,36 @@
-import { pool } from "../config/db.js";
-import { embedder } from "./embedding.service.js";
 import { repositorySyncService } from "./repositorySync.service.js";
 import {
   CodeChunkSearchResult,
+  RetrievalCandidate,
   RetrievalOptions,
   RetrievedContext,
-  SummarySearchResult,
+  RetrievalTrace,
+  RETRIEVAL_WEIGHTS,
 } from "../types/retrievalTypes.js";
 import {
-  ArchitectureSummary,
   ComponentSummary,
   FileSummary,
-  RepositorySummary,
 } from "../types/summaryTypes.js";
+
+import { semanticRetrievalService } from "./semanticRetrieval.service.js";
+import { repositoryGraphService } from "./repositoryGraph.service.js";
+import { symbolRetrievalService } from "./symbolRetrieval.service.js";
+import { relatedTestDiscoveryService } from "./relatedTestDiscovery.service.js";
+import { changedSymbolAnalysisService } from "./changedSymbolAnalysis.service.js";
+import { candidateMergerService } from "./candidateMerger.service.js";
+import { retrievalRerankerService } from "./retrievalReranker.service.js";
+import { contextBudgetService } from "./contextBudget.service.js";
+import { performance } from "perf_hooks";
 
 const DEFAULT_OPTIONS: RetrievalOptions = {
   maxComponents: 3,
   maxFiles: 5,
   maxCodeChunks: 10,
   similarityThreshold: 0.6,
+  maxTokens: 15000,
 };
 
 export class RepositoryRetrievalService {
-  /**
-   * Generates a single query embedding to be reused across searches.
-   */
-  private async getQueryVectorStr(queryText: string): Promise<string> {
-    const queryVector = await embedder.embedQuery(queryText);
-    return `[${queryVector.join(",")}]`;
-  }
-
-  /**
-   * Search summaries using pgvector.
-   */
-  public async searchSummaries(
-    repositoryId: string,
-    queryVectorStr: string,
-    nodeType?: "repository" | "architecture" | "component" | "file",
-    limit: number = 5,
-    threshold: number = 0.6,
-  ): Promise<SummarySearchResult[]> {
-    console.log("came to search summaries");
-    const client = await pool.connect();
-    try {
-      let query = `
-        SELECT 
-          node_type, 
-          node_key, 
-          parent_key, 
-          summary_json,
-          1 - (embedding <=> $1::vector) AS similarity
-        FROM repository_summaries
-        WHERE repository_id = $2
-          AND (1 - (embedding <=> $1::vector)) >= $3
-      `;
-      const params: any[] = [queryVectorStr, repositoryId, threshold];
-
-      if (nodeType) {
-        query += ` AND node_type = $4`;
-        params.push(nodeType);
-      }
-
-      query += ` ORDER BY embedding <=> $1::vector LIMIT $${params.length + 1}`;
-      params.push(limit);
-
-      const { rows } = await client.query(query, params);
-      return rows.map((r) => ({
-        nodeType: r.node_type,
-        nodeKey: r.node_key,
-        parentKey: r.parent_key,
-        summary: r.summary_json,
-        similarity: r.similarity,
-      }));
-    } finally {
-      client.release();
-    }
-  }
-
-  /**
-   * Fetches file summaries for a given component.
-   */
-  public async resolveComponentFiles(
-    repositoryId: string,
-    componentName: string,
-  ): Promise<SummarySearchResult[]> {
-    const client = await pool.connect();
-    try {
-      const { rows } = await client.query(
-        `SELECT 
-          node_type, 
-          node_key, 
-          parent_key, 
-          summary_json
-         FROM repository_summaries
-         WHERE repository_id = $1 AND node_type = 'file' AND parent_key = $2`,
-        [repositoryId, componentName],
-      );
-
-      return rows.map((r) => ({
-        nodeType: r.node_type,
-        nodeKey: r.node_key,
-        parentKey: r.parent_key,
-        summary: r.summary_json,
-        similarity: 1.0, // Exact match
-      }));
-    } finally {
-      client.release();
-    }
-  }
-
-  /**
-   * Direct fetch of specific file summaries
-   */
-  public async getFileSummaries(
-    repositoryId: string,
-    filePaths: string[],
-  ): Promise<SummarySearchResult[]> {
-    if (!filePaths.length) return [];
-
-    const client = await pool.connect();
-    try {
-      const { rows } = await client.query(
-        `SELECT 
-          node_type, 
-          node_key, 
-          parent_key, 
-          summary_json
-         FROM repository_summaries
-         WHERE repository_id = $1 AND node_type = 'file' AND node_key = ANY($2)`,
-        [repositoryId, filePaths],
-      );
-
-      return rows.map((r) => ({
-        nodeType: r.node_type,
-        nodeKey: r.node_key,
-        parentKey: r.parent_key,
-        summary: r.summary_json,
-        similarity: 1.0, // Exact match
-      }));
-    } finally {
-      client.release();
-    }
-  }
-
-  /**
-   * Fetches specific component summaries by name
-   */
-  public async getComponentSummaries(
-    repositoryId: string,
-    componentNames: string[],
-  ): Promise<SummarySearchResult[]> {
-    if (!componentNames.length) return [];
-
-    const client = await pool.connect();
-    try {
-      const { rows } = await client.query(
-        `SELECT 
-          node_type, 
-          node_key, 
-          parent_key, 
-          summary_json
-         FROM repository_summaries
-         WHERE repository_id = $1 AND node_type = 'component' AND node_key = ANY($2)`,
-        [repositoryId, componentNames],
-      );
-
-      return rows.map((r) => ({
-        nodeType: r.node_type,
-        nodeKey: r.node_key,
-        parentKey: r.parent_key,
-        summary: r.summary_json,
-        similarity: 1.0, // Exact match
-      }));
-    } finally {
-      client.release();
-    }
-  }
-
-  /**
-   * Search code chunks, optionally restricted to specific file paths.
-   */
-  public async searchCodeChunks(
-    repositoryId: string,
-    queryVectorStr: string,
-    options: RetrievalOptions,
-    restrictedFilePaths?: string[],
-  ): Promise<CodeChunkSearchResult[]> {
-    const limit = options.maxCodeChunks || DEFAULT_OPTIONS.maxCodeChunks;
-    const threshold =
-      options.similarityThreshold || DEFAULT_OPTIONS.similarityThreshold;
-
-    const client = await pool.connect();
-    try {
-      let query = `
-        SELECT 
-          file_path, 
-          symbol_type, 
-          symbol_name, 
-          start_line, 
-          end_line, 
-          content,
-          1 - (embedding <=> $1::vector) AS similarity_score
-        FROM repository_embeddings
-        WHERE repository_id = $2
-          AND (1 - (embedding <=> $1::vector)) >= $3
-      `;
-      const params: any[] = [queryVectorStr, repositoryId, threshold];
-
-      if (restrictedFilePaths && restrictedFilePaths.length > 0) {
-        query += ` AND file_path = ANY($4)`;
-        params.push(restrictedFilePaths);
-      }
-
-      query += ` ORDER BY embedding <=> $1::vector LIMIT $${params.length + 1}`;
-      params.push(limit);
-
-      const { rows } = await client.query(query, params);
-
-      return rows.map((r) => ({
-        filePath: r.file_path,
-        symbolType: r.symbol_type,
-        symbolName: r.symbol_name,
-        lineStart: r.start_line,
-        lineEnd: r.end_line,
-        content: r.content,
-        similarity: r.similarity_score,
-      }));
-    } finally {
-      client.release();
-    }
-  }
-
-  /**
-   * Performs JIT sync to ensure repo is up to date before retrieval.
-   */
   private async ensureSynced(clerkUserId: string, repositoryId: string) {
     console.log(
       `[RetrievalService] JIT Sync check for repository ${repositoryId}...`,
@@ -244,22 +41,12 @@ export class RepositoryRetrievalService {
     );
   }
 
-  /**
-   * Q&A Retrieval Mode:
-   * 1. Search summaries for relevant components/files.
-   * 2. Search code chunks restricted to those files.
-   * 3. Fallback to direct code chunk search if summaries are weak.
-   */
-  public async retrieveQAContext(
-    clerkUserId: string,
-    repositoryId: string,
-    query: string,
-    opts?: RetrievalOptions,
-  ): Promise<RetrievedContext> {
+  // --- QA Mode (Legacy behavior preserved) ---
+  public async retrieveQAContext(clerkUserId: string, repositoryId: string, query: string, opts?: RetrievalOptions): Promise<RetrievedContext> {
     const options = { ...DEFAULT_OPTIONS, ...opts };
     await this.ensureSynced(clerkUserId, repositoryId);
 
-    const queryVectorStr = await this.getQueryVectorStr(query);
+    const queryVectorStr = await semanticRetrievalService.getQueryVectorStr(query);
 
     const context: RetrievedContext = {
       repository: null,
@@ -267,15 +54,10 @@ export class RepositoryRetrievalService {
       components: [],
       files: [],
       codeChunks: [],
-      metadata: {
-        mode: "qa",
-        usedFallback: false,
-        query,
-      },
+      metadata: { mode: "qa", usedFallback: false, query },
     };
 
-    // 1. Semantic search over components and files
-    const summaryResults = await this.searchSummaries(
+    const summaryResults = await semanticRetrievalService.searchSummaries(
       repositoryId,
       queryVectorStr,
       undefined,
@@ -294,11 +76,10 @@ export class RepositoryRetrievalService {
         context.components.length < (options.maxComponents || 3)
       ) {
         context.components.push(res.summary as ComponentSummary);
-        const childFiles = await this.resolveComponentFiles(
+        const childFiles = await semanticRetrievalService.resolveComponentFiles(
           repositoryId,
           res.nodeKey,
         );
-        // Only include top N files from this component
         const fileLimit = options.maxFiles || 5;
         let added = 0;
         for (const cf of childFiles) {
@@ -312,24 +93,18 @@ export class RepositoryRetrievalService {
       }
     }
 
-    // Deduplicate component summaries and limit
     context.components = context.components.slice(0, options.maxComponents);
     context.files = context.files.slice(0, options.maxFiles);
 
-    console.log(relevantFilePaths);
-
-    // 2. Fallback check
     if (relevantFilePaths.size === 0) {
       context.metadata.usedFallback = true;
-      // Direct code chunk search without file restrictions
-      context.codeChunks = await this.searchCodeChunks(
+      context.codeChunks = await semanticRetrievalService.searchCodeChunks(
         repositoryId,
         queryVectorStr,
         options,
       );
     } else {
-      // 3. Restricted code chunk search
-      context.codeChunks = await this.searchCodeChunks(
+      context.codeChunks = await semanticRetrievalService.searchCodeChunks(
         repositoryId,
         queryVectorStr,
         options,
@@ -337,19 +112,12 @@ export class RepositoryRetrievalService {
       );
     }
 
-    console.log(context.codeChunks.length);
-
     return context;
   }
 
-  public async retrieveInterviewStartContext(
-    clerkUserId: string,
-    repositoryId: string,
-    opts?: RetrievalOptions,
-  ): Promise<RetrievedContext> {
+  // --- Interview Mode (Legacy behavior preserved) ---
+  public async retrieveInterviewStartContext(clerkUserId: string, repositoryId: string, opts?: RetrievalOptions): Promise<RetrievedContext> {
     const options = { ...DEFAULT_OPTIONS, ...opts };
-
-    console.log("came to retrieve the starting context for the interview");
     await this.ensureSynced(clerkUserId, repositoryId);
 
     const context: RetrievedContext = {
@@ -366,71 +134,33 @@ export class RepositoryRetrievalService {
       },
     };
 
-    const client = await pool.connect();
-    try {
-      // 1. Fetch Repository Summary
-      const { rows: repoRows } = await client.query(
-        `SELECT summary_json FROM repository_summaries WHERE repository_id = $1 AND node_type = 'repository' AND node_key = 'repository'`,
-        [repositoryId],
-      );
-      if (repoRows.length > 0) {
-        context.repository = repoRows[0].summary_json as RepositorySummary;
-      }
+    const repoSummaries = await semanticRetrievalService.searchSummaries(repositoryId, "[0]", "repository", 1, 0);
+    if (repoSummaries.length > 0) context.repository = repoSummaries[0].summary as any;
 
-      // 2. Fetch Architecture Summary
-      const { rows: archRows } = await client.query(
-        `SELECT summary_json FROM repository_summaries WHERE repository_id = $1 AND node_type = 'architecture' AND node_key = 'architecture'`,
-        [repositoryId],
-      );
-      if (archRows.length > 0) {
-        context.architecture = archRows[0].summary_json as ArchitectureSummary;
-      }
+    const archSummaries = await semanticRetrievalService.searchSummaries(repositoryId, "[0]", "architecture", 1, 0);
+    if (archSummaries.length > 0) context.architecture = archSummaries[0].summary as any;
 
-      // 3. Fetch Components
-      let componentKeys: string[] = [];
-      if (context.architecture && context.architecture.majorComponents) {
-        componentKeys = context.architecture.majorComponents;
-      }
+    let componentKeys: string[] = [];
+    if (context.architecture && context.architecture.majorComponents) {
+      componentKeys = context.architecture.majorComponents;
+    }
 
-      const limit = options.maxComponents || 3;
-      if (componentKeys.length > 0) {
-        const { rows: compRows } = await client.query(
-          `SELECT summary_json FROM repository_summaries WHERE repository_id = $1 AND node_type = 'component' AND node_key = ANY($2) LIMIT $3`,
-          [repositoryId, componentKeys, limit],
-        );
-        context.components = compRows.map(
-          (r) => r.summary_json as ComponentSummary,
-        );
-      }
-
-      // Fallback if no components were found via architecture
-      if (context.components.length === 0) {
-        const { rows: compRows } = await client.query(
-          `SELECT summary_json FROM repository_summaries WHERE repository_id = $1 AND node_type = 'component' LIMIT $2`,
-          [repositoryId, limit],
-        );
-        context.components = compRows.map(
-          (r) => r.summary_json as ComponentSummary,
-        );
-        context.metadata.usedFallback = true;
-      }
-    } finally {
-      client.release();
+    if (componentKeys.length > 0) {
+      const compSummaries = await semanticRetrievalService.getComponentSummaries(repositoryId, componentKeys.slice(0, options.maxComponents || 3));
+      context.components = compSummaries.map(c => c.summary as ComponentSummary);
+    } else {
+      const compSummaries = await semanticRetrievalService.searchSummaries(repositoryId, "[0]", "component", options.maxComponents || 3, 0);
+      context.components = compSummaries.map(c => c.summary as ComponentSummary);
+      context.metadata.usedFallback = true;
     }
 
     return context;
   }
 
-  public async retrieveInterviewFollowUpContext(
-    clerkUserId: string,
-    repositoryId: string,
-    query: string,
-    opts?: RetrievalOptions,
-  ): Promise<RetrievedContext> {
+  public async retrieveInterviewFollowUpContext(clerkUserId: string, repositoryId: string, query: string, opts?: RetrievalOptions): Promise<RetrievedContext> {
     const options = { ...DEFAULT_OPTIONS, ...opts };
-    // Skip ensureSynced for follow-ups to avoid expensive index triggers during interview
+    const queryVectorStr = await semanticRetrievalService.getQueryVectorStr(query);
 
-    const queryVectorStr = await this.getQueryVectorStr(query);
     const context: RetrievedContext = {
       repository: null,
       architecture: null,
@@ -445,68 +175,27 @@ export class RepositoryRetrievalService {
       },
     };
 
-    // 1. Semantic search for Components
-    const components = await this.searchSummaries(
-      repositoryId,
-      queryVectorStr,
-      "component",
-      options.maxComponents,
-      options.similarityThreshold,
-    );
+    const components = await semanticRetrievalService.searchSummaries(repositoryId, queryVectorStr, "component", options.maxComponents, options.similarityThreshold);
     context.components = components.map((c) => c.summary as ComponentSummary);
 
     const componentKeys = components.map((c) => c.nodeKey);
-
     if (componentKeys.length > 0) {
-      // 2. Semantic search for Files restricted by component parents
-      const client = await pool.connect();
-      try {
-        const fileLimit = options.maxFiles || 5;
-        const threshold = options.similarityThreshold || 0.6;
-        const { rows } = await client.query(
-          `
-          SELECT 
-            node_key, 
-            summary_json,
-            1 - (embedding <=> $1::vector) AS similarity
-          FROM repository_summaries
-          WHERE repository_id = $2 
-            AND node_type = 'file' 
-            AND parent_key = ANY($3)
-            AND (1 - (embedding <=> $1::vector)) >= $4
-          ORDER BY embedding <=> $1::vector 
-          LIMIT $5
-        `,
-          [queryVectorStr, repositoryId, componentKeys, threshold, fileLimit],
-        );
-
-        context.files = rows.map((r) => r.summary_json as FileSummary);
-      } finally {
-        client.release();
-      }
+       for (const key of componentKeys) {
+         const files = await semanticRetrievalService.resolveComponentFiles(repositoryId, key);
+         context.files.push(...files.slice(0, 2).map(f => f.summary as FileSummary));
+       }
+       context.files = context.files.slice(0, options.maxFiles);
     }
 
-    // 3. Optional Code Chunk search
     if (options.includeCode) {
-      const filePaths = context.files
-        .map((f) => f.path || (f as any).filePath)
-        .filter(Boolean);
-
-      context.codeChunks = await this.searchCodeChunks(
-        repositoryId,
-        queryVectorStr,
-        options,
-        filePaths.length > 0 ? filePaths : undefined,
-      );
+      const filePaths = context.files.map((f) => f.path || (f as any).filePath).filter(Boolean);
+      context.codeChunks = await semanticRetrievalService.searchCodeChunks(repositoryId, queryVectorStr, options, filePaths.length > 0 ? filePaths : undefined);
     }
 
     return context;
   }
 
-  /**
-   * Code Review Retrieval Mode:
-   * Start from changed files -> fetch their summaries & parent components -> fetch related chunks.
-   */
+  // --- REVIEW MODE: Hybrid Retrieval Pipeline ---
   public async retrieveReviewContext(
     clerkUserId: string,
     repositoryId: string,
@@ -514,55 +203,213 @@ export class RepositoryRetrievalService {
     changedFiles: string[],
     opts?: RetrievalOptions,
   ): Promise<RetrievedContext> {
+    const startTime = performance.now();
     const options = { ...DEFAULT_OPTIONS, ...opts };
     await this.ensureSynced(clerkUserId, repositoryId);
 
-    const queryVectorStr = await this.getQueryVectorStr(query);
+    const queryVectorStr = await semanticRetrievalService.getQueryVectorStr(query);
+    const rawCandidates: RetrievalCandidate[] = [];
+
+    const trace: RetrievalTrace = {
+      timingMs: {
+        changedAnalysis: 0,
+        exactSymbol: 0,
+        graphExpansion: 0,
+        semanticRetrieval: 0,
+        mergeAndRerank: 0,
+        budgetAllocation: 0,
+        total: 0
+      },
+      counts: {
+        exactSymbol: 0,
+        graphDependency: 0,
+        graphDependent: 0,
+        relatedTest: 0,
+        semantic: 0,
+        totalPreMerge: 0,
+        totalPostMerge: 0,
+        finalAccepted: 0
+      },
+      budget: {
+        changedCodeTokens: 0,
+        graphTokens: 0,
+        testTokens: 0,
+        semanticTokens: 0,
+        totalTokens: 0
+      },
+      droppedCandidates: []
+    };
+
+    let t0 = performance.now();
+
+    // Stage 1: Changed Code Analysis
+    const changedSymbols = await changedSymbolAnalysisService.getSymbolsInChangedFiles(repositoryId, changedFiles);
+    
+    trace.timingMs.changedAnalysis = performance.now() - t0;
+    t0 = performance.now();
+
+    // Stage 2: Add exact symbols from changed files
+    for (const sym of changedSymbols) {
+      const defs = await symbolRetrievalService.getSymbolDefinition(repositoryId, sym.symbolName);
+      for (const def of defs) {
+        rawCandidates.push(this.chunkToCandidate(def, "exact_symbol"));
+        trace.counts.exactSymbol++;
+      }
+    }
+    
+    trace.timingMs.exactSymbol = performance.now() - t0;
+    t0 = performance.now();
+
+    // Stage 3: Structural Expansion (Graph)
+    for (const file of changedFiles) {
+      // 3a. Direct dependencies
+      const deps = await repositoryGraphService.getDirectDependencies(repositoryId, file);
+      if (deps.length > 0) {
+         const depSummaries = await semanticRetrievalService.getFileSummaries(repositoryId, deps);
+         depSummaries.forEach(s => {
+           rawCandidates.push(this.summaryToCandidate(s, "graph_dependency"));
+           trace.counts.graphDependency++;
+         });
+      }
+
+      // 3b. Direct dependents
+      const dependents = await repositoryGraphService.getDirectDependents(repositoryId, file);
+      if (dependents.length > 0) {
+         const depSummaries = await semanticRetrievalService.getFileSummaries(repositoryId, dependents);
+         depSummaries.forEach(s => {
+           rawCandidates.push(this.summaryToCandidate(s, "graph_dependent"));
+           trace.counts.graphDependent++;
+         });
+      }
+
+      // 3c. Related Tests
+      const tests = await relatedTestDiscoveryService.discoverTestsForFile(repositoryId, file);
+      if (tests.length > 0) {
+        const testSummaries = await semanticRetrievalService.getFileSummaries(repositoryId, tests);
+        testSummaries.forEach(s => {
+          rawCandidates.push(this.summaryToCandidate(s, "related_test"));
+          trace.counts.relatedTest++;
+        });
+      }
+    }
+
+    let usedFallback = false;
+    // Fallback: If no graph links were found, we are operating blindly. Record this.
+    if (trace.counts.graphDependency === 0 && trace.counts.graphDependent === 0) {
+      usedFallback = true;
+    }
+
+    trace.timingMs.graphExpansion = performance.now() - t0;
+    t0 = performance.now();
+
+    // Stage 4: Global Semantic Retrieval
+    const semanticChunks = await semanticRetrievalService.searchCodeChunks(repositoryId, queryVectorStr, options);
+    for (const chunk of semanticChunks) {
+      rawCandidates.push(this.chunkToCandidate(chunk, "semantic_chunk"));
+      trace.counts.semantic++;
+    }
+
+    const semanticSummaries = await semanticRetrievalService.searchSummaries(repositoryId, queryVectorStr, "file", 5, options.similarityThreshold);
+    for (const summary of semanticSummaries) {
+       rawCandidates.push(this.summaryToCandidate(summary, "semantic_summary"));
+       trace.counts.semantic++;
+    }
+
+    trace.counts.totalPreMerge = rawCandidates.length;
+
+    trace.timingMs.semanticRetrieval = performance.now() - t0;
+    t0 = performance.now();
+
+    // Stage 5: Merge & Deduplicate
+    const mergeResult = candidateMergerService.mergeCandidates(rawCandidates);
+    let candidates = mergeResult.candidates;
+    trace.droppedCandidates.push(...mergeResult.dropped);
+    trace.counts.totalPostMerge = candidates.length;
+
+    // Stage 6: Rerank
+    candidates = retrievalRerankerService.rerankCandidates(candidates);
+
+    trace.timingMs.mergeAndRerank = performance.now() - t0;
+    t0 = performance.now();
+
+    // Stage 7: Context Budgeting
+    const budgetResult = contextBudgetService.allocateBudget(candidates, options.maxTokens || 15000);
+    const finalCandidates = budgetResult.accepted;
+    
+    trace.droppedCandidates.push(...budgetResult.dropped);
+    trace.counts.finalAccepted = finalCandidates.length;
+    trace.budget = budgetResult.budget;
+
+    trace.timingMs.budgetAllocation = performance.now() - t0;
+    trace.timingMs.total = performance.now() - startTime;
+
+    // Finally: Format as RetrievedContext for consumer compatibility
     const context: RetrievedContext = {
       repository: null,
       architecture: null,
       components: [],
       files: [],
       codeChunks: [],
-      metadata: {
-        mode: "review",
-        usedFallback: false,
-        query,
-      },
+      metadata: { mode: "review", usedFallback, query, trace },
     };
 
-    // 1. Get summaries for changed files
-    const fileResults = await this.getFileSummaries(repositoryId, changedFiles);
-    context.files = fileResults.map((r) => r.summary as FileSummary);
-
-    // 2. Identify parent components
-    const componentNames = new Set<string>();
-    for (const res of fileResults) {
-      if (res.parentKey) {
-        componentNames.add(res.parentKey);
+    for (const c of finalCandidates) {
+      if (c.dataType === "code_chunk") {
+        context.codeChunks.push({
+          filePath: c.metadata.filePath!,
+          symbolName: c.metadata.symbolName!,
+          symbolType: "unknown",
+          content: c.content,
+          lineStart: c.metadata.startLine!,
+          lineEnd: c.metadata.endLine!,
+          similarity: c.score
+        });
+      } else if (c.dataType === "file_summary") {
+         try {
+           context.files.push(JSON.parse(c.content) as FileSummary);
+         } catch(e) {}
       }
     }
 
-    // 3. Fetch parent component summaries
-    if (componentNames.size > 0) {
-      const compResults = await this.getComponentSummaries(
-        repositoryId,
-        Array.from(componentNames),
-      );
-      context.components = compResults.map(
-        (r) => r.summary as ComponentSummary,
-      );
+    // Also include changed file summaries explicitly 
+    const changedFileSummaries = await semanticRetrievalService.getFileSummaries(repositoryId, changedFiles);
+    for (const cf of changedFileSummaries) {
+       context.files.push(cf.summary as FileSummary);
     }
 
-    // 4. Code search restricted primarily to the changed files
-    context.codeChunks = await this.searchCodeChunks(
-      repositoryId,
-      queryVectorStr,
-      options,
-      changedFiles,
-    );
+    // Deduplicate files
+    context.files = Array.from(new Map(context.files.map(f => [f.path, f])).values());
 
     return context;
+  }
+
+  private chunkToCandidate(chunk: CodeChunkSearchResult, sourceType: keyof typeof RETRIEVAL_WEIGHTS): RetrievalCandidate {
+    return {
+      identityKey: `${chunk.filePath}#${chunk.lineStart}-${chunk.lineEnd}`,
+      content: chunk.content,
+      dataType: "code_chunk",
+      sources: [{ type: sourceType, weight: RETRIEVAL_WEIGHTS[sourceType] }],
+      score: 0,
+      metadata: {
+        filePath: chunk.filePath,
+        startLine: chunk.lineStart,
+        endLine: chunk.lineEnd,
+        symbolName: chunk.symbolName
+      }
+    };
+  }
+
+  private summaryToCandidate(summary: any, sourceType: keyof typeof RETRIEVAL_WEIGHTS): RetrievalCandidate {
+    return {
+      identityKey: summary.nodeKey,
+      content: JSON.stringify(summary.summary),
+      dataType: "file_summary",
+      sources: [{ type: sourceType, weight: RETRIEVAL_WEIGHTS[sourceType] }],
+      score: 0,
+      metadata: {
+        filePath: summary.nodeKey,
+      }
+    };
   }
 }
 

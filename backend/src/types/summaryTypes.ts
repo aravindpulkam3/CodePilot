@@ -16,7 +16,6 @@ export interface FileSummary {
   importantClasses: string[];
   importantFunctions: string[];
   externalDependencies: string[];
-  internalDependencies: string[];
 }
 
 export interface ComponentSummary {

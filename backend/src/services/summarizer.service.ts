@@ -47,7 +47,6 @@ export async function generateFileSummary(
       importantClasses: { type: Type.ARRAY, items: { type: Type.STRING } },
       importantFunctions: { type: Type.ARRAY, items: { type: Type.STRING } },
       externalDependencies: { type: Type.ARRAY, items: { type: Type.STRING } },
-      internalDependencies: { type: Type.ARRAY, items: { type: Type.STRING } },
     },
     required: [
       "nodeType",
@@ -61,8 +60,7 @@ export async function generateFileSummary(
       "keywords",
       "importantClasses",
       "importantFunctions",
-      "externalDependencies",
-      "internalDependencies"
+      "externalDependencies"
     ],
   };
 

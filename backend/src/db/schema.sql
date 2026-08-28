@@ -275,3 +275,26 @@ CREATE TABLE IF NOT EXISTS activity_logs (
 
 CREATE INDEX IF NOT EXISTS idx_activity_logs_user_recent ON activity_logs(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_activity_logs_repository_recent ON activity_logs(repository_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS repository_relationships (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    repository_id UUID NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+
+    source_node_type TEXT NOT NULL,
+    source_node_key TEXT NOT NULL,
+    target_node_type TEXT NOT NULL,
+    target_node_key TEXT NOT NULL,
+
+    relationship_type TEXT NOT NULL,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    UNIQUE (repository_id, source_node_type, source_node_key, target_node_type, target_node_key, relationship_type),
+    CONSTRAINT relationship_type_valid CHECK (relationship_type IN ('IMPORTS', 'RELATED_COMPONENT'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_repo_rels_src ON repository_relationships (repository_id, source_node_key);
+CREATE INDEX IF NOT EXISTS idx_repo_rels_tgt ON repository_relationships (repository_id, target_node_key);
+CREATE INDEX IF NOT EXISTS idx_repo_rels_type ON repository_relationships (repository_id, relationship_type);

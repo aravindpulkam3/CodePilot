@@ -1,4 +1,4 @@
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import type { StoredSummaryRow, SummaryStore, NodeType } from "../types/summaryTypes.js"
 
 function toPgVectorLiteral(embedding: number[]): string {
@@ -15,14 +15,14 @@ function parsePgVector(text: string | null): number[] {
 }
 
 export class PgSummaryStore implements SummaryStore {
-  constructor(private pool: Pool) {}
+  constructor(private db: Pool | PoolClient) {}
 
   public async get(
     repositoryId: string,
     nodeType: NodeType,
     nodeKey: string,
   ): Promise<StoredSummaryRow | null> {
-    const result = await this.pool.query(
+    const result = await this.db.query(
       `SELECT id, repository_id, node_type, node_key, parent_key, summary_json,
               content_hash, embedding::text AS embedding, created_at, updated_at
        FROM repository_summaries
@@ -49,7 +49,7 @@ export class PgSummaryStore implements SummaryStore {
   }
 
   public async getAllFiles(repositoryId: string): Promise<StoredSummaryRow[]> {
-    const result = await this.pool.query(
+    const result = await this.db.query(
       `SELECT id, repository_id, node_type, node_key, parent_key, summary_json,
               content_hash, embedding::text AS embedding, created_at, updated_at
        FROM repository_summaries
@@ -72,7 +72,7 @@ export class PgSummaryStore implements SummaryStore {
   }
 
   public async delete(repositoryId: string, nodeType: NodeType, nodeKey: string): Promise<void> {
-    await this.pool.query(
+    await this.db.query(
       `DELETE FROM repository_summaries
        WHERE repository_id = $1 AND node_type = $2 AND node_key = $3`,
       [repositoryId, nodeType, nodeKey],
@@ -82,7 +82,7 @@ export class PgSummaryStore implements SummaryStore {
   public async upsert(
     row: Omit<StoredSummaryRow, "id" | "created_at" | "updated_at">,
   ): Promise<void> {
-    await this.pool.query(
+    await this.db.query(
       `INSERT INTO repository_summaries
          (repository_id, node_type, node_key, parent_key, summary_json, content_hash, embedding)
        VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::vector)
