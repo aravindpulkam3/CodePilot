@@ -282,11 +282,19 @@ export class RepositoryRetrievalService {
     trace.timingMs.changedAnalysis = performance.now() - t0;
     t0 = performance.now();
 
-    // Stage 2: Add exact symbols from changed files
+    // Stage 2: Add exact symbols from changed files.
+    // getSymbolDefinition matches on symbol_name alone, repo-wide — with no
+    // call graph to confirm relevance, a common name (e.g. "handleError")
+    // can match unrelated files by coincidence. Only treat a match in the
+    // SAME file as the changed symbol's own definition (authoritative,
+    // "exact_symbol"); anything cross-file is a weaker signal
+    // ("cross_file_symbol_match") that competes in the semantic budget
+    // instead of the uncapped changed-code bucket.
     for (const sym of changedSymbols) {
       const defs = await symbolRetrievalService.getSymbolDefinition(repositoryId, sym.symbolName);
       for (const def of defs) {
-        rawCandidates.push(this.chunkToCandidate(def, "exact_symbol"));
+        const sourceType = def.filePath === sym.filePath ? "exact_symbol" : "cross_file_symbol_match";
+        rawCandidates.push(this.chunkToCandidate(def, sourceType));
         trace.counts.exactSymbol++;
       }
     }
@@ -422,7 +430,7 @@ export class RepositoryRetrievalService {
       identityKey: `${chunk.filePath}#${chunk.lineStart}-${chunk.lineEnd}`,
       content: chunk.content,
       dataType: "code_chunk",
-      sources: [{ type: sourceType, weight: RETRIEVAL_WEIGHTS[sourceType] }],
+      sources: [{ type: sourceType, weight: RETRIEVAL_WEIGHTS[sourceType], similarity: chunk.similarity }],
       score: 0,
       metadata: {
         filePath: chunk.filePath,
@@ -438,7 +446,7 @@ export class RepositoryRetrievalService {
       identityKey: summary.nodeKey,
       content: JSON.stringify(summary.summary),
       dataType: "file_summary",
-      sources: [{ type: sourceType, weight: RETRIEVAL_WEIGHTS[sourceType] }],
+      sources: [{ type: sourceType, weight: RETRIEVAL_WEIGHTS[sourceType], similarity: summary.similarity ?? 1.0 }],
       score: 0,
       metadata: {
         filePath: summary.nodeKey,

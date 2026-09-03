@@ -53,7 +53,10 @@ export class ContextBudgetService {
         changedCode.push(c);
       } else if (type === "related_test") {
         tests.push(c);
-      } else if (type === "semantic_chunk" || type === "semantic_summary") {
+      } else if (type === "semantic_chunk" || type === "semantic_summary" || type === "cross_file_symbol_match") {
+        // cross_file_symbol_match is a name-only coincidence, not a confirmed
+        // relationship — it competes for space like a semantic hit instead of
+        // getting the uncapped priority "actually changed" evidence gets.
         semantic.push(c);
       } else {
         graph.push(c);
@@ -112,7 +115,7 @@ export class ContextBudgetService {
             // Re-attribute to stats
             const type = c.sources[0]?.type;
             if (type === "related_test") stats.testTokens += cost;
-            else if (type === "semantic_chunk" || type === "semantic_summary") stats.semanticTokens += cost;
+            else if (type === "semantic_chunk" || type === "semantic_summary" || type === "cross_file_symbol_match") stats.semanticTokens += cost;
             else stats.graphTokens += cost;
         } else {
             dropped.push({ identityKey: c.identityKey, reason: "budget_capped" });

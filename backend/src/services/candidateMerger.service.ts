@@ -22,13 +22,17 @@ export class CandidateMergerService {
         // Record it as dropped due to deduplication
         dropped.push({ identityKey: candidate.identityKey, reason: "deduplicated" });
 
-        // Merge sources, ensuring no duplicate source types exist with lower weights
+        // Merge sources, ensuring no duplicate source types exist with a lower
+        // effective score (weight is constant per type, so in practice this
+        // keeps whichever hit had the higher similarity).
         for (const newSource of candidate.sources) {
           const existingSourceIdx = existing.sources.findIndex(s => s.type === newSource.type);
           if (existingSourceIdx >= 0) {
-            // Keep the higher weight if the same source type was found
-            if (newSource.weight > existing.sources[existingSourceIdx].weight) {
-              existing.sources[existingSourceIdx].weight = newSource.weight;
+            const existingSource = existing.sources[existingSourceIdx];
+            const newEffective = newSource.weight * newSource.similarity;
+            const existingEffective = existingSource.weight * existingSource.similarity;
+            if (newEffective > existingEffective) {
+              existing.sources[existingSourceIdx] = newSource;
             }
           } else {
             existing.sources.push(newSource);

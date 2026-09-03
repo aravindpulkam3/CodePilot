@@ -57,12 +57,20 @@ export type CandidateSourceType =
   | "graph_parent_component"
   | "graph_child_file"
   | "exact_symbol"
+  | "cross_file_symbol_match"
   | "changed_file"
   | "related_test";
 
 export interface CandidateSource {
   type: CandidateSourceType;
   weight: number;
+  // How confident THIS source is that the candidate is relevant (0-1).
+  // For structural/exact sources (graph, exact_symbol, tests) this is
+  // always 1.0 — finding them is certain, only their relevance to the
+  // query varies, which the weight already encodes. For semantic sources
+  // this is the actual cosine similarity, so two chunks found via the same
+  // source type can still be ranked against each other instead of tying.
+  similarity: number;
 }
 
 export interface RetrievalCandidate {
@@ -97,6 +105,10 @@ export interface RetrievalCandidate {
 export const RETRIEVAL_WEIGHTS: Record<CandidateSourceType, number> = {
   changed_file: 1.0,           // The actual changed file
   exact_symbol: 0.9,           // A symbol explicitly changed in the diff
+  cross_file_symbol_match: 0.35, // Same symbol NAME found elsewhere in the repo —
+                                  // no call graph to confirm it's actually related,
+                                  // so treated as a weak/coincidental signal, not
+                                  // an authoritative match.
   related_test: 0.85,          // A test covering a changed file
   graph_dependency: 0.8,       // What the changed file imports
   graph_dependent: 0.75,       // What imports the changed file
