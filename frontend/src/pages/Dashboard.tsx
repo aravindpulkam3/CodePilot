@@ -1,19 +1,18 @@
 import { useCurrentUser } from "@/hooks/useCurrentUser";
-import { useGitHubUser, useGitHubRepositories, useImportPublicRepository } from "@/hooks/useGitHub.ts";
+import { useGitHubUser, useGitHubRepositories } from "@/hooks/useGitHub.ts";
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
 
-// Hook imports for you to implement later
 import { useRecentWork } from "../hooks/useRecentWork";
 import { usePendingPRs } from "@/hooks/usePendingPrs";
 import { useRecentActivity } from "@/hooks/useRecentActivity";
 import { GitHubIcon } from "@/components/ui/icons";
+import { ErrorState } from "@/components/ui/ErrorState";
+import { RepositoryCard } from "@/components/repository/RepositoryCard";
+import { ImportRepositoryModal } from "@/components/repository/ImportRepositoryModal";
 import { cn } from "@/utils/cn";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
-  Lock,
   Globe,
-  GitBranch,
   RefreshCw,
   Plus,
   Activity,
@@ -21,58 +20,46 @@ import {
   GitPullRequest,
   CheckCircle2,
   XCircle,
-  Clock,
-  ChevronRight,
   DownloadCloud,
-  MessageSquare,
-  PlayCircle,
-  FileCode2,
 } from "lucide-react";
 
 export default function Dashboard() {
-  // Existing User & Repo Hooks
   const { data: user } = useCurrentUser();
   const { data: githubUser } = useGitHubUser();
   const {
     data: repositories = [],
     isLoading: isReposLoading,
+    isError: isReposError,
     refetch: syncRepositories,
     isFetching: isSyncing,
   } = useGitHubRepositories();
 
-  // New Data Hooks (To be wired up to your backend)
-  const { data: recentWork = [], isLoading: isRecentWorkLoading } =
-    useRecentWork();
-  const { data: pendingPRs = [], isLoading: isPendingPRsLoading } =
-    usePendingPRs();
-  const { data: recentActivity = [], isLoading: isActivityLoading } =
-    useRecentActivity();
+  const {
+    data: recentWork = [],
+    isLoading: isRecentWorkLoading,
+    isError: isRecentWorkError,
+    refetch: refetchRecentWork,
+  } = useRecentWork();
+  const {
+    data: pendingPRs = [],
+    isLoading: isPendingPRsLoading,
+    isError: isPendingPRsError,
+    refetch: refetchPendingPRs,
+  } = usePendingPRs();
+  const {
+    data: recentActivity = [],
+    isLoading: isActivityLoading,
+    isError: isActivityError,
+    refetch: refetchActivity,
+  } = useRecentActivity();
 
   const navigate = useNavigate();
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
-  const [importUrl, setImportUrl] = useState("");
-  
-  const importMutation = useImportPublicRepository();
-
-  const handleImport = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!importUrl) return;
-    
-    try {
-      const repo = await importMutation.mutateAsync(importUrl);
-      setIsImportModalOpen(false);
-      setImportUrl("");
-      navigate(`/repositories/${repo.id}`);
-    } catch (error) {
-      console.error("Failed to import repository", error);
-    }
-  };
 
   const firstName =
     user?.name?.split(" ")[0] || githubUser?.name?.split(" ")[0] || "Engineer";
 
-  // Derive Health & Stats from live repositories state
-  // Assuming your repo objects will have an 'indexing_status' field from your backend
+  // Assumes repo objects carry an `indexing_status` field from the backend.
   const indexedRepos = repositories.filter(
     (r) => r.indexing_status === "INDEXED",
   );
@@ -95,7 +82,10 @@ export default function Dashboard() {
             Manage your repositories and AI engineering workflows.
           </p>
         </div>
-        <button className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-medium text-white transition-all hover:bg-indigo-700 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 dark:focus:ring-offset-slate-900">
+        <button
+          onClick={() => setIsImportModalOpen(true)}
+          className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-medium text-white transition-all hover:bg-indigo-700 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 dark:focus:ring-offset-slate-900"
+        >
           <Plus className="h-4 w-4" />
           Add Repository
         </button>
@@ -132,7 +122,6 @@ export default function Dashboard() {
             Open Pull Requests
           </p>
           <p className="mt-2 text-3xl font-semibold text-slate-900 dark:text-white">
-            {/* Replace with actual hook property when available */}
             {isPendingPRsLoading
               ? "-"
               : pendingPRs.filter((pr) => pr.status === "open").length}
@@ -151,6 +140,11 @@ export default function Dashboard() {
               Loading recent activity...
             </span>
           </div>
+        ) : isRecentWorkError ? (
+          <ErrorState
+            message="Couldn't load recent work."
+            onRetry={() => refetchRecentWork()}
+          />
         ) : recentWork.length === 0 ? (
           <div className="h-24 rounded-xl border border-dashed border-slate-300 dark:border-slate-800 flex items-center justify-center">
             <span className="text-sm text-slate-500">
@@ -203,16 +197,26 @@ export default function Dashboard() {
                 <GitHubIcon className="h-5 w-5 text-slate-700 dark:text-slate-300" />
                 Repositories
               </h2>
-              <button
-                onClick={() => syncRepositories()}
-                disabled={isSyncing}
-                className="text-sm flex items-center gap-2 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white transition-colors"
-              >
-                <RefreshCw
-                  className={cn("h-4 w-4", isSyncing && "animate-spin")}
-                />
-                Sync
-              </button>
+              <div className="flex items-center gap-4">
+                {repositories.length > 6 && (
+                  <Link
+                    to="/repositories"
+                    className="text-sm font-medium text-indigo-600 hover:text-indigo-700 dark:text-indigo-400"
+                  >
+                    View all
+                  </Link>
+                )}
+                <button
+                  onClick={() => syncRepositories()}
+                  disabled={isSyncing}
+                  className="text-sm flex items-center gap-2 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white transition-colors"
+                >
+                  <RefreshCw
+                    className={cn("h-4 w-4", isSyncing && "animate-spin")}
+                  />
+                  Sync
+                </button>
+              </div>
             </div>
 
             {isReposLoading ? (
@@ -221,6 +225,11 @@ export default function Dashboard() {
                   Loading workspaces...
                 </p>
               </div>
+            ) : isReposError ? (
+              <ErrorState
+                message="Couldn't load your repositories."
+                onRetry={() => syncRepositories()}
+              />
             ) : repositories.length === 0 ? (
               <div className="h-64 flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-300 dark:border-slate-800">
                 <Globe className="h-8 w-8 text-slate-400 mb-3" />
@@ -228,96 +237,13 @@ export default function Dashboard() {
                   No repositories found
                 </p>
                 <p className="text-sm text-slate-400 dark:text-slate-500 mt-1">
-                  Connect your GitHub account to get started.
+                  Import a public repository to get started.
                 </p>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {repositories.slice(0, 6).map((repo) => (
-                  <div
-                    key={repo.id}
-                    className="group relative flex flex-col rounded-xl border border-slate-200/80 bg-white p-5 transition-all hover:border-slate-300 hover:shadow-sm dark:border-slate-800/80 dark:bg-slate-900 overflow-hidden"
-                  >
-                    <div className="flex items-start justify-between mb-4">
-                      <div className="flex items-center gap-2 overflow-hidden">
-                        {repo.private ? (
-                          <Lock className="h-4 w-4 text-slate-400 shrink-0" />
-                        ) : (
-                          <Globe className="h-4 w-4 text-slate-400 shrink-0" />
-                        )}
-                        <h3 className="truncate font-medium text-slate-900 dark:text-white transition-colors">
-                          {repo.name}
-                        </h3>
-                      </div>
-
-                      {/* Dynamic Index Status Badge based on state */}
-                      {repo.indexing_status === "FAILED" ? (
-                        <span className="shrink-0 inline-flex items-center rounded-full bg-rose-50 px-2 py-1 text-xs font-medium text-rose-700 ring-1 ring-inset ring-rose-600/20 dark:bg-rose-500/10 dark:text-rose-400 dark:ring-rose-500/20">
-                          Failed
-                        </span>
-                      ) : repo.indexing_status === "INDEXING" ? (
-                        <span className="shrink-0 inline-flex items-center rounded-full bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700 ring-1 ring-inset ring-amber-600/20 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20">
-                          Updating
-                        </span>
-                      ) : (
-                        <span className="shrink-0 inline-flex items-center rounded-full bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20 dark:bg-emerald-500/10 dark:text-emerald-400 dark:ring-emerald-500/20">
-                          Indexed
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="mt-auto flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 mb-2">
-                      <div className="flex items-center gap-3">
-                        <span className="flex items-center gap-1.5">
-                          <span
-                            className={cn(
-                              "h-2 w-2 rounded-full",
-                              repo.language === "TypeScript"
-                                ? "bg-blue-500"
-                                : repo.language === "JavaScript"
-                                  ? "bg-yellow-400"
-                                  : repo.language === "Python"
-                                    ? "bg-green-500"
-                                    : repo.language === "Java"
-                                      ? "bg-orange-500"
-                                      : "bg-slate-400",
-                            )}
-                          />
-                          {repo.language || "Unknown"}
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <GitBranch className="h-3 w-3" />
-                          {repo.default_branch}
-                        </span>
-                      </div>
-                      <span className="flex items-center gap-1">
-                        <Clock className="h-3 w-3" />
-                        {new Date(repo.updated_at).toLocaleDateString(
-                          undefined,
-                          { month: "short", day: "numeric" },
-                        )}
-                      </span>
-                    </div>
-
-                    {/* Hover Quick Actions Overlay */}
-                    <div className="absolute inset-x-0 bottom-0 flex translate-y-full items-center justify-around bg-slate-50/95 p-3 backdrop-blur transition-transform duration-200 ease-in-out group-hover:translate-y-0 dark:bg-slate-800/95 border-t border-slate-200 dark:border-slate-700">
-                      <Link
-                        to={`/repositories/${repo.id}`}
-                        className="flex flex-col items-center gap-1 text-[10px] font-medium text-slate-600 hover:text-indigo-600 dark:text-slate-300 dark:hover:text-indigo-400"
-                      >
-                        <FileCode2 className="h-4 w-4" /> Open
-                      </Link>
-                      <button className="flex flex-col items-center gap-1 text-[10px] font-medium text-slate-600 hover:text-indigo-600 dark:text-slate-300 dark:hover:text-indigo-400">
-                        <GitPullRequest className="h-4 w-4" /> Review
-                      </button>
-                      <button className="flex flex-col items-center gap-1 text-[10px] font-medium text-slate-600 hover:text-indigo-600 dark:text-slate-300 dark:hover:text-indigo-400">
-                        <MessageSquare className="h-4 w-4" /> Ask
-                      </button>
-                      <button className="flex flex-col items-center gap-1 text-[10px] font-medium text-slate-600 hover:text-indigo-600 dark:text-slate-300 dark:hover:text-indigo-400">
-                        <PlayCircle className="h-4 w-4" /> Interview
-                      </button>
-                    </div>
-                  </div>
+                  <RepositoryCard key={repo.id} repo={repo} />
                 ))}
               </div>
             )}
@@ -333,6 +259,12 @@ export default function Dashboard() {
                 <div className="p-8 text-center text-sm text-slate-500">
                   Fetching pull requests...
                 </div>
+              ) : isPendingPRsError ? (
+                <ErrorState
+                  message="Couldn't load pending pull requests."
+                  onRetry={() => refetchPendingPRs()}
+                  className="border-0 rounded-none"
+                />
               ) : pendingPRs.length === 0 ? (
                 <div className="p-8 text-center text-sm text-slate-500">
                   No pending pull requests at the moment.
@@ -391,28 +323,7 @@ export default function Dashboard() {
               Quick Actions
             </h2>
             <div className="flex flex-col gap-2">
-              <button className="flex items-center justify-between rounded-lg border border-slate-200/80 bg-white/80 p-3 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 dark:border-slate-800/80 dark:bg-slate-900/80 dark:text-slate-300 dark:hover:bg-slate-800/50 transition-colors backdrop-blur-sm">
-                <span className="flex items-center gap-2">
-                  <GitHubIcon className="h-4 w-4 text-slate-400 dark:text-slate-500" />{" "}
-                  Connect GitHub
-                </span>
-                <ChevronRight className="h-4 w-4 text-slate-400" />
-              </button>
-              <button className="flex items-center justify-between rounded-lg border border-slate-200/80 bg-white/80 p-3 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 dark:border-slate-800/80 dark:bg-slate-900/80 dark:text-slate-300 dark:hover:bg-slate-800/50 transition-colors backdrop-blur-sm">
-                <span className="flex items-center gap-2">
-                  <Plus className="h-4 w-4 text-slate-400 dark:text-slate-500" />{" "}
-                  Add Repository
-                </span>
-                <ChevronRight className="h-4 w-4 text-slate-400" />
-              </button>
-              <button className="flex items-center justify-between rounded-lg border border-slate-200/80 bg-white/80 p-3 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 dark:border-slate-800/80 dark:bg-slate-900/80 dark:text-slate-300 dark:hover:bg-slate-800/50 transition-colors backdrop-blur-sm">
-                <span className="flex items-center gap-2">
-                  <GitPullRequest className="h-4 w-4 text-slate-400 dark:text-slate-500" />{" "}
-                  Start New Review
-                </span>
-                <ChevronRight className="h-4 w-4 text-slate-400" />
-              </button>
-              <button 
+              <button
                 onClick={() => setIsImportModalOpen(true)}
                 className="flex items-center justify-between rounded-lg border border-slate-200/80 bg-white/80 p-3 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 dark:border-slate-800/80 dark:bg-slate-900/80 dark:text-slate-300 dark:hover:bg-slate-800/50 transition-colors backdrop-blur-sm"
               >
@@ -420,7 +331,6 @@ export default function Dashboard() {
                   <DownloadCloud className="h-4 w-4 text-slate-400 dark:text-slate-500" />{" "}
                   Import Repository
                 </span>
-                <ChevronRight className="h-4 w-4 text-slate-400" />
               </button>
             </div>
           </section>
@@ -479,6 +389,14 @@ export default function Dashboard() {
                 <div className="pl-6 text-sm text-slate-500">
                   Loading timeline...
                 </div>
+              ) : isActivityError ? (
+                <div className="pl-6">
+                  <ErrorState
+                    message="Couldn't load activity."
+                    onRetry={() => refetchActivity()}
+                    className="border-0 py-4"
+                  />
+                </div>
               ) : recentActivity.length === 0 ? (
                 <div className="pl-6 text-sm text-slate-500">
                   No recent activity detected.
@@ -524,58 +442,13 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* IMPORT REPOSITORY MODAL */}
       {isImportModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
-            <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-2">
-              Import Public Repository
-            </h3>
-            <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
-              Enter the URL of any public GitHub repository to import it into your workspace.
-            </p>
-            <form onSubmit={handleImport}>
-              <div className="mb-4">
-                <label htmlFor="importUrl" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  GitHub URL
-                </label>
-                <input
-                  type="url"
-                  id="importUrl"
-                  value={importUrl}
-                  onChange={(e) => setImportUrl(e.target.value)}
-                  placeholder="https://github.com/owner/repository"
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-                  required
-                />
-              </div>
-              
-              {importMutation.isError && (
-                <p className="text-sm text-rose-500 mb-4">
-                  {(importMutation.error as any)?.response?.data?.error || "Failed to import repository."}
-                </p>
-              )}
-
-              <div className="flex justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={() => setIsImportModalOpen(false)}
-                  className="rounded-lg px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={importMutation.isPending || !importUrl}
-                  className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-                >
-                  {importMutation.isPending && <RefreshCw className="h-4 w-4 animate-spin" />}
-                  Import Repository
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <ImportRepositoryModal
+          onClose={() => setIsImportModalOpen(false)}
+          onImported={(repositoryId) =>
+            navigate(`/repositories/${repositoryId}`)
+          }
+        />
       )}
     </div>
   );

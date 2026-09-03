@@ -15,7 +15,6 @@ import {
   ChevronUp,
   FileCode,
   CornerDownLeft,
-  RefreshCw,
 } from "lucide-react";
 import { Finding } from "../review/FindingCard";
 import { useFindingDiscussion } from "@/hooks/useUnifiedChat";
@@ -30,20 +29,41 @@ interface FindingDiscussionDrawerProps {
 }
 
 const SUGGESTED_QUESTIONS = [
-  { icon: "⚡", label: "Why is this a problem?", text: "Why is this a problem in this code?" },
-  { icon: "🚀", label: "Why is your suggested approach better?", text: "Why is your suggested approach better than what is currently written?" },
-  { icon: "💡", label: "Can this be optimized further?", text: "Can this code be optimized even further?" },
-  { icon: "📋", label: "Show me an example", text: "Show me a concrete, production-ready example of how to implement the fix." },
-  { icon: "⚠️", label: "What would happen in production?", text: "What would happen in production if this issue is not fixed?" },
-  { icon: "🔄", label: "Is there an alternative solution?", text: "Is there an alternative solution or architecture pattern for this?" },
+  {
+    icon: "⚡",
+    label: "Why is this a problem?",
+    text: "Why is this a problem in this code?",
+  },
+  {
+    icon: "🚀",
+    label: "Why is your suggested approach better?",
+    text: "Why is your suggested approach better than what is currently written?",
+  },
+  {
+    icon: "💡",
+    label: "Can this be optimized further?",
+    text: "Can this code be optimized even further?",
+  },
+  {
+    icon: "📋",
+    label: "Show me an example",
+    text: "Show me a concrete, production-ready example of how to implement the fix.",
+  },
+  {
+    icon: "⚠️",
+    label: "What would happen in production?",
+    text: "What would happen in production if this issue is not fixed?",
+  },
+  {
+    icon: "🔄",
+    label: "Is there an alternative solution?",
+    text: "Is there an alternative solution or architecture pattern for this?",
+  },
 ];
 
-export const FindingDiscussionDrawer: React.FC<FindingDiscussionDrawerProps> = ({
-  finding,
-  isOpen,
-  onClose,
-  repositoryId,
-}) => {
+export const FindingDiscussionDrawer: React.FC<
+  FindingDiscussionDrawerProps
+> = ({ finding, isOpen, onClose, repositoryId }) => {
   const [inputText, setInputText] = useState("");
   const [showFindingContext, setShowFindingContext] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -100,8 +120,10 @@ export const FindingDiscussionDrawer: React.FC<FindingDiscussionDrawerProps> = (
 
   const sev = (finding.severity || "Info").toLowerCase();
   const getSeverityIcon = () => {
-    if (sev === "critical") return <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />;
-    if (sev === "major" || sev === "warning") return <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />;
+    if (sev === "critical")
+      return <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />;
+    if (sev === "major" || sev === "warning")
+      return <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />;
     if (sev === "minor") return <Zap className="w-3.5 h-3.5 text-blue-400" />;
     return <Info className="w-3.5 h-3.5 text-teal-400" />;
   };
@@ -112,7 +134,7 @@ export const FindingDiscussionDrawer: React.FC<FindingDiscussionDrawerProps> = (
         "fixed inset-y-0 right-0 z-50 w-full sm:w-[540px] lg:w-[600px] flex flex-col",
         "bg-slate-950/95 backdrop-blur-md text-slate-100 shadow-2xl border-l border-slate-800",
         "transition-transform duration-300 ease-out transform",
-        isOpen ? "translate-x-0" : "translate-x-full"
+        isOpen ? "translate-x-0" : "translate-x-full",
       )}
       aria-label="Finding Discussion Panel"
     >
@@ -135,7 +157,9 @@ export const FindingDiscussionDrawer: React.FC<FindingDiscussionDrawerProps> = (
             {messages.length > 0 && (
               <button
                 onClick={() => {
-                  if (window.confirm("Clear this finding discussion history?")) {
+                  if (
+                    window.confirm("Clear this finding discussion history?")
+                  ) {
                     clearHistory();
                   }
                 }}
@@ -187,18 +211,24 @@ export const FindingDiscussionDrawer: React.FC<FindingDiscussionDrawerProps> = (
           {showFindingContext && (
             <div className="mt-2 p-3 rounded-lg bg-slate-900 border border-slate-800 text-xs space-y-2 max-h-48 overflow-y-auto scrollbar-thin">
               <div>
-                <span className="font-semibold text-slate-300 block mb-0.5">Explanation:</span>
+                <span className="font-semibold text-slate-300 block mb-0.5">
+                  Explanation:
+                </span>
                 <p className="text-slate-400">{finding.description}</p>
               </div>
               {finding.recommendation && (
                 <div>
-                  <span className="font-semibold text-teal-400 block mb-0.5">Recommendation:</span>
+                  <span className="font-semibold text-teal-400 block mb-0.5">
+                    Recommendation:
+                  </span>
                   <p className="text-slate-400">{finding.recommendation}</p>
                 </div>
               )}
               {finding.code_suggestion && (
                 <div>
-                  <span className="font-semibold text-slate-300 block mb-0.5">Suggested Fix:</span>
+                  <span className="font-semibold text-slate-300 block mb-0.5">
+                    Suggested Fix:
+                  </span>
                   <pre className="p-2 rounded bg-slate-950 font-mono text-[11px] text-slate-200 overflow-x-auto">
                     <code>{finding.code_suggestion}</code>
                   </pre>
@@ -226,7 +256,8 @@ export const FindingDiscussionDrawer: React.FC<FindingDiscussionDrawerProps> = (
               Discuss this Review Finding
             </h4>
             <p className="text-xs text-slate-400 mt-1 max-w-sm">
-              Ask why this finding was raised, explore runtime tradeoffs, examine edge cases, or request an alternative implementation.
+              Ask why this finding was raised, explore runtime tradeoffs,
+              examine edge cases, or request an alternative implementation.
             </p>
 
             {/* Suggested Follow-Up Prompt Cards */}
@@ -259,7 +290,7 @@ export const FindingDiscussionDrawer: React.FC<FindingDiscussionDrawerProps> = (
                   key={msg.id || index}
                   className={cn(
                     "flex items-start gap-3",
-                    isUser ? "justify-end" : "justify-start"
+                    isUser ? "justify-end" : "justify-start",
                   )}
                 >
                   {!isUser && (
@@ -273,11 +304,13 @@ export const FindingDiscussionDrawer: React.FC<FindingDiscussionDrawerProps> = (
                       "max-w-[88%] rounded-xl px-4 py-3 text-sm shadow-sm",
                       isUser
                         ? "bg-signal-600 text-white rounded-tr-none"
-                        : "bg-slate-900 border border-slate-800 text-slate-100 rounded-tl-none"
+                        : "bg-slate-900 border border-slate-800 text-slate-100 rounded-tl-none",
                     )}
                   >
                     {isUser ? (
-                      <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
+                      <p className="whitespace-pre-wrap leading-relaxed">
+                        {msg.content}
+                      </p>
                     ) : (
                       <MarkdownRenderer content={msg.content} />
                     )}
@@ -369,7 +402,8 @@ export const FindingDiscussionDrawer: React.FC<FindingDiscussionDrawerProps> = (
         <div className="flex items-center justify-between text-[10px] text-slate-500 mt-2 px-1">
           <span>AI has context of this finding and surrounding diff.</span>
           <span className="flex items-center gap-1 font-mono">
-            <CornerDownLeft className="w-3 h-3" /> Enter to send • Shift+Enter for newline
+            <CornerDownLeft className="w-3 h-3" /> Enter to send • Shift+Enter
+            for newline
           </span>
         </div>
       </div>

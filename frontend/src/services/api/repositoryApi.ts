@@ -61,8 +61,8 @@ export const sendChatMessageStream = async (
   type: string = "QA",
 ): Promise<Response> => {
   // We return the raw fetch Response so the frontend component can attach a reader to the stream.
-  console.log("inside Chat Stream connecting to baceknd");
-  const baseUrl = import.meta.env.VITE_API_BASE_URL || "";
+  const baseUrl = import.meta.env.VITE_API_BASE_URL;
+  if (!baseUrl) throw new Error("VITE_API_BASE_URL is not configured.");
   const url = sessionId
     ? `${baseUrl}/chat/sessions/${sessionId}/stream`
     : `${baseUrl}/chat/stream`;

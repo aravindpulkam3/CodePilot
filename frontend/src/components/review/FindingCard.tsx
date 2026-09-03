@@ -6,7 +6,6 @@ import {
   ShieldAlert,
   Zap,
   Info,
-  CheckCircle,
   FileCode,
   Copy,
   Check,

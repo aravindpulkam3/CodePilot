@@ -8,7 +8,6 @@ import { usersApi } from "@/services/api/usersApi";
  * like `github_connected`.
  */
 export function useCurrentUser() {
-  console.log("came to get current user hook");
   return useQuery({
     queryKey: ["users", "me"],
     queryFn: usersApi.getMe,

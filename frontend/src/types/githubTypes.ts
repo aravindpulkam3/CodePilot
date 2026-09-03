@@ -23,6 +23,12 @@ export interface GitHubUser {
 /**
  * Interface for GET /github/repositories
  * Represents a single repository item returned in the list.
+ *
+ * Despite the name, this endpoint returns OUR OWN `repositories` DB row
+ * shape (see backend/src/services/repository.service.ts#RepositoryRow),
+ * not GitHub's raw API repo object — `id` is our internal UUID, `owner`
+ * is a plain string, and several GitHub-only fields (stargazers, fork,
+ * visibility, etc.) don't exist on it at all.
  */
 export enum IndexingStatus {
   UNINDEXED = 'UNINDEXED',
@@ -32,28 +38,24 @@ export enum IndexingStatus {
   FAILED = 'FAILED'
 }
 
+export type RepositorySourceType = "connected" | "public_import";
+
 export interface GitHubRepository {
-  id: number;
+  id: string;
+  user_id: string;
+  source_type: RepositorySourceType;
+  github_repo_id: number;
   name: string;
-  full_name: string;
-  private: boolean;
-  html_url: string;
+  owner: string;
   description: string | null;
-  fork: boolean;
   language: string | null;
+  is_private: boolean;
   default_branch: string;
-  updated_at: string;
+  html_url: string;
+  clone_url: string;
+  last_pushed_at: string | null;
+  last_synced_at: string;
   created_at: string;
-  pushed_at: string;
-  stargazers_count: number;
-  watchers_count: number;
-  forks_count: number;
-  open_issues_count: number;
-  visibility: "public" | "private" | "internal";
-  owner: {
-    login: string;
-    avatar_url: string;
-    html_url: string;
-  };
-  indexing_status?: IndexingStatus;
+  updated_at: string;
+  indexing_status?: IndexingStatus | null;
 }

@@ -71,7 +71,8 @@ export const streamChatMessage = async (
     findingId?: string;
   }
 ): Promise<Response> => {
-  const baseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000/api";
+  const baseUrl = import.meta.env.VITE_API_BASE_URL;
+  if (!baseUrl) throw new Error("VITE_API_BASE_URL is not configured.");
   const url = sessionId
     ? `${baseUrl}/chat/sessions/${sessionId}/stream`
     : `${baseUrl}/chat/stream`;

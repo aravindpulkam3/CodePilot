@@ -2,7 +2,6 @@ import { NavLink } from "react-router-dom";
 import {
   LayoutDashboard,
   FolderGit2,
-  BookOpen,
   User,
   Settings,
   ChevronsLeft,
@@ -14,7 +13,6 @@ import { cn } from "@/utils/cn";
 const ICONS: Record<NavItem["icon"], typeof LayoutDashboard> = {
   "layout-dashboard": LayoutDashboard,
   "folder-git-2": FolderGit2,
-  "book-open": BookOpen,
   user: User,
   settings: Settings,
 };
