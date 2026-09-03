@@ -4,6 +4,9 @@ import * as repositoryService from './repository.service.js';
 import { FileChange } from './repositoryIndex.service.js';
 import { logActivity } from './dashboard.service.js';
 import { LogActivityType } from '../types/dashboardTypes.js';
+import { withCache } from '../utils/cache.js';
+import { cacheRedisClient } from '../config/redis.js';
+
 /**
  * Retrieves the GitHub OAuth access token from Clerk for a given user.
  */
@@ -202,44 +205,81 @@ export const getPullRequestDetails = async (
 };
 
 async function fetchRawFileContent(token: string | undefined, owner: string, repo: string, path: string, ref: string): Promise<string | null> {
-    const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${ref}`;
+    const cacheKey = `github:repo:${owner}:${repo}:file:${ref}:${path}`;
     
-    const headers: Record<string, string> = {
-        'Accept': 'application/vnd.github.v3.raw' // Crucial: gets the raw text, not the base64 JSON
-    };
+    return await withCache(cacheKey, 900, async () => {
+        const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${ref}`;
+        
+        const headers: Record<string, string> = {
+            'Accept': 'application/vnd.github.v3.raw' // Crucial: gets the raw text, not the base64 JSON
+        };
 
-    if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-    }
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+        }
 
-    const response = await fetch(url, { headers });
+        const response = await fetch(url, { headers });
 
-    if (!response.ok) {
-        if (response.status === 404) return null;
-        throw new Error(`Failed to fetch file content for ${path}: ${response.statusText}`);
-    }
-    return response.text();
+        if (!response.ok) {
+            if (response.status === 404) return null;
+            throw new Error(`Failed to fetch file content for ${path}: ${response.statusText}`);
+        }
+        return response.text();
+    });
 }
 
 /**
  * 1. Gets the latest commit SHA for the repository's default branch.
  */
 export async function getLatestCommit(token: string | undefined, owner: string, repo: string) {
+    const cacheKey = `github:repo:${owner}:${repo}:latestCommit`;
+    const etagKey = `${cacheKey}:etag`;
+    
     const headers: Record<string, string> = { 'Accept': 'application/vnd.github.v3+json' };
     if (token) headers['Authorization'] = `Bearer ${token}`;
-    
-    // Get repo details to find the default branch (usually 'main' or 'master')
-    const repoRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, { headers });
-    if (!repoRes.ok) throw new Error("Failed to fetch repository details");
-    const repoData = await repoRes.json();
-    const defaultBranch = repoData.default_branch;
 
-    // Get the latest commit on the default branch
-    const branchRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/branches/${defaultBranch}`, { headers });
-    if (!branchRes.ok) throw new Error("Failed to fetch branch details");
-    const branchData = await branchRes.json();
-    
-    return { sha: branchData.commit.sha };
+    try {
+        const cachedData = await cacheRedisClient.get(cacheKey);
+        const cachedEtag = await cacheRedisClient.get(etagKey);
+
+        if (cachedEtag) {
+            headers['If-None-Match'] = cachedEtag;
+        }
+
+        // Get repo details to find the default branch
+        // For production we'd also cache this repo fetch, but keeping focused on the commit fetch
+        const repoRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, { 
+            headers: { 'Accept': 'application/vnd.github.v3+json', ...(token ? {'Authorization': `Bearer ${token}`} : {}) } 
+        });
+        if (!repoRes.ok) throw new Error("Failed to fetch repository details");
+        const repoData = await repoRes.json();
+        const defaultBranch = repoData.default_branch;
+
+        // Get the latest commit on the default branch
+        const branchRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/branches/${defaultBranch}`, { headers });
+        
+        if (branchRes.status === 304 && cachedData) {
+            // ETag match! No rate limit consumed, return cached data
+            return JSON.parse(cachedData);
+        }
+
+        if (!branchRes.ok) throw new Error("Failed to fetch branch details");
+        
+        const branchData = await branchRes.json();
+        const result = { sha: branchData.commit.sha };
+        
+        // Cache the new result and ETag
+        const newEtag = branchRes.headers.get('etag');
+        if (newEtag) {
+            await cacheRedisClient.setex(etagKey, 60, newEtag);
+            await cacheRedisClient.setex(cacheKey, 60, JSON.stringify(result));
+        }
+
+        return result;
+    } catch (error) {
+        console.error("Failed to fetch latest commit with ETag:", error);
+        throw error;
+    }
 }
 
 /**

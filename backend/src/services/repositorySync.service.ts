@@ -1,16 +1,30 @@
 import { pool } from "../config/db.js";
 import * as githubService from "./github.service.js";
 import { repositoryIndexer, FileChange } from "./repositoryIndex.service.js";
+import { syncQueue, indexQueue } from "../config/queues.js";
+import { appEvents, EVENT_TYPES } from "../events/eventEmitter.js";
 
 export class RepositorySyncService {
   /**
-   * Checks if the repository is up-to-date. If not, it fetches the changes
-   * and triggers the AST indexing pipeline.
+   * Enqueues a sync job. Returns immediately.
    */
-  public async syncRepository(clerkUserId: string, repositoryId: string) {
+  public async enqueueSync(clerkUserId: string, repositoryId: string) {
+    // Deterministic job ID prevents the same repo from being queued multiple times simultaneously
+    const job = await syncQueue.add(
+      "syncRepo", 
+      { clerkUserId, repositoryId },
+      { jobId: `sync-${repositoryId}` }
+    );
+    return { status: "queued", jobId: job.id };
+  }
+
+  /**
+   * The actual heavy lifting executed by the BullMQ worker.
+   */
+  public async processSyncJob(clerkUserId: string, repositoryId: string) {
     // 1. Fetch current database state
     const { rows } = await pool.query(
-      `SELECT name, owner, last_indexed_sha, indexing_status, source_type 
+      `SELECT name, owner, last_indexed_sha, indexing_status, source_type, user_id
              FROM repositories WHERE id = $1`,
       [repositoryId],
     );
@@ -84,14 +98,21 @@ export class RepositorySyncService {
 
     console.log("files to be changed", filesToIndex.length);
 
-    // 5. Hand off to the heavy Indexing pipeline
-    // We do NOT await this here if this is triggered by a webhook,
-    // to prevent timeout. But for manual syncs, awaiting is fine.
-    await repositoryIndexer.processRepositoryUpdate(
-      repositoryId,
-      latestSha,
-      filesToIndex,
-    );
+    // 5. Hand off to the heavy Indexing pipeline by enqueuing chunks
+    const CHUNK_SIZE = 50;
+    for (let i = 0; i < filesToIndex.length; i += CHUNK_SIZE) {
+      const chunk = filesToIndex.slice(i, i + CHUNK_SIZE);
+      await indexQueue.add("indexRepoChunk", {
+        repositoryId,
+        latestSha,
+        filesToIndex: chunk,
+        isFinalChunk: i + CHUNK_SIZE >= filesToIndex.length
+      });
+    }
+
+    // Emit event that sync is done (but indexing might still be ongoing).
+    // Cache keys are keyed by the internal app_users.id, not the Clerk id, so invalidation must use that.
+    appEvents.emit(EVENT_TYPES.REPOSITORY_SYNCED, { userId: repo.user_id, repositoryId });
 
     return {
       status: "indexed",

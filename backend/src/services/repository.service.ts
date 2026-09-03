@@ -30,8 +30,10 @@ export interface RepositoryRow {
   clone_url: string;
   last_pushed_at: string | null;
   last_synced_at: string;
+  last_indexed_sha?: string | null;
   created_at: string;
   updated_at: string;
+  indexing_status?: string | null;
 }
 
 /**

@@ -27,7 +27,7 @@ export class WebhookController {
 
                 try {
                     // Run the heavy sync process asynchronously in the background
-                    await repositorySyncService.syncRepository(clerkUserId, repositoryId);
+                    await repositorySyncService.enqueueSync(clerkUserId, repositoryId);
                     console.log(`[Webhook] Background sync completed for ${payload.repository.full_name}.`);
                 } catch (error) {
                     console.error(`[Webhook] Background sync failed:`, error);

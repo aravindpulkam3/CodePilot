@@ -25,9 +25,10 @@ export class RepositoryIndexingService {
     repositoryId: string,
     commitSha: string,
     changedFiles: FileChange[],
+    isFinalChunk: boolean = true
   ) {
     await astChunker.init();
-    console.log("came to index the repo");
+    console.log(`Processing index chunk for repo ${repositoryId}. Final chunk? ${isFinalChunk}`);
 
     // Lock indexing status (non-transactional for now, just a flag)
     await pool.query(
@@ -229,11 +230,13 @@ export class RepositoryIndexingService {
         );
       }
 
-      // 5. Finalize indexing status
-      await client.query(
-        `UPDATE repositories SET last_indexed_sha = $1, indexing_status = 'INDEXED' WHERE id = $2`,
-        [commitSha, repositoryId],
-      );
+      // 5. Finalize indexing status ONLY if this is the final chunk
+      if (isFinalChunk) {
+        await client.query(
+          `UPDATE repositories SET last_indexed_sha = $1, indexing_status = 'INDEXED' WHERE id = $2`,
+          [commitSha, repositoryId],
+        );
+      }
 
       await client.query("COMMIT");
     } catch (error) {

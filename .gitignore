@@ -73,3 +73,9 @@ backend/prisma/dev.db-journal
 # ===========================
 *.tmp
 *.temp
+
+# ===========================
+# Claude Code project memory
+# ===========================
+CLAUDE.md
+**/CLAUDE.md

@@ -1,4 +1,5 @@
 import { repositorySyncService } from "./repositorySync.service.js";
+import { syncQueue } from "../config/queues.js";
 import {
   CodeChunkSearchResult,
   RetrievalCandidate,
@@ -32,13 +33,46 @@ const DEFAULT_OPTIONS: RetrievalOptions = {
 
 export class RepositoryRetrievalService {
   private async ensureSynced(clerkUserId: string, repositoryId: string) {
-    console.log(
-      `[RetrievalService] JIT Sync check for repository ${repositoryId}...`,
-    );
-    await repositorySyncService.syncRepository(clerkUserId, repositoryId);
-    console.log(
-      `[RetrievalService] Repository is guaranteed up to date. Proceeding...`,
-    );
+    console.log(`[RetrievalService] Triggering JIT Sync check for repository ${repositoryId}...`);
+
+    const maxWaitMs = 45000;
+    const pollIntervalMs = 2000;
+    const startTime = Date.now();
+    const deadline = () => Date.now() - startTime < maxWaitMs;
+
+    // 1. Enqueue the sync job, then wait for THIS job to finish (not just any past
+    // state) before looking at indexing_status — the repo can already read 'INDEXED'
+    // from a previous sync while this job is still sitting in the queue.
+    const { jobId } = await repositorySyncService.enqueueSync(clerkUserId, repositoryId);
+    const job = jobId ? await syncQueue.getJob(jobId) : undefined;
+
+    if (job) {
+      while (deadline()) {
+        const state = await job.getState();
+        if (state === "completed" || state === "failed" || state === "unknown") break;
+        await new Promise((res) => setTimeout(res, pollIntervalMs));
+      }
+    }
+
+    // 2. The sync job only enqueues indexing chunks; it doesn't wait for them.
+    // Poll the repo's indexing_status until the index worker finishes (or fails/times out).
+    const { pool } = await import("../config/db.js");
+
+    while (deadline()) {
+      const { rows } = await pool.query(
+        "SELECT indexing_status FROM repositories WHERE id = $1",
+        [repositoryId]
+      );
+
+      const status = rows[0]?.indexing_status;
+      if (status === 'INDEXED' || status === 'FAILED' || !status) {
+        break; // It's done, failed, or was never indexed to begin with.
+      }
+
+      await new Promise(res => setTimeout(res, pollIntervalMs));
+    }
+
+    console.log(`[RetrievalService] Sync wait completed. Proceeding to semantic retrieval...`);
   }
 
   // --- QA Mode (Legacy behavior preserved) ---

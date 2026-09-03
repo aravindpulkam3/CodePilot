@@ -6,6 +6,7 @@ import { repositorySyncService } from '../services/repositorySync.service.js';
 import { createPublicRepository, findRepositoriesByUserId } from '../services/repository.service.js';
 import axios from 'axios';
 import { userService } from '../services/user.service.js';
+import { withCache } from '../utils/cache.js';
 
 const handleGitHubError = (res: Response, error: any) => {
   if (error.message === 'GITHUB_NOT_CONNECTED') {
@@ -48,18 +49,21 @@ export const getRepositories = async (req: Request, res: Response) => {
     
     const appUserId = req.dbUser!.id
 
-    // Fetch from GitHub and upsert into Postgres
-    try {
-      await syncAndGetGitHubRepositories(clerkUserId, appUserId);
-    } catch (e: any) {
-      if (e.message !== 'GITHUB_NOT_CONNECTED') {
-        throw e;
+    const repositories = await withCache(`user:${appUserId}:repos`, 300, async () => {
+      // Fetch from GitHub and upsert into Postgres
+      try {
+        await syncAndGetGitHubRepositories(clerkUserId, appUserId);
+      } catch (e: any) {
+        if (e.message !== 'GITHUB_NOT_CONNECTED') {
+          throw e;
+        }
+        // If not connected, we still want to return any 'public_import' repos they might have
       }
-      // If not connected, we still want to return any 'public_import' repos they might have
-    }
-    
-    // Fetch ALL repositories for this user (connected + public_import) from the database
-    const repositories = await findRepositoriesByUserId(appUserId);
+      
+      // Fetch ALL repositories for this user (connected + public_import) from the database
+      return await findRepositoriesByUserId(appUserId);
+    });
+
     return res.status(200).json(repositories);
     
   } catch (error: any) {
@@ -156,7 +160,7 @@ export const importPublicRepository = async (req: Request, res: Response) => {
     });
 
     // Fire and forget indexing pipeline (don't await)
-    repositorySyncService.syncRepository(req.dbUser!.clerkId, repoRecord.id).catch((err) => {
+    repositorySyncService.enqueueSync(req.dbUser!.clerkId, repoRecord.id).catch((err) => {
       console.error(`Error syncing public repository ${repoRecord.name}:`, err);
     });
 

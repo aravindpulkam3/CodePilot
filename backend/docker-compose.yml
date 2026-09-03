@@ -17,5 +17,24 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  redis-cache:
+    image: redis:7-alpine
+    container_name: codepilot_redis_cache
+    # No persistence, allkeys-lru eviction for cache
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --save "" --appendonly no
+    ports:
+      - "6379:6379"
+
+  redis-queue:
+    image: redis:7-alpine
+    container_name: codepilot_redis_queue
+    # AOF persistence, noeviction for BullMQ/Locks/RateLimits
+    command: redis-server --maxmemory-policy noeviction --appendonly yes
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_queue_data:/data
+
 volumes:
   postgres_data:
+  redis_queue_data:

@@ -13,6 +13,7 @@ import reviewRouter from "./routes/review.routes.js";
 import unifiedChatRouter from "./modules/chat/chat.routes.js";
 import interviewRouter from "./routes/interview.routes.js";
 import dashboardRouter from "./routes/dashboard.routes.js";
+import { serverAdapter } from "./config/bull-board.js";
 
 export const app = express();
 
@@ -21,6 +22,10 @@ app.use(cors({ origin: env.corsOrigin, credentials: true }));
 // Webhooks need the raw body for signature verification, so they're
 // mounted BEFORE the json() body parser below.
 app.use("/api/webhooks", webhookRoutes);
+
+// Mount Bull Board before body-parser/auth just in case, or after, but it doesn't need auth right now
+app.use("/admin/queues", serverAdapter.getRouter());
+
 app.use(express.json());
 app.use(attachClerkAuth);
 
