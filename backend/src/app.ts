@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { env } from "./config/env.js";
-import { attachClerkAuth } from "./middleware/auth.middleware.js";
+import { attachClerkAuth, requireAuth } from "./middleware/auth.middleware.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { healthRoutes } from "./routes/health.routes.js";
 import userRouter from "./routes/user.routes.js";
@@ -23,11 +23,14 @@ app.use(cors({ origin: env.corsOrigin, credentials: true }));
 // mounted BEFORE the json() body parser below.
 app.use("/api/webhooks", webhookRoutes);
 
-// Mount Bull Board before body-parser/auth just in case, or after, but it doesn't need auth right now
-app.use("/admin/queues", serverAdapter.getRouter());
-
 app.use(express.json());
 app.use(attachClerkAuth);
+
+// Bull Board exposes job payloads and lets a caller pause/retry/remove queue
+// jobs, so it needs to sit behind the same auth as everything else — any
+// signed-in app user can reach it while this is a solo project with no
+// admin-role concept yet.
+app.use("/admin/queues", requireAuth, serverAdapter.getRouter());
 
 app.use("/api/health", healthRoutes);
 app.use("/api/users", userRouter);
