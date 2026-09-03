@@ -2,18 +2,20 @@ import { Routes, Route } from "react-router-dom";
 import { ThemeProvider } from "@/contexts/ThemeContext";
 import { ProtectedRoute, PublicOnlyRoute } from "@/features/auth";
 import { AppShell } from "@/components/layout/AppShell";
-import { ROUTES } from "@/constants/routes";
+import { ROUTES, REPOSITORY_ROUTES } from "@/constants/routes";
 
 import Landing from "@/pages/Landing";
 import Login from "@/pages/Login";
 import Signup from "@/pages/Signup";
 import Dashboard from "@/pages/Dashboard";
 import Repositories from "@/pages/Repositories";
-import Documentation from "@/pages/Documentation";
 import Profile from "@/pages/Profile";
 import Settings from "@/pages/Settings";
 import NotFound from "@/pages/NotFound";
-import RepositoryDetailsPage from "@/pages/RepositoryDetails";
+import RepositoryLayout from "@/pages/RepositoryLayout";
+import RepositoryOverview from "@/pages/RepositoryOverview";
+import RepositoryPulls from "@/pages/RepositoryPulls";
+import RepositoryChat from "@/pages/RepositoryChat";
 import PullRequestDetailsPage from "@/pages/PullRequestDetails";
 import { InterviewPage } from "@/pages/InterviewPage";
 
@@ -43,11 +45,20 @@ export function AppRoutes() {
           <Route element={<AppShell />}>
             <Route path={ROUTES.dashboard} element={<Dashboard />} />
             <Route path={ROUTES.repositories} element={<Repositories />} />
-            <Route path={ROUTES.repositoryPage} element={<RepositoryDetailsPage />} />
-            <Route path={ROUTES.interviewPage} element={<InterviewPage />} />
-            <Route path={ROUTES.interviewSessionPage} element={<InterviewPage />} />
-            <Route path={ROUTES.pullRequestDetails} element={<PullRequestDetailsPage/>}/>
-            <Route path={ROUTES.documentation} element={<Documentation />} />
+
+            {/* Repository workspace: everything scoped to one repo nests
+                under RepositoryLayout, which owns the compact header +
+                sub-nav and renders these as its <Outlet/>. */}
+            <Route path={ROUTES.repositoryPage} element={<RepositoryLayout />}>
+              <Route index element={<RepositoryOverview />} />
+              <Route path={REPOSITORY_ROUTES.pulls} element={<RepositoryPulls />} />
+              <Route path={REPOSITORY_ROUTES.pullDetails} element={<PullRequestDetailsPage />} />
+              <Route path={REPOSITORY_ROUTES.chat} element={<RepositoryChat />} />
+              <Route path={REPOSITORY_ROUTES.chatSession} element={<RepositoryChat />} />
+              <Route path={REPOSITORY_ROUTES.interview} element={<InterviewPage />} />
+              <Route path={REPOSITORY_ROUTES.interviewSession} element={<InterviewPage />} />
+            </Route>
+
             <Route path={ROUTES.profile} element={<Profile />} />
             <Route path={ROUTES.settings} element={<Settings />} />
           </Route>

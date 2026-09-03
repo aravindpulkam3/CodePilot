@@ -84,7 +84,6 @@ export function InterviewPage() {
 
       // Safety net for Axios data wrapping
       const data = res.data.data || res.data;
-      console.log("Interview Started Payload:", data);
 
       // Navigate to the dynamic route
       navigate(`/repositories/${repositoryId}/interview/${data.sessionId}`);
@@ -268,6 +267,78 @@ export function InterviewPage() {
             </div>
           </CardBody>
         </Card>
+
+        <div className="mt-8 space-y-4">
+          <h3 className="text-md font-semibold text-ink-light dark:text-ink-dark">
+            Past Interviews
+          </h3>
+
+          {interviewSessions.length === 0 ? (
+            <p className="text-sm text-muted-light">
+              No past interview sessions found.
+            </p>
+          ) : (
+            interviewSessions.map((s: any) => {
+              const state =
+                typeof s.state === "string" ? JSON.parse(s.state) : s.state;
+              const isSessionCompleted = s.status === "completed";
+
+              return (
+                <Card
+                  key={s.id}
+                  className="transition-colors hover:border-slate-300 dark:hover:border-slate-700"
+                >
+                  <CardBody className="p-5 flex justify-between items-center">
+                    <div>
+                      <h4 className="font-semibold text-ink-light dark:text-ink-dark mb-1 capitalize">
+                        {state?.currentTopic || "General"} Interview
+                      </h4>
+                      <div className="flex gap-4 text-xs text-muted-light">
+                        <span>
+                          {new Date(s.created_at).toLocaleDateString()}
+                        </span>
+                        <span className="capitalize text-signal-500">
+                          Difficulty: {state?.difficulty}
+                        </span>
+                        {isSessionCompleted ? (
+                          <span className="text-green-600 font-medium">
+                            Completed
+                          </span>
+                        ) : (
+                          <span className="text-amber-500 font-medium">
+                            In Progress
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex gap-4 items-center">
+                      {state?.assessment && (
+                        <div className="text-right mr-4">
+                          <span className="block text-xl font-bold text-signal-500">
+                            {state.assessment.score}/10
+                          </span>
+                          <span className="text-xs text-muted-light">
+                            Final Score
+                          </span>
+                        </div>
+                      )}
+                      <Button
+                        variant="secondary"
+                        onClick={() =>
+                          navigate(
+                            `/repositories/${repositoryId}/interview/${s.id}`,
+                          )
+                        }
+                      >
+                        {isSessionCompleted ? "Review Transcript" : "Resume"}
+                      </Button>
+                    </div>
+                  </CardBody>
+                </Card>
+              );
+            })
+          )}
+        </div>
       </div>
     );
   }

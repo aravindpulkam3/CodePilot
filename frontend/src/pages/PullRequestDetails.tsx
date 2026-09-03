@@ -1,10 +1,11 @@
 import { useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useSearchParams } from "react-router-dom";
 import { usePullRequestDetail } from "@/hooks/useRepository";
 import { useTriggerAiReview, usePullRequestReviews } from "@/hooks/useReview";
 import { useChatSessions, useChatHistory } from "@/hooks/useChat";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
+import { ErrorState } from "@/components/ui/ErrorState";
 import {
   AlertTriangle,
   RefreshCw,
@@ -20,14 +21,34 @@ import { FindingDiscussionDrawer } from "@/components/chat/FindingDiscussionDraw
 import { useAuth } from "@clerk/clerk-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { sendChatMessageStream } from "@/services/api/repositoryApi";
+import { toast } from "sonner";
 
 export default function PullRequestDetailsPage() {
   const { repositoryId, pullNumber } = useParams<{
     repositoryId: string;
     pullNumber: string;
   }>();
-  const [activeTab, setActiveTab] = useState<"findings" | "chat">("findings");
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  // The active Review Q&A session is a query param, not local state, so a
+  // link to a specific conversation survives refresh/sharing. Kept as a
+  // query param rather than a new path segment — restructuring this page's
+  // routing further is explicitly out of scope for this pass (Review UI
+  // redesign is a separate future pass).
+  const activeSessionId = searchParams.get("session");
+  const setActiveSessionId = (id: string | null) => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (id) next.set("session", id);
+        else next.delete("session");
+        return next;
+      },
+      { replace: true },
+    );
+  };
+  const [activeTab, setActiveTab] = useState<"findings" | "chat">(
+    activeSessionId ? "chat" : "findings",
+  );
   const [activeFinding, setActiveFinding] = useState<Finding | null>(null);
 
   const queryClient = useQueryClient();
@@ -39,14 +60,20 @@ export default function PullRequestDetailsPage() {
   const [streamedSources, setStreamedSources] = useState<any[]>([]);
 
   // 1. Fetch GitHub PR Details
-  const { data: pr, isLoading: isPrLoading } = usePullRequestDetail(
-    repositoryId!,
-    pullNumber!,
-  );
+  const {
+    data: pr,
+    isLoading: isPrLoading,
+    isError: isPrError,
+    refetch: refetchPr,
+  } = usePullRequestDetail(repositoryId!, pullNumber!);
 
   // 2. Fetch Existing AI Reviews
-  const { data: reviewData, isLoading: isReviewsLoading } =
-    usePullRequestReviews(repositoryId!, pullNumber!);
+  const {
+    data: reviewData,
+    isLoading: isReviewsLoading,
+    isError: isReviewsError,
+    refetch: refetchReviews,
+  } = usePullRequestReviews(repositoryId!, pullNumber!);
 
   // 3. AI Generation Mutation
   const { mutate: generateReview, isPending: isGenerating } =
@@ -77,6 +104,10 @@ export default function PullRequestDetailsPage() {
         token,
         "REVIEW",
       );
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error || `Request failed (${response.status})`);
+      }
       if (!response.body) throw new Error("No response body");
 
       const reader = response.body.getReader();
@@ -118,6 +149,7 @@ export default function PullRequestDetailsPage() {
       });
     } catch (error) {
       console.error("Chat error:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to send message.");
     } finally {
       setIsStreaming(false);
       setStreamedText("");
@@ -134,6 +166,18 @@ export default function PullRequestDetailsPage() {
 
   if (isPrLoading || isReviewsLoading)
     return <div className="p-8">Loading PR details...</div>;
+  if (isPrError || isReviewsError)
+    return (
+      <div className="p-8">
+        <ErrorState
+          message="Couldn't load this pull request."
+          onRetry={() => {
+            refetchPr();
+            refetchReviews();
+          }}
+        />
+      </div>
+    );
   if (!pr) return <div className="p-8">Pull Request not found.</div>;
 
   const { latest, history: reviewHistory } = reviewData || {
@@ -148,10 +192,10 @@ export default function PullRequestDetailsPage() {
     <div className="max-w-6xl mx-auto p-6 space-y-6 flex flex-col h-full min-h-screen relative">
       <div>
         <Link
-          to={`/repositories/${repositoryId}`}
+          to={`/repositories/${repositoryId}/pulls`}
           className="mb-4 inline-flex items-center gap-1.5 text-xs text-muted-light hover:text-ink-light dark:text-muted-dark dark:hover:text-ink-dark"
         >
-          <ArrowLeft className="h-3.5 w-3.5" /> Back to Repository
+          <ArrowLeft className="h-3.5 w-3.5" /> Back to Pull Requests
         </Link>
         <PageHeader
           title={`#${pr.number} ${pr.title}`}
