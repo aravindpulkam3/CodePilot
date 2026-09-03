@@ -18,18 +18,13 @@ export async function getMe(req: Request, res: Response) {
 
     let user = rows[0];
 
-    if (!user) {
-      user = await userService.upsertFromClerk({
-        clerkId: clerkId,
-        email: "",
-        name: null,
-        avatarUrl: null,
-        githubConnected: false,
-        githubUsername: null,
-      });
+    // Create on first sight, and self-heal a row that was previously
+    // created without real data (e.g. by an older version of this
+    // fallback, or a webhook that fired before GitHub was connected).
+    if (!user || !user.email || (!user.name && !user.avatar_url)) {
+      user = await userService.syncFromClerkApi(clerkId);
     }
 
-    // 4. Return the user
     return res.json(toUserDto(user));
   } catch (error) {
     console.error("Error in getMe:", error);

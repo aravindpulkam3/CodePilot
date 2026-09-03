@@ -9,6 +9,7 @@ import {
   UnifiedChatSession,
 } from "@/services/api/chatApi";
 import { ChatMessage } from "@/types/chatTypes";
+import { toast } from "sonner";
 
 export function useFindingDiscussion(findingId: string | null, repositoryId?: string) {
   const queryClient = useQueryClient();
@@ -79,6 +80,10 @@ export function useFindingDiscussion(findingId: string | null, repositoryId?: st
           repositoryId,
         });
 
+        if (!response.ok) {
+          const body = await response.json().catch(() => null);
+          throw new Error(body?.error || `Request failed (${response.status})`);
+        }
         if (!response.body) throw new Error("No response stream body");
 
         const reader = response.body.getReader();
@@ -114,6 +119,7 @@ export function useFindingDiscussion(findingId: string | null, repositoryId?: st
         });
       } catch (err) {
         console.error("Finding discussion stream error:", err);
+        toast.error(err instanceof Error ? err.message : "Failed to send message.");
       } finally {
         setIsStreaming(false);
         setStreamedText("");

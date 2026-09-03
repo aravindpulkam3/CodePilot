@@ -24,6 +24,7 @@ export const getGitHubAccessToken = async (clerkUserId: string): Promise<string>
     if (error.message === 'GITHUB_NOT_CONNECTED') {
       throw error;
     }
+    console.error(`[GitHub] Clerk OAuth token lookup failed for user ${clerkUserId}:`, error);
     throw new Error('CLERK_API_FAILURE');
   }
 };

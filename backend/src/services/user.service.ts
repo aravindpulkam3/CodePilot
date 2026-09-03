@@ -1,3 +1,4 @@
+import { clerkClient } from "@clerk/express";
 import { pool } from "../config/db.js";
 import type { AppUserRow } from "../types/user.js";
 
@@ -9,6 +10,29 @@ import type { AppUserRow } from "../types/user.js";
  */
 export const userService = {
 
+  /**
+   * Fetches the real profile from Clerk's Backend API and upserts it.
+   * The Clerk *webhook* (routes/webhook.routes.ts) does the same mapping
+   * when it fires, but a webhook needs a publicly reachable URL — it
+   * never fires against localhost in local dev — so this is the path
+   * that actually keeps app_users populated day to day. Used both by
+   * GET /users/me and by requireAuth's own bootstrap-on-first-request,
+   * so any endpoint can create the row, not just /users/me.
+   */
+  async syncFromClerkApi(clerkId: string): Promise<AppUserRow> {
+    const clerkUser = await clerkClient.users.getUser(clerkId);
+    const github = clerkUser.externalAccounts.find((a) => a.provider === "github");
+
+    return userService.upsertFromClerk({
+      clerkId,
+      email: clerkUser.primaryEmailAddress?.emailAddress ?? "",
+      name: clerkUser.fullName,
+      avatarUrl: clerkUser.imageUrl || null,
+      githubConnected: Boolean(github),
+      githubUsername: github?.username ?? null,
+    });
+  },
+
   async upsertFromClerk(input: {
     clerkId: string;
     email: string;
@@ -17,7 +41,6 @@ export const userService = {
     githubConnected: boolean;
     githubUsername: string | null;
   }): Promise<AppUserRow> {
-    console.log("upserting");
     const { rows } = await pool.query<AppUserRow>(
       `INSERT INTO app_users (clerk_id, email, name, avatar_url, github_connected, github_username)
        VALUES ($1, $2, $3, $4, $5, $6)

@@ -32,10 +32,9 @@ const handleGitHubError = (res: Response, error: any) => {
 
 export const getUser = async (req: Request, res: Response) => {
   try {
-    const userId = req.dbUser!.id;
-    
+    const clerkUserId = req.dbUser!.clerkId;
 
-    const profile = await getGitHubUserProfile(userId);
+    const profile = await getGitHubUserProfile(clerkUserId);
     return res.status(200).json(profile);
     
   } catch (error: any) {
