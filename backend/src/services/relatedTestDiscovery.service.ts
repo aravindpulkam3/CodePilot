@@ -16,7 +16,12 @@ export class RelatedTestDiscoveryService {
     return testFiles;
   }
 
-  private isTestFile(filePath: string): boolean {
+  /**
+   * Public so callers that already hold a dependents list can partition it
+   * locally instead of re-running getDirectDependents through
+   * discoverTestsForFile (which would double the graph queries per file).
+   */
+  public isTestFile(filePath: string): boolean {
     const lowerPath = filePath.toLowerCase();
     return (
       lowerPath.includes(".test.") ||

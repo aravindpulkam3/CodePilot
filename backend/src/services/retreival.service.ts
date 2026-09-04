@@ -9,19 +9,22 @@ import {
   RETRIEVAL_WEIGHTS,
 } from "../types/retrievalTypes.js";
 import {
+  ArchitectureSummary,
   ComponentSummary,
   FileSummary,
+  RepositorySummary,
 } from "../types/summaryTypes.js";
 
 import { semanticRetrievalService } from "./semanticRetrieval.service.js";
 import { repositoryGraphService } from "./repositoryGraph.service.js";
-import { symbolRetrievalService } from "./symbolRetrieval.service.js";
 import { relatedTestDiscoveryService } from "./relatedTestDiscovery.service.js";
-import { changedSymbolAnalysisService } from "./changedSymbolAnalysis.service.js";
 import { candidateMergerService } from "./candidateMerger.service.js";
-import { retrievalRerankerService } from "./retrievalReranker.service.js";
+import { retrievalRerankerService, primarySource } from "./retrievalReranker.service.js";
 import { contextBudgetService } from "./contextBudget.service.js";
+import { pool } from "../config/db.js";
 import { performance } from "perf_hooks";
+// TEMPORARY verification logging — see utils/readmeDebugLog.ts for removal.
+import { docRetrievalLog, docPreview } from "../utils/readmeDebugLog.js";
 
 const DEFAULT_OPTIONS: RetrievalOptions = {
   maxComponents: 3,
@@ -29,20 +32,78 @@ const DEFAULT_OPTIONS: RetrievalOptions = {
   maxCodeChunks: 10,
   similarityThreshold: 0.6,
   maxTokens: 15000,
+  // Documentation starts at the same threshold as code for consistency, but
+  // is a separate knob so it can be retuned independently — code chunks and
+  // prose don't necessarily share a similarity distribution.
+  maxDocChunks: 3,
+  docSimilarityThreshold: 0.6,
+};
+
+/**
+ * Bounds for review's structural expansion.
+ *
+ * These are the safety rails that make graph expansion usable now that it
+ * returns real code instead of discarded prose. Without them, changing a
+ * widely-imported utility would pull in every caller in the repository.
+ *
+ * Note the per-class *file* lists are NOT truncated arbitrarily — the
+ * `totalLimit` passed to searchCodeChunksInFiles ranks across all of a class's
+ * files by similarity and takes the best, which is strictly better than
+ * slicing an unordered path list. The fan-in rule below is what prevents a
+ * pathological path list reaching SQL in the first place.
+ */
+const REVIEW_LIMITS = {
+  /** Changed files whose graph we expand. Every changed file still appears in the diff. */
+  maxChangedFilesForExpansion: 20,
+  /** Above this many non-test callers, a file is a shared util: its callers say nothing. */
+  maxDependentFanIn: 30,
+  /** Chunks per individual file, so one chunk-dense file can't fill a class. */
+  perFileChunkLimit: 3,
+  changedTotalLimit: 40,
+  dependentTotalLimit: 20,
+  dependencyTotalLimit: 20,
+  testTotalLimit: 12,
+  /** Was effectively 5 via review.service's maxCodeChunks; the budget now does the capping. */
+  semanticLimit: 25,
 };
 
 export class RepositoryRetrievalService {
-  private async ensureSynced(clerkUserId: string, repositoryId: string) {
+  /**
+   * Blocks retrieval until the repository reaches SEARCHABLE — or throws.
+   * Gated on `searchable_at`, not full readiness: Q&A/Review/Interview are
+   * usable the moment Phase 1 (sync/parse/embed/import-graph) finishes,
+   * regardless of whether Phase 2's background LLM summarization
+   * (SUMMARIZING/READY) has caught up yet. Summarization is sequential
+   * Ollama and can legitimately take far longer than any HTTP request
+   * budget — blocking retrieval on it would defeat the entire point of the
+   * SEARCHABLE/READY split.
+   *
+   * Previously this waited on full `indexing_status === 'INDEXED'`
+   * (summarization included) with a single 45s budget that, when it ran
+   * out, just logged and returned anyway regardless of real state — reviews
+   * /QA/interview answers were routinely generated against a partially- or
+   * un-indexed repo, silently. The fix here is NOT "wait longer" on its own
+   * — this still runs inline on a synchronous HTTP request (POST /reviews,
+   * chat stream, interview start), so blocking for minutes would just trade
+   * a silently-wrong result for a hung request/proxy timeout. Instead: keep
+   * the wait bounded to Phase 1 (fast) and request-friendly, and when the
+   * deadline is hit without the repo being searchable, throw a specific,
+   * catchable error instead of pretending everything's fine. Callers already
+   * surface `error.message` back to the client (see review.controller.ts,
+   * chat.controller.ts), so this becomes a clear "still indexing, try again
+   * shortly" instead of a bad result.
+   */
+  private async ensureSearchable(clerkUserId: string, repositoryId: string) {
     console.log(`[RetrievalService] Triggering JIT Sync check for repository ${repositoryId}...`);
 
-    const maxWaitMs = 45000;
+    const maxWaitMs = 60000;
     const pollIntervalMs = 2000;
     const startTime = Date.now();
     const deadline = () => Date.now() - startTime < maxWaitMs;
 
     // 1. Enqueue the sync job, then wait for THIS job to finish (not just any past
-    // state) before looking at indexing_status — the repo can already read 'INDEXED'
-    // from a previous sync while this job is still sitting in the queue.
+    // state) before looking at searchable_at — the repo can already read
+    // searchable from a previous sync while this job is still sitting in the queue.
     const { jobId } = await repositorySyncService.enqueueSync(clerkUserId, repositoryId);
     const job = jobId ? await syncQueue.getJob(jobId) : undefined;
 
@@ -55,30 +116,42 @@ export class RepositoryRetrievalService {
     }
 
     // 2. The sync job only enqueues indexing chunks; it doesn't wait for them.
-    // Poll the repo's indexing_status until the index worker finishes (or fails/times out).
+    // Poll the repo's searchable_at/indexing_status until Phase 1 finishes.
     const { pool } = await import("../config/db.js");
 
     while (deadline()) {
       const { rows } = await pool.query(
-        "SELECT indexing_status FROM repositories WHERE id = $1",
+        "SELECT searchable_at, indexing_status FROM repositories WHERE id = $1",
         [repositoryId]
       );
 
+      const searchableAt = rows[0]?.searchable_at;
       const status = rows[0]?.indexing_status;
-      if (status === 'INDEXED' || status === 'FAILED' || !status) {
-        break; // It's done, failed, or was never indexed to begin with.
+
+      if (searchableAt) {
+        console.log(`[RetrievalService] Repository ${repositoryId} is searchable (status: ${status}).`);
+        return;
       }
 
+      if (status === 'FAILED') {
+        console.error(`[RetrievalService] Repository ${repositoryId} indexing FAILED — refusing to retrieve on a broken index.`);
+        throw new Error('INDEXING_FAILED');
+      }
+
+      // status is NOT_STARTED / SYNCING / INDEXING — still in progress, keep waiting.
       await new Promise(res => setTimeout(res, pollIntervalMs));
     }
 
-    console.log(`[RetrievalService] Sync wait completed. Proceeding to semantic retrieval...`);
+    console.error(
+      `[RetrievalService] Timed out after ${maxWaitMs / 1000}s waiting for repository ${repositoryId} to become searchable — refusing to retrieve on a partial index.`,
+    );
+    throw new Error('INDEXING_IN_PROGRESS');
   }
 
-  // --- QA Mode (Legacy behavior preserved) ---
+  // --- QA Mode ---
   public async retrieveQAContext(clerkUserId: string, repositoryId: string, query: string, opts?: RetrievalOptions): Promise<RetrievedContext> {
     const options = { ...DEFAULT_OPTIONS, ...opts };
-    await this.ensureSynced(clerkUserId, repositoryId);
+    await this.ensureSearchable(clerkUserId, repositoryId);
 
     const queryVectorStr = await semanticRetrievalService.getQueryVectorStr(query);
 
@@ -88,6 +161,7 @@ export class RepositoryRetrievalService {
       components: [],
       files: [],
       codeChunks: [],
+      docChunks: [],
       metadata: { mode: "qa", usedFallback: false, query },
     };
 
@@ -101,10 +175,30 @@ export class RepositoryRetrievalService {
 
     let relevantFilePaths = new Set<string>();
 
+    // Authoritative file paths, pushed in lockstep with context.files so the
+    // chunk scope can be re-derived after slicing (below).
+    //
+    // These MUST be node_key, not summary_json.path: `path` is a required
+    // field in generateFileSummary's output schema, i.e. the LLM writes it,
+    // and it can drift from the real path (abbreviated, prefixed, or simply
+    // wrong). node_key is the value the row is stored and looked up under,
+    // and is what repository_embeddings.file_path is matched against.
+    const relevantFilePathsInOrder: string[] = [];
+
     for (const res of summaryResults) {
-      if (res.nodeType === "file") {
+      // Repository- and architecture-level hits were previously retrieved
+      // here (searchSummaries is called with nodeType undefined) and then
+      // silently dropped, because only the file/component branches existed.
+      // Those are exactly the rows that answer "what does this project do",
+      // so capture them instead of discarding them.
+      if (res.nodeType === "repository") {
+        if (!context.repository) context.repository = res.summary as RepositorySummary;
+      } else if (res.nodeType === "architecture") {
+        if (!context.architecture) context.architecture = res.summary as ArchitectureSummary;
+      } else if (res.nodeType === "file") {
         context.files.push(res.summary as FileSummary);
         relevantFilePaths.add(res.nodeKey);
+        relevantFilePathsInOrder.push(res.nodeKey);
       } else if (
         res.nodeType === "component" &&
         context.components.length < (options.maxComponents || 3)
@@ -121,6 +215,7 @@ export class RepositoryRetrievalService {
           if (!relevantFilePaths.has(cf.nodeKey)) {
             context.files.push(cf.summary as FileSummary);
             relevantFilePaths.add(cf.nodeKey);
+            relevantFilePathsInOrder.push(cf.nodeKey);
             added++;
           }
         }
@@ -130,29 +225,115 @@ export class RepositoryRetrievalService {
     context.components = context.components.slice(0, options.maxComponents);
     context.files = context.files.slice(0, options.maxFiles);
 
+    // Re-derive the chunk scope from the files actually kept. Previously the
+    // display list was sliced but chunk retrieval still used the full
+    // unsliced set (up to 10 + maxComponents x maxFiles paths), so chunks
+    // could come from files the caller never saw. Sliced identically to
+    // context.files above, and built from node_key — see the note where
+    // relevantFilePathsInOrder is declared.
+    relevantFilePaths = new Set(
+      relevantFilePathsInOrder.slice(0, options.maxFiles ?? DEFAULT_OPTIONS.maxFiles),
+    );
+
+    // Documentation and code are searched concurrently — two pgvector reads
+    // against the SAME already-computed query vector. This is database I/O
+    // parallelism only: no LLM call, no classifier, and nothing here relaxes
+    // the strictly-sequential Ollama summarization worker.
+    //
+    // Routing between docs and code is emergent rather than decided up front:
+    // both are gated by their own threshold and whichever genuinely matches
+    // the question wins. "How do I run this" surfaces README setup sections;
+    // "how is auth implemented" surfaces code.
+    const [docChunks, scopedCodeChunks] = await Promise.all([
+      semanticRetrievalService.searchDocumentationChunks(
+        repositoryId,
+        queryVectorStr,
+        options.maxDocChunks ?? DEFAULT_OPTIONS.maxDocChunks,
+        options.docSimilarityThreshold ?? DEFAULT_OPTIONS.docSimilarityThreshold,
+      ),
+      relevantFilePaths.size === 0
+        ? semanticRetrievalService.searchCodeChunks(repositoryId, queryVectorStr, options)
+        : semanticRetrievalService.searchCodeChunks(
+            repositoryId,
+            queryVectorStr,
+            options,
+            Array.from(relevantFilePaths),
+          ),
+    ]);
+
+    let codeChunks = scopedCodeChunks;
+
     if (relevantFilePaths.size === 0) {
       context.metadata.usedFallback = true;
-      context.codeChunks = await semanticRetrievalService.searchCodeChunks(
+    } else if (codeChunks.length === 0) {
+      // The path restriction starved the answer: file summaries matched, so
+      // chunks were scoped to those files, but none of THEIR chunks cleared
+      // the threshold — leaving the model with no code at all.
+      //
+      // This is the recall ceiling of scoping chunks by summary hits: a
+      // highly relevant chunk in a file whose *summary* scored below
+      // threshold is unreachable. Observed live — a repo returned 10 chunks
+      // via the unrestricted path while still SUMMARIZING, then 0 once its
+      // summaries existed and narrowed the scope to two unrelated files.
+      //
+      // Rather than change the scoping (which is usually a precision win),
+      // treat an empty scoped result as no better than having no scope at
+      // all, and redo the search repo-wide.
+      context.metadata.usedFallback = true;
+      codeChunks = await semanticRetrievalService.searchCodeChunks(
         repositoryId,
         queryVectorStr,
         options,
       );
-    } else {
-      context.codeChunks = await semanticRetrievalService.searchCodeChunks(
-        repositoryId,
-        queryVectorStr,
-        options,
-        Array.from(relevantFilePaths),
+      docRetrievalLog(
+        `  Scoped code search returned 0 chunks from [${Array.from(relevantFilePaths).join(", ")}] ` +
+          `— retried repo-wide, got ${codeChunks.length}.`,
+      );
+    }
+
+    context.docChunks = docChunks;
+    context.codeChunks = codeChunks;
+
+    console.log(
+      `[Retrieval] QA for ${repositoryId}: ${codeChunks.length} code chunk(s), ${docChunks.length} doc section(s), repoSummary=${!!context.repository}.`,
+    );
+
+    // TEMPORARY verification logging — see utils/readmeDebugLog.ts.
+    docRetrievalLog(
+      `Q&A query="${docPreview(query, 80)}" -> ${docChunks.length} doc section(s), ` +
+        `${codeChunks.length} code chunk(s), repoSummary=${!!context.repository}, ` +
+        `docThreshold=${options.docSimilarityThreshold ?? DEFAULT_OPTIONS.docSimilarityThreshold}.`,
+    );
+    docRetrievalLog(
+      `  Code scope: ${
+        relevantFilePaths.size === 0
+          ? "UNRESTRICTED (no file summaries matched — repo-wide fallback)"
+          : `${relevantFilePaths.size} file(s) [${Array.from(relevantFilePaths).join(", ")}]`
+      }`,
+    );
+    docChunks.forEach((d, i) => {
+      docRetrievalLog(
+        `  [Doc ${i + 1}] ${d.filePath} § "${d.sectionPath}" ` +
+          `sim=${Number(d.similarity).toFixed(4)} lines ${d.lineStart}-${d.lineEnd} :: ${docPreview(d.content)}`,
+      );
+    });
+    if (docChunks.length > 0 && codeChunks.length > 0) {
+      // Both matched — useful for sanity-checking that similarity-based
+      // routing is behaving (docs should dominate on "how do I run this",
+      // code on "how is X implemented").
+      docRetrievalLog(
+        `  Top doc sim=${Number(docChunks[0].similarity).toFixed(4)} vs ` +
+          `top code sim=${Number(codeChunks[0].similarity).toFixed(4)}.`,
       );
     }
 
     return context;
   }
 
-  // --- Interview Mode (Legacy behavior preserved) ---
+  // --- Interview Mode  ---
   public async retrieveInterviewStartContext(clerkUserId: string, repositoryId: string, opts?: RetrievalOptions): Promise<RetrievedContext> {
     const options = { ...DEFAULT_OPTIONS, ...opts };
-    await this.ensureSynced(clerkUserId, repositoryId);
+    await this.ensureSearchable(clerkUserId, repositoryId);
 
     const context: RetrievedContext = {
       repository: null,
@@ -160,6 +341,7 @@ export class RepositoryRetrievalService {
       components: [],
       files: [],
       codeChunks: [],
+      docChunks: [],
       metadata: {
         mode: "interview",
         usedFallback: false,
@@ -168,10 +350,10 @@ export class RepositoryRetrievalService {
       },
     };
 
-    const repoSummaries = await semanticRetrievalService.searchSummaries(repositoryId, "[0]", "repository", 1, 0);
+    const repoSummaries = await semanticRetrievalService.listSummariesByType(repositoryId, "repository", 1);
     if (repoSummaries.length > 0) context.repository = repoSummaries[0].summary as any;
 
-    const archSummaries = await semanticRetrievalService.searchSummaries(repositoryId, "[0]", "architecture", 1, 0);
+    const archSummaries = await semanticRetrievalService.listSummariesByType(repositoryId, "architecture", 1);
     if (archSummaries.length > 0) context.architecture = archSummaries[0].summary as any;
 
     let componentKeys: string[] = [];
@@ -183,7 +365,7 @@ export class RepositoryRetrievalService {
       const compSummaries = await semanticRetrievalService.getComponentSummaries(repositoryId, componentKeys.slice(0, options.maxComponents || 3));
       context.components = compSummaries.map(c => c.summary as ComponentSummary);
     } else {
-      const compSummaries = await semanticRetrievalService.searchSummaries(repositoryId, "[0]", "component", options.maxComponents || 3, 0);
+      const compSummaries = await semanticRetrievalService.listSummariesByType(repositoryId, "component", options.maxComponents || 3);
       context.components = compSummaries.map(c => c.summary as ComponentSummary);
       context.metadata.usedFallback = true;
     }
@@ -201,6 +383,7 @@ export class RepositoryRetrievalService {
       components: [],
       files: [],
       codeChunks: [],
+      docChunks: [],
       metadata: {
         mode: "interview",
         usedFallback: false,
@@ -229,7 +412,19 @@ export class RepositoryRetrievalService {
     return context;
   }
 
-  // --- REVIEW MODE: Hybrid Retrieval Pipeline ---
+  // --- REVIEW MODE: Change-centric Retrieval Pipeline ---
+  /**
+   * Retrieves the "blast radius" of a pull request: the changed code itself,
+   * its callers, its callees, its tests, and relevant documentation.
+   *
+   * The governing rule: the GRAPH decides WHICH files matter, then pgvector
+   * fetches their CODE. Previously the structural stages fetched
+   * `getFileSummaries()` — LLM prose from `repository_summaries` — which
+   * (a) is written only by Phase 2, so it was empty during SEARCHABLE, when
+   * review is most likely to run, and (b) landed in `context.files`, which the
+   * review prompt never read. All of that work was computed, charged 60% of
+   * the token budget, allowed to evict real code, and then discarded.
+   */
   public async retrieveReviewContext(
     clerkUserId: string,
     repositoryId: string,
@@ -239,15 +434,12 @@ export class RepositoryRetrievalService {
   ): Promise<RetrievedContext> {
     const startTime = performance.now();
     const options = { ...DEFAULT_OPTIONS, ...opts };
-    await this.ensureSynced(clerkUserId, repositoryId);
+    await this.ensureSearchable(clerkUserId, repositoryId);
 
-    const queryVectorStr = await semanticRetrievalService.getQueryVectorStr(query);
     const rawCandidates: RetrievalCandidate[] = [];
 
     const trace: RetrievalTrace = {
       timingMs: {
-        changedAnalysis: 0,
-        exactSymbol: 0,
         graphExpansion: 0,
         semanticRetrieval: 0,
         mergeAndRerank: 0,
@@ -255,7 +447,7 @@ export class RepositoryRetrievalService {
         total: 0
       },
       counts: {
-        exactSymbol: 0,
+        changedFile: 0,
         graphDependency: 0,
         graphDependent: 0,
         relatedTest: 0,
@@ -274,88 +466,171 @@ export class RepositoryRetrievalService {
       droppedCandidates: []
     };
 
+    const emptyContext = (): RetrievedContext => ({
+      repository: null, architecture: null, components: [], files: [],
+      codeChunks: [], docChunks: [],
+      metadata: { mode: "review", usedFallback: false, query, trace },
+    });
+
+    // Nothing reviewable (e.g. every file matched the prompt builder's
+    // IGNORED_PATTERNS). An unfiltered semantic search for a lockfile-only PR
+    // returns noise; returning nothing is correct.
+    if (!changedFiles || changedFiles.length === 0) {
+      trace.timingMs.total = performance.now() - startTime;
+      docRetrievalLog(`Review: no reviewable changed files — skipping retrieval entirely.`);
+      return emptyContext();
+    }
+
+    const queryVectorStr = await semanticRetrievalService.getQueryVectorStr(query);
+
+    // ---- STAGE A: resolve the structural file set (paths only, no content)
     let t0 = performance.now();
 
-    // Stage 1: Changed Code Analysis
-    const changedSymbols = await changedSymbolAnalysisService.getSymbolsInChangedFiles(repositoryId, changedFiles);
-    
-    trace.timingMs.changedAnalysis = performance.now() - t0;
-    t0 = performance.now();
+    const changedSet = new Set(changedFiles);
+    const testSet = new Set<string>();
+    const dependentSet = new Set<string>();
+    const dependencySet = new Set<string>();
+    const fanInSuppressed: string[] = [];
 
-    // Stage 2: Add exact symbols from changed files.
-    // getSymbolDefinition matches on symbol_name alone, repo-wide — with no
-    // call graph to confirm relevance, a common name (e.g. "handleError")
-    // can match unrelated files by coincidence. Only treat a match in the
-    // SAME file as the changed symbol's own definition (authoritative,
-    // "exact_symbol"); anything cross-file is a weaker signal
-    // ("cross_file_symbol_match") that competes in the semantic budget
-    // instead of the uncapped changed-code bucket.
-    for (const sym of changedSymbols) {
-      const defs = await symbolRetrievalService.getSymbolDefinition(repositoryId, sym.symbolName);
-      for (const def of defs) {
-        const sourceType = def.filePath === sym.filePath ? "exact_symbol" : "cross_file_symbol_match";
-        rawCandidates.push(this.chunkToCandidate(def, sourceType));
-        trace.counts.exactSymbol++;
-      }
-    }
-    
-    trace.timingMs.exactSymbol = performance.now() - t0;
-    t0 = performance.now();
+    // A huge PR shouldn't fan out to hundreds of graph queries. This caps
+    // EXPANSION only — every changed file still appears in the diff.
+    const expansionFiles = changedFiles.slice(0, REVIEW_LIMITS.maxChangedFilesForExpansion);
 
-    // Stage 3: Structural Expansion (Graph)
-    for (const file of changedFiles) {
-      // 3a. Direct dependencies
-      const deps = await repositoryGraphService.getDirectDependencies(repositoryId, file);
-      if (deps.length > 0) {
-         const depSummaries = await semanticRetrievalService.getFileSummaries(repositoryId, deps);
-         depSummaries.forEach(s => {
-           rawCandidates.push(this.summaryToCandidate(s, "graph_dependency"));
-           trace.counts.graphDependency++;
-         });
+    for (const file of expansionFiles) {
+      const [deps, dependents] = await Promise.all([
+        repositoryGraphService.getDirectDependencies(repositoryId, file),
+        repositoryGraphService.getDirectDependents(repositoryId, file),
+      ]);
+
+      // Tests are derived from the dependents we already have, rather than
+      // calling discoverTestsForFile (which would re-run the same query).
+      const tests = dependents.filter((d) => relatedTestDiscoveryService.isTestFile(d));
+      const nonTestDependents = dependents.filter((d) => !relatedTestDiscoveryService.isTestFile(d));
+
+      for (const t of tests) testSet.add(t);
+
+      // Fan-in suppression: a file with 200 callers is a shared utility, and
+      // each individual caller carries almost no information about the change.
+      // Without this, changing utils/logger.ts would flood the prompt.
+      // Tests are kept regardless — a widely-used util's tests are still the
+      // best statement of its intended behaviour.
+      if (nonTestDependents.length > REVIEW_LIMITS.maxDependentFanIn) {
+        fanInSuppressed.push(file);
+      } else {
+        for (const d of nonTestDependents) dependentSet.add(d);
       }
 
-      // 3b. Direct dependents
-      const dependents = await repositoryGraphService.getDirectDependents(repositoryId, file);
-      if (dependents.length > 0) {
-         const depSummaries = await semanticRetrievalService.getFileSummaries(repositoryId, dependents);
-         depSummaries.forEach(s => {
-           rawCandidates.push(this.summaryToCandidate(s, "graph_dependent"));
-           trace.counts.graphDependent++;
-         });
-      }
-
-      // 3c. Related Tests
-      const tests = await relatedTestDiscoveryService.discoverTestsForFile(repositoryId, file);
-      if (tests.length > 0) {
-        const testSummaries = await semanticRetrievalService.getFileSummaries(repositoryId, tests);
-        testSummaries.forEach(s => {
-          rawCandidates.push(this.summaryToCandidate(s, "related_test"));
-          trace.counts.relatedTest++;
-        });
-      }
+      for (const d of deps) dependencySet.add(d);
     }
 
-    let usedFallback = false;
-    // Fallback: If no graph links were found, we are operating blindly. Record this.
-    if (trace.counts.graphDependency === 0 && trace.counts.graphDependent === 0) {
-      usedFallback = true;
-    }
+    // Single-class assignment, strongest wins: changed > test > dependent >
+    // dependency. Without this a file that is both a dependency and a
+    // dependent would be fetched twice and rely on the merger to reconcile.
+    const assign = (set: Set<string>, ...higher: Set<string>[]) =>
+      Array.from(set).filter((p) => !higher.some((h) => h.has(p)));
 
+    const changedPaths = Array.from(changedSet);
+    const testPaths = assign(testSet, changedSet);
+    const dependentPaths = assign(dependentSet, changedSet, testSet);
+    const dependencyPaths = assign(dependencySet, changedSet, testSet, dependentSet);
+
+    trace.fileSets = {
+      changed: changedPaths.length,
+      tests: testPaths.length,
+      dependents: dependentPaths.length,
+      dependencies: dependencyPaths.length,
+      fanInSuppressed,
+    };
     trace.timingMs.graphExpansion = performance.now() - t0;
     t0 = performance.now();
 
-    // Stage 4: Global Semantic Retrieval
-    const semanticChunks = await semanticRetrievalService.searchCodeChunks(repositoryId, queryVectorStr, options);
-    for (const chunk of semanticChunks) {
-      rawCandidates.push(this.chunkToCandidate(chunk, "semantic_chunk"));
+    // ---- STAGE B: fetch CODE for each structural class, in parallel.
+    // threshold 0 throughout: a caller matters whether or not it happens to
+    // embed near the PR title. Recall is bounded by count and budget only.
+    const inFiles = (paths: string[], total: number) =>
+      semanticRetrievalService.searchCodeChunksInFiles(
+        repositoryId, queryVectorStr, paths, REVIEW_LIMITS.perFileChunkLimit, total, 0,
+      );
+
+    // ---- STAGE C: global semantic, EXCLUDING changed files (already covered
+    // by the changed class — they must not double-enter as semantic_chunk).
+    const [changedChunks, testChunks, dependentChunks, dependencyChunks, semanticChunks, reviewDocChunks] =
+      await Promise.all([
+        inFiles(changedPaths, REVIEW_LIMITS.changedTotalLimit),
+        inFiles(testPaths, REVIEW_LIMITS.testTotalLimit),
+        inFiles(dependentPaths, REVIEW_LIMITS.dependentTotalLimit),
+        inFiles(dependencyPaths, REVIEW_LIMITS.dependencyTotalLimit),
+        semanticRetrievalService.searchCodeChunks(
+          repositoryId,
+          queryVectorStr,
+          { ...options, maxCodeChunks: REVIEW_LIMITS.semanticLimit },
+          undefined,
+          changedPaths,
+        ),
+        // ---- STAGE D: documentation (relevance-gated, unchanged)
+        semanticRetrievalService.searchDocumentationChunks(
+          repositoryId,
+          queryVectorStr,
+          options.maxDocChunks ?? DEFAULT_OPTIONS.maxDocChunks,
+          options.docSimilarityThreshold ?? DEFAULT_OPTIONS.docSimilarityThreshold,
+        ),
+      ]);
+
+    for (const c of changedChunks) {
+      rawCandidates.push(this.chunkToCandidate(c, "changed_file"));
+      trace.counts.changedFile++;
+    }
+    for (const c of testChunks) {
+      rawCandidates.push(this.chunkToCandidate(c, "related_test"));
+      trace.counts.relatedTest++;
+    }
+    for (const c of dependentChunks) {
+      rawCandidates.push(this.chunkToCandidate(c, "graph_dependent"));
+      trace.counts.graphDependent++;
+    }
+    for (const c of dependencyChunks) {
+      rawCandidates.push(this.chunkToCandidate(c, "graph_dependency"));
+      trace.counts.graphDependency++;
+    }
+    for (const c of semanticChunks) {
+      rawCandidates.push(this.chunkToCandidate(c, "semantic_chunk"));
       trace.counts.semantic++;
     }
 
-    const semanticSummaries = await semanticRetrievalService.searchSummaries(repositoryId, queryVectorStr, "file", 5, options.similarityThreshold);
-    for (const summary of semanticSummaries) {
-       rawCandidates.push(this.summaryToCandidate(summary, "semantic_summary"));
-       trace.counts.semantic++;
-    }
+    // "Blind" means no structural signal at all. Computed over files that
+    // could HAVE structure: an all-new-files PR has no indexed dependents by
+    // definition and shouldn't be reported as a retrieval failure.
+    const usedFallback =
+      dependentPaths.length === 0 && dependencyPaths.length === 0 && changedChunks.length === 0;
+
+    docRetrievalLog(
+      `Review structural expansion for repo ${repositoryId}: ` +
+        `${changedPaths.length} changed / ${testPaths.length} test / ` +
+        `${dependentPaths.length} dependent / ${dependencyPaths.length} dependency file(s) -> ` +
+        `${changedChunks.length}/${testChunks.length}/${dependentChunks.length}/${dependencyChunks.length} chunk(s), ` +
+        `${semanticChunks.length} semantic.` +
+        (fanInSuppressed.length > 0
+          ? ` Fan-in suppressed for: ${fanInSuppressed.join(", ")}.`
+          : ""),
+    );
+
+    // Documentation is relevance-gated (fetched in the Promise.all above) and
+    // deliberately kept OUT of the candidate merge/rerank/budget pipeline:
+    // that pipeline allocates a code-context budget, and documentation is a
+    // different kind of evidence with its own much smaller cap applied at
+    // prompt-build time.
+    //
+    // TEMPORARY verification logging — see utils/readmeDebugLog.ts.
+    docRetrievalLog(
+      `Review retrieval for repo ${repositoryId}: ${reviewDocChunks.length} doc section(s) matched ` +
+        `the PR query (changed files: ${changedFiles.length}).`,
+    );
+    reviewDocChunks.forEach((d, i) => {
+      docRetrievalLog(
+        `  [Review Doc ${i + 1}] ${d.filePath} § "${d.sectionPath}" ` +
+          `sim=${Number(d.similarity).toFixed(4)} :: ${docPreview(d.content)}`,
+      );
+    });
 
     trace.counts.totalPreMerge = rawCandidates.length;
 
@@ -392,35 +667,42 @@ export class RepositoryRetrievalService {
       components: [],
       files: [],
       codeChunks: [],
+      docChunks: reviewDocChunks,
       metadata: { mode: "review", usedFallback, query, trace },
     };
 
+    // Every candidate is a code chunk now — the file_summary branch and the
+    // post-budget changed-file-summary append that used to live here are both
+    // gone. Both wrote into context.files, which the review prompt never read.
     for (const c of finalCandidates) {
-      if (c.dataType === "code_chunk") {
-        context.codeChunks.push({
-          filePath: c.metadata.filePath!,
-          symbolName: c.metadata.symbolName!,
-          symbolType: "unknown",
-          content: c.content,
-          lineStart: c.metadata.startLine!,
-          lineEnd: c.metadata.endLine!,
-          similarity: c.score
-        });
-      } else if (c.dataType === "file_summary") {
-         try {
-           context.files.push(JSON.parse(c.content) as FileSummary);
-         } catch(e) {}
+      context.codeChunks.push({
+        filePath: c.metadata.filePath!,
+        symbolName: c.metadata.symbolName!,
+        symbolType: primarySource(c)?.type ?? "unknown",
+        content: c.content,
+        lineStart: c.metadata.startLine!,
+        lineEnd: c.metadata.endLine!,
+        similarity: c.score,
+      });
+    }
+
+    // Repository-level orientation, ONLY when the repo is fully caught up.
+    // Deliberately not a file or component summary: those describe individual
+    // functions and go stale fast, and while a repo is SEARCHABLE-but-not-READY
+    // they sit at last_summarized_sha while the code sits at last_indexed_sha.
+    // A repository summary ("a Node/Express backend with a BullMQ worker")
+    // survives that drift; a file summary does not. Silence beats a stale
+    // summary presented as current.
+    const { rows: statusRows } = await pool.query(
+      `SELECT indexing_status FROM repositories WHERE id = $1`,
+      [repositoryId],
+    );
+    if (statusRows[0]?.indexing_status === "READY") {
+      const repoSummaries = await semanticRetrievalService.listSummariesByType(repositoryId, "repository", 1);
+      if (repoSummaries.length > 0) {
+        context.repository = repoSummaries[0].summary as RepositorySummary;
       }
     }
-
-    // Also include changed file summaries explicitly 
-    const changedFileSummaries = await semanticRetrievalService.getFileSummaries(repositoryId, changedFiles);
-    for (const cf of changedFileSummaries) {
-       context.files.push(cf.summary as FileSummary);
-    }
-
-    // Deduplicate files
-    context.files = Array.from(new Map(context.files.map(f => [f.path, f])).values());
 
     return context;
   }
@@ -441,18 +723,10 @@ export class RepositoryRetrievalService {
     };
   }
 
-  private summaryToCandidate(summary: any, sourceType: keyof typeof RETRIEVAL_WEIGHTS): RetrievalCandidate {
-    return {
-      identityKey: summary.nodeKey,
-      content: JSON.stringify(summary.summary),
-      dataType: "file_summary",
-      sources: [{ type: sourceType, weight: RETRIEVAL_WEIGHTS[sourceType], similarity: summary.similarity ?? 1.0 }],
-      score: 0,
-      metadata: {
-        filePath: summary.nodeKey,
-      }
-    };
-  }
+  // summaryToCandidate() was removed with the file_summary path: it wrapped
+  // repository_summaries prose as a retrieval candidate, which (a) was empty
+  // during SEARCHABLE, (b) was charged against the code token budget, and
+  // (c) was never read by the review prompt.
 }
 
 export const retrievalService = new RepositoryRetrievalService();

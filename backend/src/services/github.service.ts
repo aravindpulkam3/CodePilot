@@ -184,7 +184,9 @@ export const getPullRequestDetails = async (
     description: prData.body,
     state: prData.state,
     merged: prData.merged,
-    head_sha: prData.head.sha, 
+    head_sha: prData.head.sha,
+    base_sha: prData.base?.sha,
+    base_ref: prData.base?.ref,
     author: {
       login: prData.user.login,
       avatar_url: prData.user.avatar_url,
@@ -197,6 +199,9 @@ export const getPullRequestDetails = async (
     updated_at: prData.updated_at,
     files: filesResponse.data.map((file: any) => ({
       filename: file.filename,
+      // Present only for renames. The index holds the OLD path, so review
+      // retrieval needs this to find a renamed file's callers and tests.
+      previous_filename: file.previous_filename,
       status: file.status,
       additions: file.additions,
       deletions: file.deletions,
@@ -224,6 +229,62 @@ async function fetchRawFileContent(token: string | undefined, owner: string, rep
         if (!response.ok) {
             if (response.status === 404) return null;
             throw new Error(`Failed to fetch file content for ${path}: ${response.statusText}`);
+        }
+        return response.text();
+    });
+}
+
+/**
+ * Fetches the repository's canonical README at a SPECIFIC revision.
+ *
+ * Uses GitHub's /readme endpoint rather than guessing a path: it resolves any
+ * name, case and extension GitHub itself recognises (README.md, readme.rst,
+ * README, ...) in one request.
+ *
+ * ONE CALLER ONLY: repositorySummarize.service.ts (Phase 2). No retrieval
+ * path may call this. README reaches retrieval exclusively through the index
+ * (repository_embeddings rows written by the same transaction, at the same
+ * commit_sha, as that revision's code chunks). Live-fetching a README during
+ * a Q&A/Review request would mix HEAD prose with code from an older
+ * last_indexed_sha, with the model given no way to tell — the exact
+ * cross-revision skew the two-path design exists to prevent. Keeping the
+ * caller count at one is how that invariant is enforced.
+ *
+ * Returns null ONLY when the repository genuinely has no README (404).
+ * Any other failure THROWS — see the note at the call site: silently
+ * returning null on a transient error would generate a repository summary
+ * that wrongly reports "no README" AND poison the summary's content hash
+ * with hash(""), so the next run would consider that wrong summary current
+ * and skip regenerating it.
+ */
+export async function fetchCanonicalReadme(
+    token: string | undefined,
+    owner: string,
+    repo: string,
+    ref: string,
+): Promise<string | null> {
+    const cacheKey = `github:repo:${owner}:${repo}:readme:${ref}`;
+
+    return await withCache(cacheKey, 900, async () => {
+        const url = `https://api.github.com/repos/${owner}/${repo}/readme?ref=${ref}`;
+
+        const headers: Record<string, string> = {
+            'Accept': 'application/vnd.github.v3.raw',
+        };
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+        }
+
+        const response = await fetch(url, { headers });
+
+        if (response.status === 404) {
+            // Genuinely absent — a legitimate, expected state.
+            return null;
+        }
+        if (!response.ok) {
+            throw new Error(
+                `Failed to fetch README for ${owner}/${repo}@${ref}: ${response.status} ${response.statusText}`,
+            );
         }
         return response.text();
     });

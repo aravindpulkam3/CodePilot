@@ -1,4 +1,5 @@
 import type { DroppedCandidate, RetrievalCandidate } from "../types/retrievalTypes.js";
+import { compareCandidates, primarySource } from "./retrievalReranker.service.js";
 
 export interface BudgetResult {
   accepted: RetrievalCandidate[];
@@ -17,13 +18,18 @@ export class ContextBudgetService {
    * Applies a categorical context budget to the sorted list of candidates.
    * 
    * Strategy:
-   * 1. Changed Code (changed_file, exact_symbol) is uncapped, bounded only by maxTokens.
+   * 1. Changed Code (changed_file) is uncapped, bounded only by maxTokens.
    * 2. Remaining budget is divided:
-   *    - Graph (dependency, dependent, etc): 40%
+   *    - Graph (dependents + dependencies): 35%
    *    - Tests (related_test): 20%
-   *    - Semantic (chunks, summaries): 40%
-   * 3. Two-pass allocation: Fill quotas first, then use any remaining global tokens 
+   *    - Semantic (chunks): 45%
+   * 3. Two-pass allocation: Fill quotas first, then use any remaining global tokens
    *    to fill remaining candidates in strict rank order (overflow).
+   *
+   * Bucketing keys on the candidate's STRONGEST source, not `sources[0]`.
+   * `sources[0]` is whichever path found it first — the merger appends later
+   * ones — so a file discovered as a dependency and only later recognised as a
+   * related test was budgeted as graph despite carrying the higher weight.
    */
   public allocateBudget(candidates: RetrievalCandidate[], maxTokens: number): BudgetResult {
     const accepted: RetrievalCandidate[] = [];
@@ -48,17 +54,15 @@ export class ContextBudgetService {
     const semantic: RetrievalCandidate[] = [];
 
     for (const c of candidates) {
-      const type = c.sources[0]?.type;
-      if (type === "changed_file" || type === "exact_symbol") {
+      const type = primarySource(c)?.type;
+      if (type === "changed_file") {
         changedCode.push(c);
       } else if (type === "related_test") {
         tests.push(c);
-      } else if (type === "semantic_chunk" || type === "semantic_summary" || type === "cross_file_symbol_match") {
-        // cross_file_symbol_match is a name-only coincidence, not a confirmed
-        // relationship — it competes for space like a semantic hit instead of
-        // getting the uncapped priority "actually changed" evidence gets.
+      } else if (type === "semantic_chunk") {
         semantic.push(c);
       } else {
+        // graph_dependent / graph_dependency
         graph.push(c);
       }
     }
@@ -77,9 +81,9 @@ export class ContextBudgetService {
 
     // 3. Define quotas for remaining budget
     const remainingForQuotas = Math.max(0, maxTokens - currentTotalTokens);
-    let graphBudget = Math.floor(remainingForQuotas * 0.40);
-    let testBudget = Math.floor(remainingForQuotas * 0.20);
-    let semanticBudget = Math.floor(remainingForQuotas * 0.40);
+    const graphBudget = Math.floor(remainingForQuotas * 0.35);
+    const testBudget = Math.floor(remainingForQuotas * 0.20);
+    const semanticBudget = Math.floor(remainingForQuotas * 0.45);
 
     const pendingOverflow: RetrievalCandidate[] = [];
 
@@ -104,26 +108,28 @@ export class ContextBudgetService {
     fillBucket(semantic, semanticBudget, "semanticTokens");
 
     // 4. Pass 2 (Overflow): Re-sort pending candidates by score and fill any remaining total budget
-    pendingOverflow.sort((a, b) => b.score - a.score);
+    pendingOverflow.sort(compareCandidates);
 
     for (const c of pendingOverflow) {
         const cost = estimateTokens(c);
         if (currentTotalTokens + cost <= maxTokens) {
             accepted.push(c);
             currentTotalTokens += cost;
-            
-            // Re-attribute to stats
-            const type = c.sources[0]?.type;
-            if (type === "related_test") stats.testTokens += cost;
-            else if (type === "semantic_chunk" || type === "semantic_summary" || type === "cross_file_symbol_match") stats.semanticTokens += cost;
+
+            // Re-attribute to stats, using the same strongest-source rule as
+            // the bucketing above so the two can't disagree.
+            const type = primarySource(c)?.type;
+            if (type === "changed_file") stats.changedCodeTokens += cost;
+            else if (type === "related_test") stats.testTokens += cost;
+            else if (type === "semantic_chunk") stats.semanticTokens += cost;
             else stats.graphTokens += cost;
         } else {
             dropped.push({ identityKey: c.identityKey, reason: "budget_capped" });
         }
     }
 
-    // Finally, sort accepted back to original rank order (highest score first)
-    accepted.sort((a, b) => b.score - a.score);
+    // Finally, sort accepted back to rank order (deterministic — see compareCandidates)
+    accepted.sort(compareCandidates);
 
     stats.totalTokens = currentTotalTokens;
 
