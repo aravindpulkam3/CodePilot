@@ -16,7 +16,7 @@ export class EmbeddingService implements EmbeddingClient {
       return [];
     }
 
-    console.log("came to generate embeddings")
+    console.log(`[Embedding] Embedding ${chunks.length} chunk(s) as RETRIEVAL_DOCUMENT.`);
 
     const enrichedChunks: (ChunkMetadata & { embedding: number[] })[] = [];
 
@@ -80,7 +80,9 @@ export class EmbeddingService implements EmbeddingClient {
         throw new Error("Failed to generate embedding for query.");
       }
 
-      console.log(vectorValues);
+      // Log the shape, never the vector itself — dumping 3072 floats on every
+      // query buries every other log line in the process.
+      console.log(`[Embedding] Query embedded as RETRIEVAL_QUERY (dim=${vectorValues.length}).`);
 
       return vectorValues;
     } catch (error) {

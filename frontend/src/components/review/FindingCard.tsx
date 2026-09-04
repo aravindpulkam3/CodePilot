@@ -18,7 +18,7 @@ export interface Finding {
   id: string;
   review_id?: string;
   severity: "Critical" | "Major" | "Minor" | "Info" | string;
-  category: "security" | "correctness" | "performance" | "maintainability" | "best_practices" | "testing" | string;
+  category: "security" | "correctness" | "performance" | "maintainability" | "best_practices" | "testing" | "documentation" | string;
   file_path: string;
   line_number: number | null;
   title: string;
@@ -104,7 +104,17 @@ export const FindingCard: React.FC<FindingCardProps> = ({
         <div className="flex flex-wrap items-center justify-between gap-2.5 mb-2.5">
           <div className="flex items-center gap-2">
             {getSeverityBadge()}
-            <span className="text-xs uppercase font-mono px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 font-medium">
+            <span
+              className={cn(
+                "text-xs uppercase font-mono px-2 py-0.5 rounded font-medium",
+                // Documentation drift is a distinct kind of finding — it says
+                // the README and the code disagree, not that the code is
+                // wrong — so it reads differently from the code categories.
+                finding.category === "documentation"
+                  ? "bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300"
+                  : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400",
+              )}
+            >
               {finding.category || "General"}
             </span>
           </div>
