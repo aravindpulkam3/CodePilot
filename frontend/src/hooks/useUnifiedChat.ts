@@ -99,15 +99,20 @@ export function useFindingDiscussion(findingId: string | null, repositoryId?: st
           for (const line of lines) {
             if (line.startsWith("data: ")) {
               const jsonStr = line.replace("data: ", "");
+              let payload: any;
               try {
-                const payload = JSON.parse(jsonStr);
-                if (payload.type === "text") {
-                  setStreamedText((prev) => prev + payload.data);
-                } else if (payload.type === "sources") {
-                  setStreamedSources(payload.data);
-                }
+                payload = JSON.parse(jsonStr);
               } catch (e) {
                 // Ignore parse errors on partial chunks
+                continue;
+              }
+
+              if (payload.type === "error") {
+                throw new Error(payload.data || "Something went wrong.");
+              } else if (payload.type === "text") {
+                setStreamedText((prev) => prev + payload.data);
+              } else if (payload.type === "sources") {
+                setStreamedSources(payload.data);
               }
             }
           }

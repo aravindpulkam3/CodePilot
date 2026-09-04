@@ -44,6 +44,10 @@ queueConnection.on("error", (err: any) => {
   console.error("Queue Redis error:", err.message);
 });
 
+queueConnection.on("ready", () => {
+  console.log(`[Redis] Queue connection ready (${QUEUE_URL}).`);
+});
+
 /**
  * Gracefully close all Redis connections.
  * Used during process teardown.

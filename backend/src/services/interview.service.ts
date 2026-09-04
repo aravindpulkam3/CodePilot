@@ -135,7 +135,7 @@ export class InterviewService {
     console.log("length of the system prompt",messages[0].content.length);
 
     const decision =
-      await ollamaService.generateStructured<InterviewTurnEvaluation>(
+      await llmService.generateStructured<InterviewTurnEvaluation>(
         messages,
         interviewEvaluationSchema,
       );
@@ -248,7 +248,7 @@ export class InterviewService {
     );
 
     const decision =
-      await ollamaService.generateStructured<InterviewTurnEvaluation>(
+      await llmService.generateStructured<InterviewTurnEvaluation>(
         messages,
         interviewEvaluationSchema,
       );

@@ -2,6 +2,7 @@ import {
   LocalRepository,
   PullRequestDetail,
   PullRequestItem,
+  RepositorySyncStatus,
 } from "@/types/repositoryTypes";
 import { apiClient } from "./clientApi";
 import { ChatMessage, ChatSession } from "@/types/chatTypes";
@@ -11,6 +12,33 @@ export const getRepoDetails = async (
 ): Promise<LocalRepository> => {
   const { data } = await apiClient.get<LocalRepository>(
     `/repositories/${repositoryId}`,
+  );
+  return data;
+};
+
+export const getRepoSyncStatus = async (
+  repositoryId: string,
+): Promise<RepositorySyncStatus> => {
+  const { data } = await apiClient.get<RepositorySyncStatus>(
+    `/repositories/${repositoryId}/sync-status`,
+  );
+  return data;
+};
+
+export const startWorkingOnRepo = async (
+  repositoryId: string,
+): Promise<{ status: string }> => {
+  const { data } = await apiClient.post(
+    `/repositories/${repositoryId}/start-working`,
+  );
+  return data;
+};
+
+export const stopWorkingOnRepo = async (
+  repositoryId: string,
+): Promise<{ status: string }> => {
+  const { data } = await apiClient.post(
+    `/repositories/${repositoryId}/stop-working`,
   );
   return data;
 };

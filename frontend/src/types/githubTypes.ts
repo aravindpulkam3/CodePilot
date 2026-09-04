@@ -30,12 +30,21 @@ export interface GitHubUser {
  * is a plain string, and several GitHub-only fields (stargazers, fork,
  * visibility, etc.) don't exist on it at all.
  */
+/**
+ * Two-phase indexing lifecycle. SEARCHABLE means Phase 1 (sync/parse/embed/
+ * import-graph) is done — Q&A/Review/Interview are usable. READY means
+ * Phase 2 (background, sequential Ollama summarization) has also caught up.
+ * A repo can sit at SEARCHABLE or SUMMARIZING indefinitely while fully
+ * usable; only READY/FAILED are terminal for polling purposes.
+ */
 export enum IndexingStatus {
-  UNINDEXED = 'UNINDEXED',
-  PENDING = 'PENDING',
-  INDEXING = 'INDEXING',   // Currently processing
-  INDEXED = 'INDEXED',     // Success
-  FAILED = 'FAILED'
+  NOT_STARTED = 'NOT_STARTED',
+  SYNCING = 'SYNCING',
+  INDEXING = 'INDEXING',
+  SEARCHABLE = 'SEARCHABLE',
+  SUMMARIZING = 'SUMMARIZING',
+  READY = 'READY',
+  FAILED = 'FAILED',
 }
 
 export type RepositorySourceType = "connected" | "public_import";
@@ -58,4 +67,9 @@ export interface GitHubRepository {
   created_at: string;
   updated_at: string;
   indexing_status?: IndexingStatus | null;
+  // Workspace membership — orthogonal to indexing_status. Non-null means
+  // the user explicitly clicked "Start Working on This Repo" (or imported
+  // it by URL); it does NOT track whether a job is currently running.
+  workspace_started_at?: string | null;
+  searchable_at?: string | null;
 }

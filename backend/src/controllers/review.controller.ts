@@ -33,6 +33,18 @@ export const generateReview = async (req: Request, res: Response) => {
     return res.status(200).json(reviewResult);
   } catch (error: any) {
     console.error("Error in generateReview controller:", error);
+
+    if (error.message === "INDEXING_IN_PROGRESS") {
+      return res.status(409).json({
+        error: "This repository is still being indexed. Please try again in a moment.",
+      });
+    }
+    if (error.message === "INDEXING_FAILED") {
+      return res.status(409).json({
+        error: "Indexing failed for this repository, so a review can't be generated yet. Try syncing again.",
+      });
+    }
+
     return res.status(500).json({ error: error.message || "Internal server error" });
   }
 };

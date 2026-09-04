@@ -40,5 +40,5 @@ async function generateEmbeddings(){
   }
 };
 
-// testHello();
-generateEmbeddings();
+testHello();
+// generateEmbeddings();

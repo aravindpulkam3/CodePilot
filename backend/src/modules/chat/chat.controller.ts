@@ -112,9 +112,21 @@ export const sendMessageStream = async (req: Request, res: Response) => {
     res.end();
   } catch (error: any) {
     console.error("Chat Stream Error:", error);
+
+    const message =
+      error.message === "INDEXING_IN_PROGRESS"
+        ? "This repository is still being indexed. Please try again in a moment."
+        : error.message === "INDEXING_FAILED"
+          ? "Indexing failed for this repository. Try syncing again."
+          : error.message || "Failed to stream chat response";
+
     if (!res.headersSent) {
-      res.status(500).json({ error: error.message || "Failed to stream chat response" });
+      const status = error.message === "INDEXING_IN_PROGRESS" || error.message === "INDEXING_FAILED" ? 409 : 500;
+      res.status(status).json({ error: message });
     } else {
+      // SSE headers already sent — surface the error as a stream event
+      // instead of silently ending the connection.
+      res.write(`data: ${JSON.stringify({ type: "error", data: message })}\n\n`);
       res.end();
     }
   }

@@ -12,6 +12,34 @@ export interface LocalRepository {
   clone_url: string;
   last_pushed_at: string | null;
   last_synced_at: string;
+  indexing_status?: string | null;
+  workspace_started_at?: string | null;
+  searchable_at?: string | null;
+}
+
+export type RepositorySyncStatusValue =
+  | "NOT_STARTED"
+  | "SYNCING"
+  | "INDEXING"
+  | "SEARCHABLE"
+  | "SUMMARIZING"
+  | "READY"
+  | "FAILED";
+
+export interface RepositorySyncStatus {
+  status: RepositorySyncStatusValue;
+  searchableAt: string | null;
+  indexProgress: {
+    filesDone: number;
+    filesTotal: number | null;
+    chunksDone: number;
+    chunksTotal: number | null;
+  } | null;
+  summaryProgress: {
+    tasksDone: number;
+    tasksTotal: number | null;
+  } | null;
+  lastSummaryError: string | null;
 }
 
 export interface PullRequestItem {

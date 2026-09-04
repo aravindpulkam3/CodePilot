@@ -123,19 +123,23 @@ export default function PullRequestDetailsPage() {
         for (const line of lines) {
           if (line.startsWith("data: ")) {
             const jsonStr = line.replace("data: ", "");
+            let payload: any;
             try {
-              const payload = JSON.parse(jsonStr);
-
-              if (payload.type === "sessionId") {
-                resolvedSessionId = payload.data;
-                setActiveSessionId(payload.data);
-              } else if (payload.type === "sources") {
-                setStreamedSources(payload.data);
-              } else if (payload.type === "text") {
-                setStreamedText((prev) => prev + payload.data);
-              }
+              payload = JSON.parse(jsonStr);
             } catch (e) {
               console.error("Failed to parse chunk", e);
+              continue;
+            }
+
+            if (payload.type === "error") {
+              throw new Error(payload.data || "Something went wrong.");
+            } else if (payload.type === "sessionId") {
+              resolvedSessionId = payload.data;
+              setActiveSessionId(payload.data);
+            } else if (payload.type === "sources") {
+              setStreamedSources(payload.data);
+            } else if (payload.type === "text") {
+              setStreamedText((prev) => prev + payload.data);
             }
           }
         }

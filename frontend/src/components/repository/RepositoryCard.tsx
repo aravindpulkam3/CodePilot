@@ -8,9 +8,11 @@ import {
   GitPullRequest,
   MessageSquare,
   PlayCircle,
+  Rocket,
 } from "lucide-react";
 import { cn } from "@/utils/cn";
 import { GitHubRepository } from "@/types/githubTypes";
+import { useStartWorking } from "@/hooks/useRepository";
 
 const LANGUAGE_DOT: Record<string, string> = {
   TypeScript: "bg-blue-500",
@@ -26,6 +28,9 @@ const LANGUAGE_DOT: Record<string, string> = {
  * since those are the details that actually distinguish repos here.
  */
 export function RepositoryCard({ repo }: { repo: GitHubRepository }) {
+  const startWorking = useStartWorking(repo.id);
+  const inWorkspace = !!repo.workspace_started_at;
+
   return (
     <div className="group relative flex flex-col rounded-xl border border-slate-200/80 bg-white p-5 transition-all hover:border-slate-300 hover:shadow-sm dark:border-slate-800/80 dark:bg-slate-900 overflow-hidden">
       <div className="flex items-start justify-between mb-4">
@@ -44,19 +49,38 @@ export function RepositoryCard({ repo }: { repo: GitHubRepository }) {
           <span className="shrink-0 inline-flex items-center rounded-full bg-rose-50 px-2 py-1 text-xs font-medium text-rose-700 ring-1 ring-inset ring-rose-600/20 dark:bg-rose-500/10 dark:text-rose-400 dark:ring-rose-500/20">
             Failed
           </span>
-        ) : repo.indexing_status === "INDEXING" ||
-          repo.indexing_status === "PENDING" ? (
+        ) : repo.indexing_status === "SYNCING" || repo.indexing_status === "INDEXING" ? (
           <span className="shrink-0 inline-flex items-center rounded-full bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700 ring-1 ring-inset ring-amber-600/20 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20">
-            {repo.indexing_status === "INDEXING" ? "Indexing" : "Pending"}
+            Indexing
           </span>
-        ) : repo.indexing_status === "INDEXED" ? (
+        ) : repo.indexing_status === "SUMMARIZING" ? (
+          <span className="shrink-0 inline-flex items-center rounded-full bg-sky-50 px-2 py-1 text-xs font-medium text-sky-700 ring-1 ring-inset ring-sky-600/20 dark:bg-sky-500/10 dark:text-sky-400 dark:ring-sky-500/20">
+            Searchable
+          </span>
+        ) : repo.indexing_status === "SEARCHABLE" ? (
+          <span className="shrink-0 inline-flex items-center rounded-full bg-sky-50 px-2 py-1 text-xs font-medium text-sky-700 ring-1 ring-inset ring-sky-600/20 dark:bg-sky-500/10 dark:text-sky-400 dark:ring-sky-500/20">
+            Searchable
+          </span>
+        ) : repo.indexing_status === "READY" ? (
           <span className="shrink-0 inline-flex items-center rounded-full bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20 dark:bg-emerald-500/10 dark:text-emerald-400 dark:ring-emerald-500/20">
-            Indexed
+            Ready
+          </span>
+        ) : inWorkspace ? (
+          <span className="shrink-0 inline-flex items-center rounded-full bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700 ring-1 ring-inset ring-amber-600/20 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20">
+            Starting…
           </span>
         ) : (
-          <span className="shrink-0 inline-flex items-center rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600 ring-1 ring-inset ring-slate-500/20 dark:bg-slate-800 dark:text-slate-400 dark:ring-slate-500/20">
-            Unindexed
-          </span>
+          <button
+            onClick={(e) => {
+              e.preventDefault();
+              startWorking.mutate();
+            }}
+            disabled={startWorking.isPending}
+            className="shrink-0 inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700 ring-1 ring-inset ring-indigo-600/20 hover:bg-indigo-100 disabled:opacity-60 dark:bg-indigo-500/10 dark:text-indigo-400 dark:ring-indigo-500/20"
+          >
+            <Rocket className="h-3 w-3" />
+            {startWorking.isPending ? "Starting…" : "Start Working"}
+          </button>
         )}
       </div>
 

@@ -257,7 +257,7 @@ export class ChatService {
 
     // 5. Stream LLM tokens
     let fullAiResponse = "";
-    const stream = ollamaService.stream(messages);
+    const stream = llmService.stream(messages);
 
     for await (const chunk of stream) {
       if (chunk.text) {

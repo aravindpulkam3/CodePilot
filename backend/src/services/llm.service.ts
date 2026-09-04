@@ -170,7 +170,6 @@ export class OllamaLLMService implements LLMService {
     });
 
     const textResult = response.message.content;
-    console.log(textResult);
     if (!textResult) throw new Error("Ollama returned an empty response.");
 
     return JSON.parse(textResult) as T;

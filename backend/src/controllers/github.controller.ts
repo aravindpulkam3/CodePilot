@@ -7,6 +7,7 @@ import { createPublicRepository, findRepositoriesByUserId } from '../services/re
 import axios from 'axios';
 import { userService } from '../services/user.service.js';
 import { withCache } from '../utils/cache.js';
+import { pool } from '../config/db.js';
 
 const handleGitHubError = (res: Response, error: any) => {
   if (error.message === 'GITHUB_NOT_CONNECTED') {
@@ -157,6 +158,16 @@ export const importPublicRepository = async (req: Request, res: Response) => {
       cloneUrl: repoData.clone_url,
       lastPushedAt: repoData.pushed_at,
     });
+
+    // Importing a public repo by URL is itself an explicit "start working"
+    // action, same as clicking Start Working on a listed GitHub repo — so
+    // it joins the workspace and kicks off indexing immediately, unlike
+    // GET /github/repositories which never indexes anything on its own.
+    await pool.query(
+      `UPDATE repositories SET workspace_started_at = COALESCE(workspace_started_at, NOW()) WHERE id = $1`,
+      [repoRecord.id],
+    );
+    console.log(`[Workspace] Public import ${repoRecord.name} (${repoRecord.id}) joined workspace, triggering sync.`);
 
     // Fire and forget indexing pipeline (don't await)
     repositorySyncService.enqueueSync(req.dbUser!.clerkId, repoRecord.id).catch((err) => {

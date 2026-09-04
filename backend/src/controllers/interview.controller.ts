@@ -1,6 +1,20 @@
 import { Request, Response } from "express";
 import { interviewService } from "../services/interview.service.js";
 
+function respondWithError(res: Response, error: any, fallback: string) {
+  if (error.message === "INDEXING_IN_PROGRESS") {
+    return res.status(409).json({
+      error: "This repository is still being indexed. Please try again in a moment.",
+    });
+  }
+  if (error.message === "INDEXING_FAILED") {
+    return res.status(409).json({
+      error: "Indexing failed for this repository. Try syncing again.",
+    });
+  }
+  return res.status(500).json({ error: error.message || fallback });
+}
+
 export const startInterview = async (req: Request, res: Response) => {
   try {
     const { config } = req.body;
@@ -11,17 +25,15 @@ export const startInterview = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Invalid interview config" });
     }
 
-    console.log("in the contr to start the interview");
-
     const { sessionId, firstQuestion } = await interviewService.startInterview(
       userId,
       config,
       clerkUserId,
     );
     res.json({ sessionId, firstQuestion });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Start Interview Error:", error);
-    res.status(500).json({ error: "Failed to start interview" });
+    respondWithError(res, error, "Failed to start interview");
   }
 };
 

@@ -60,15 +60,33 @@ export default function Dashboard() {
     user?.name?.split(" ")[0] || githubUser?.name?.split(" ")[0] || "Engineer";
 
   // Assumes repo objects carry an `indexing_status` field from the backend.
+  // "Indexed" here means usable, not fully summarized — SEARCHABLE/
+  // SUMMARIZING/READY are all searchable states for Q&A/Review/Interview.
   const indexedRepos = repositories.filter(
-    (r) => r.indexing_status === "INDEXED",
+    (r) =>
+      r.indexing_status === "SEARCHABLE" ||
+      r.indexing_status === "SUMMARIZING" ||
+      r.indexing_status === "READY",
   );
   const needsIndexingRepos = repositories.filter(
-    (r) => r.indexing_status === "INDEXING" || r.indexing_status === "PENDING",
+    (r) => r.indexing_status === "SYNCING" || r.indexing_status === "INDEXING",
   );
   const failedRepos = repositories.filter(
     (r) => r.indexing_status === "FAILED",
   );
+
+  // Workspace membership is a separate axis from indexing status — a repo
+  // stays here regardless of job state, only leaving via an explicit
+  // "stop working" action.
+  const workspaceRepos = repositories.filter((r) => !!r.workspace_started_at);
+  const recommendedRepos = [...repositories]
+    .filter((r) => !r.workspace_started_at)
+    .sort(
+      (a, b) =>
+        new Date(b.last_pushed_at || b.updated_at).getTime() -
+        new Date(a.last_pushed_at || a.updated_at).getTime(),
+    )
+    .slice(0, 4);
 
   return (
     <div className="space-y-10 animate-in fade-in duration-700 pb-12 font-sans">
@@ -127,6 +145,42 @@ export default function Dashboard() {
               : pendingPRs.filter((pr) => pr.status === "open").length}
           </p>
         </div>
+      </section>
+
+      {/* CURRENTLY WORKING ON — workspace membership, decoupled from
+          indexing status. A repo stays here regardless of job state. */}
+      <section>
+        <h2 className="text-lg font-medium text-slate-900 dark:text-white mb-4">
+          Currently Working On
+        </h2>
+        {isReposLoading ? (
+          <div className="h-24 rounded-xl border border-dashed border-slate-300 dark:border-slate-800 flex items-center justify-center">
+            <span className="text-sm text-slate-500">Loading workspace...</span>
+          </div>
+        ) : workspaceRepos.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-slate-300 dark:border-slate-800 p-6">
+            <p className="text-sm text-slate-500 dark:text-slate-400 mb-3">
+              Nothing in your workspace yet — pick a repo to start working on.
+            </p>
+            {recommendedRepos.length === 0 ? (
+              <p className="text-sm text-slate-400 dark:text-slate-500">
+                Import a repository to get started.
+              </p>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {recommendedRepos.map((repo) => (
+                  <RepositoryCard key={repo.id} repo={repo} />
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {workspaceRepos.map((repo) => (
+              <RepositoryCard key={repo.id} repo={repo} />
+            ))}
+          </div>
+        )}
       </section>
 
       {/* 2. CONTINUE WORKING */}

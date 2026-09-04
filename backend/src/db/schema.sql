@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS review_messages (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
-1. Enable the pgvector extension (Crucial first step)
+-- 1. Enable the pgvector extension (Crucial first step)
 CREATE EXTENSION IF NOT EXISTS vector;
 
 -- 2. Create the unified repository_embeddings table
@@ -140,12 +140,14 @@ CREATE TABLE IF NOT EXISTS repository_embeddings (
 CREATE INDEX IF NOT EXISTS idx_repo_embeddings_repo_file ON repository_embeddings(repository_id, file_path);
 CREATE INDEX IF NOT EXISTS idx_repo_embeddings_commit ON repository_embeddings(repository_id, commit_sha);
 
-ALTER TABLE repositories 
-ADD COLUMN last_indexed_sha VARCHAR(255);
+-- IF NOT EXISTS on both: schema.sql is applied idempotently by db/migrate.ts,
+-- so a bare ADD COLUMN aborts the entire file on the second run.
+ALTER TABLE repositories
+ADD COLUMN IF NOT EXISTS last_indexed_sha VARCHAR(255);
 
 -- -- Adds UI tracking state (unindexed, indexing, completed, failed)
-ALTER TABLE repositories 
-ADD COLUMN indexing_status VARCHAR(50) DEFAULT 'unindexed';
+ALTER TABLE repositories
+ADD COLUMN IF NOT EXISTS indexing_status VARCHAR(50) DEFAULT 'unindexed';
 
 
 
@@ -297,4 +299,57 @@ CREATE TABLE IF NOT EXISTS repository_relationships (
 
 CREATE INDEX IF NOT EXISTS idx_repo_rels_src ON repository_relationships (repository_id, source_node_key);
 CREATE INDEX IF NOT EXISTS idx_repo_rels_tgt ON repository_relationships (repository_id, target_node_key);
+
+-- Phased indexing (SEARCHABLE -> READY) + "Currently Working On" workspace
+-- membership. All additive and idempotent, unlike the two bare ADD COLUMN
+-- statements above (last_indexed_sha / indexing_status) — those predate
+-- this convention and are left as-is since re-running them is harmless once
+-- already applied, but new columns from here on always use IF NOT EXISTS
+-- so this file stays safe to re-run in full, matching db/migrate.ts's model.
+
+-- searchable_at: Phase 1 (sync/parse/embed/import-graph) completion marker.
+-- last_summarized_sha: how far Phase 2 (LLM summarization) has caught up.
+-- READY means indexing_status = 'READY', written only when last_indexed_sha
+-- and last_summarized_sha are both non-null and equal, and searchable_at is
+-- set — see retreival.service.ts / repositorySummarize.service.ts.
+ALTER TABLE repositories ADD COLUMN IF NOT EXISTS searchable_at        TIMESTAMPTZ NULL;
+ALTER TABLE repositories ADD COLUMN IF NOT EXISTS last_summarized_sha  VARCHAR(255) NULL;
+
+-- "Currently Working On": NULL = not an active workspace member (just
+-- listed from GitHub); non-null = when the user clicked "Start Working",
+-- also used as the dashboard section's sort order. Orthogonal to
+-- indexing_status — see CLAUDE.md's workspace-vs-indexing-status note.
+ALTER TABLE repositories ADD COLUMN IF NOT EXISTS workspace_started_at TIMESTAMPTZ NULL;
+
+-- Phase 1 progress (chunk/file counts), Phase 2 progress (summary task
+-- count) — informational only, never used to gate readiness.
+ALTER TABLE repositories ADD COLUMN IF NOT EXISTS index_chunks_total   INTEGER;
+ALTER TABLE repositories ADD COLUMN IF NOT EXISTS index_chunks_done    INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE repositories ADD COLUMN IF NOT EXISTS index_files_total    INTEGER;
+ALTER TABLE repositories ADD COLUMN IF NOT EXISTS index_files_done     INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE repositories ADD COLUMN IF NOT EXISTS summary_tasks_total  INTEGER;
+ALTER TABLE repositories ADD COLUMN IF NOT EXISTS summary_tasks_done   INTEGER NOT NULL DEFAULT 0;
+
+-- Non-blocking summary-failure signal. Set only when a summarize job
+-- exhausts its retries; cleared at the start of the next attempt. Never
+-- affects indexing_status/searchable_at — a repo stays fully usable for
+-- Q&A/Review even while this is set.
+ALTER TABLE repositories ADD COLUMN IF NOT EXISTS last_summary_error   TEXT NULL;
+
+-- One-time backfill for the old three-value indexing_status vocabulary
+-- ('unindexed' | 'INDEXING' | 'INDEXED' | 'FAILED') into the new one
+-- (NOT_STARTED | SYNCING | INDEXING | SEARCHABLE | SUMMARIZING | READY |
+-- FAILED). Each UPDATE is naturally idempotent (a second run finds no rows
+-- still in the old state to touch), consistent with this file's
+-- re-run-safe model.
+UPDATE repositories SET indexing_status = 'NOT_STARTED'
+  WHERE indexing_status = 'unindexed' OR indexing_status IS NULL;
+UPDATE repositories SET indexing_status = 'READY',
+       searchable_at = COALESCE(searchable_at, updated_at),
+       last_summarized_sha = last_indexed_sha
+  WHERE indexing_status = 'INDEXED';
+UPDATE repositories SET indexing_status = 'SYNCING'
+  WHERE indexing_status = 'INDEXING' AND searchable_at IS NULL;
+-- Rows already 'FAILED' are left as-is — see CLAUDE.md for the one-time
+-- backfill imprecision this implies (harmless, resolves on next sync).
 CREATE INDEX IF NOT EXISTS idx_repo_rels_type ON repository_relationships (repository_id, relationship_type);

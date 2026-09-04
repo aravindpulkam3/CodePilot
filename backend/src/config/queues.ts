@@ -34,7 +34,21 @@ export const indexQueue = new Queue("RepositoryIndex", {
   },
 });
 
-export const queues = [syncQueue, indexQueue];
+// 3. Summarize Queue: Phase 2, sequential Ollama summarization toward READY
+export const summarizeQueue = new Queue("RepositorySummarize", {
+  connection: queueConnection,
+  defaultJobOptions: {
+    attempts: 3,
+    backoff: {
+      type: "exponential",
+      delay: 5000,
+    },
+    removeOnComplete: 100,
+    removeOnFail: 500,
+  },
+});
+
+export const queues = [syncQueue, indexQueue, summarizeQueue];
 
 /**
  * Gracefully close all queues.

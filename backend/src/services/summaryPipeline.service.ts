@@ -22,14 +22,11 @@ import type {
 } from "../types/summaryTypes.js";
 import { LLMService } from "./llm.service.js";
 import { FileChange } from "./repositoryIndex.service.js";
-import { extractLocalImports } from "../utils/importResolver.js";
-import type { IRelationshipIndexer } from "../utils/transactionBuffer.js";
 
 export interface PipelineDeps {
   llm: LLMService;
   embeddings: EmbeddingClient;
   store: SummaryStore;
-  relationshipIndexer?: IRelationshipIndexer;
   useLLMModuleRefinement?: boolean; // off by default — extra LLM call, only helps on messy repos
 }
 
@@ -96,6 +93,9 @@ export async function runSummarizationPipeline(input: PipelineInput, deps: Pipel
   const { repositoryId, files, readme, packageMetadata } = input;
 
   // --- Stage 1: AST extraction (repo code parsed exactly once here) ------
+  // Note: the import/relationship graph is no longer built here — it's
+  // Phase 1's responsibility now (repositoryIndex.service.ts), so it
+  // exists by SEARCHABLE rather than only by READY.
   const astMetadata: FileASTMetadata[] = [];
   const sourceByPath = new Map<string, string>();
   for (const file of files) {
@@ -121,7 +121,6 @@ export async function runSummarizationPipeline(input: PipelineInput, deps: Pipel
   // --- Stage 3: file summaries (skip regeneration for unchanged files) ---
   const fileSummaries: FileSummary[] = [];
   const fileHashByPath = new Map<string, string>();
-  const knownPaths = new Set(files.map((f) => f.path));
 
   for (const meta of astMetadata) {
     const module = moduleByPath.get(meta.filePath)!;
@@ -138,11 +137,6 @@ export async function runSummarizationPipeline(input: PipelineInput, deps: Pipel
       () => generateFileSummary(meta, sourceByPath.get(meta.filePath)!, module, deps.llm),
     );
     fileSummaries.push(summary);
-
-    if (deps.relationshipIndexer) {
-      const localImports = extractLocalImports(meta.filePath, meta.imports, knownPaths);
-      await deps.relationshipIndexer.indexFileRelationships(repositoryId, meta.filePath, localImports);
-    }
   }
 
   // --- Stage 4: component summaries (built ONLY from file summaries) -----
@@ -204,19 +198,11 @@ export async function updateSummariesIncrementally(input: IncrementalPipelineInp
   const { repositoryId, changedFiles, readme, packageMetadata } = input;
 
   // --- Stage 1 & 2 & 3: AST extraction, module discovery, and file summaries for changed files ---
-  const allStoredFiles = await deps.store.getAllFiles(repositoryId);
-  const knownPaths = new Set(allStoredFiles.map(row => row.node_key));
-  // Add new files from changedFiles to knownPaths
-  for (const f of changedFiles) {
-    if (f.status !== 'removed') knownPaths.add(f.path);
-  }
-
+  // Note: the import/relationship graph is Phase 1's responsibility now
+  // (repositoryIndex.service.ts) — not rebuilt here.
   for (const file of changedFiles) {
     if (file.status === 'removed') {
       await deps.store.delete(repositoryId, 'file', file.path);
-      if (deps.relationshipIndexer) {
-        await deps.relationshipIndexer.deleteFileRelationships(repositoryId, file.path);
-      }
       continue;
     }
 
@@ -238,11 +224,6 @@ export async function updateSummariesIncrementally(input: IncrementalPipelineInp
       contentHash,
       () => generateFileSummary(meta, file.content!, moduleName, deps.llm),
     );
-
-    if (deps.relationshipIndexer) {
-      const localImports = extractLocalImports(meta.filePath, meta.imports, knownPaths);
-      await deps.relationshipIndexer.indexFileRelationships(repositoryId, meta.filePath, localImports);
-    }
   }
 
   // --- Re-aggregation setup ---
