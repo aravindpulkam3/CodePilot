@@ -7,6 +7,11 @@ import {
   RetrievedContext,
   RetrievalTrace,
   RETRIEVAL_WEIGHTS,
+  InterviewStartContext,
+  InterviewFollowUpContext,
+  InterviewGranularity,
+  ModuleInventoryEntry,
+  DocChunkSearchResult,
 } from "../types/retrievalTypes.js";
 import {
   ArchitectureSummary,
@@ -14,6 +19,7 @@ import {
   FileSummary,
   RepositorySummary,
 } from "../types/summaryTypes.js";
+import { InterviewState, MAX_TURNS_ON_MODULE } from "../types/interviewTypes.js";
 
 import { semanticRetrievalService } from "./semanticRetrieval.service.js";
 import { repositoryGraphService } from "./repositoryGraph.service.js";
@@ -23,6 +29,8 @@ import { retrievalRerankerService, primarySource } from "./retrievalReranker.ser
 import { contextBudgetService } from "./contextBudget.service.js";
 import { pool } from "../config/db.js";
 import { performance } from "perf_hooks";
+import { initialModuleFor } from "./moduleDiscovery.service.js";
+import { granularityOf } from "./interviewFocusResolution.js";
 // TEMPORARY verification logging — see utils/readmeDebugLog.ts for removal.
 import { docRetrievalLog, docPreview } from "../utils/readmeDebugLog.js";
 
@@ -65,6 +73,42 @@ const REVIEW_LIMITS = {
   testTotalLimit: 12,
   /** Was effectively 5 via review.service's maxCodeChunks; the budget now does the capping. */
   semanticLimit: 25,
+};
+
+/**
+ * Bounds for Interview's structural retrieval. See InterviewStartContext /
+ * InterviewFollowUpContext for what each block is for. v2: retrieval is
+ * granularity-keyed (REPOSITORY/MODULE/FILE), not action-keyed — see
+ * buildModuleInventory, retrieveInterviewStartContext and
+ * retrieveInterviewFollowUpContext.
+ */
+const INTERVIEW_LIMITS = {
+  // NARROW at REPOSITORY: module names offered as one-level-finer options.
+  narrowModuleLimit: 6,
+  // NARROW at MODULE: file names within the current module.
+  narrowFileLimit: 8,
+  // FRONTIER: unvisited modules offered for NEW_TOPIC. Names only — no code
+  // until a later turn's resolved focus actually narrows into one of them.
+  // Small while drilling — still offered as an escape hatch if the model
+  // judges the topic exhausted early — large once the module bound is hit
+  // or NEW_TOPIC was the just-chosen action.
+  frontierModuleLimitSmall: 2,
+  frontierModuleLimitLarge: 6,
+
+  // GROUNDING: keyed on the QUESTION vector. Code only at FILE granularity —
+  // a MODULE/REPOSITORY-scope question wasn't about specific code.
+  groundingCodeLimit: 4,
+  groundingDocLimit: 2,
+
+  // STAY at FILE (LOCAL): structural neighbours (deps/dependents) of the
+  // focus file via the graph, not semantic search.
+  localPerFileChunks: 3,
+  localTotalLimit: 5,
+
+  // STAY at REPOSITORY/MODULE: doc chunks toward deeper framing, using a
+  // dedicated query (tradeoffs/design-decisions at REPOSITORY, the module
+  // name itself at MODULE) rather than the raw question vector.
+  stayDocLimit: 3,
 };
 
 export class RepositoryRetrievalService {
@@ -146,6 +190,36 @@ export class RepositoryRetrievalService {
       `[RetrievalService] Timed out after ${maxWaitMs / 1000}s waiting for repository ${repositoryId} to become searchable — refusing to retrieve on a partial index.`,
     );
     throw new Error('INDEXING_IN_PROGRESS');
+  }
+
+  /**
+   * Read-only readiness check — no sync enqueue, no polling, no GitHub round
+   * trip. Throws the same catchable error strings as ensureSearchable when
+   * the repo isn't currently searchable, but returns instantly otherwise.
+   *
+   * Used on every Interview answer turn instead of ensureSearchable: the
+   * session was already made searchable at start, so this is a defensive
+   * check for the rare case a repo's index becomes invalid mid-session — not
+   * a "wait for it to become ready" gate. Calling the full ensureSearchable
+   * per turn would put a GitHub sync round trip on every single answer.
+   */
+  private async assertSearchable(repositoryId: string): Promise<void> {
+    const { rows } = await pool.query(
+      "SELECT searchable_at, indexing_status FROM repositories WHERE id = $1",
+      [repositoryId],
+    );
+    const searchableAt = rows[0]?.searchable_at;
+    const status = rows[0]?.indexing_status ?? "NOT_STARTED";
+
+    if (searchableAt) return;
+
+    if (status === "FAILED") {
+      console.error(`[RetrievalService] Repository ${repositoryId} indexing FAILED — refusing to retrieve on a broken index.`);
+      throw new Error("INDEXING_FAILED");
+    }
+
+    console.warn(`[RetrievalService] Repository ${repositoryId} is not searchable (status: ${status}) — refusing this turn.`);
+    throw new Error("INDEXING_IN_PROGRESS");
   }
 
   // --- QA Mode ---
@@ -330,86 +404,327 @@ export class RepositoryRetrievalService {
     return context;
   }
 
-  // --- Interview Mode  ---
-  public async retrieveInterviewStartContext(clerkUserId: string, repositoryId: string, opts?: RetrievalOptions): Promise<RetrievedContext> {
+  // --- Interview Mode: Coverage-driven retrieval ---
+  /**
+   * Repository-only, Phase-1-only, non-LLM orientation primitive: groups
+   * every indexed file by `initialModuleFor` and ranks both the modules and
+   * the files within each by summed import fan-in. This is what lets the
+   * opening question (and later NEW_TOPIC turns) be genuinely
+   * repository-specific — "this repo has areas for Auth, Rate Limiting, and
+   * URL persistence" — with zero README and zero LLM summaries required,
+   * which is exactly the state an interview is most likely to start in.
+   */
+  private async buildModuleInventory(repositoryId: string): Promise<ModuleInventoryEntry[]> {
+    const [allFiles, fanIn] = await Promise.all([
+      semanticRetrievalService.listIndexedFilePaths(repositoryId),
+      repositoryGraphService.getImportFanInCounts(repositoryId),
+    ]);
+
+    const byModule = new Map<string, string[]>();
+    for (const file of allFiles) {
+      const module = initialModuleFor(file);
+      const files = byModule.get(module);
+      if (files) files.push(file);
+      else byModule.set(module, [file]);
+    }
+
+    const entries: ModuleInventoryEntry[] = Array.from(byModule.entries()).map(([module, files]) => {
+      const ranked = [...files].sort((a, b) => (fanIn.get(b) ?? 0) - (fanIn.get(a) ?? 0));
+      return { module, fileCount: ranked.length, files: ranked };
+    });
+
+    entries.sort((a, b) => {
+      const fanInA = a.files.reduce((sum, f) => sum + (fanIn.get(f) ?? 0), 0);
+      const fanInB = b.files.reduce((sum, f) => sum + (fanIn.get(f) ?? 0), 0);
+      if (fanInB !== fanInA) return fanInB - fanInA;
+      return b.fileCount - a.fileCount;
+    });
+
+    return entries;
+  }
+
+  /** Unvisited-first ordering used by both FRONTIER (modules) and NARROW-at-MODULE (files) — coverage should bias toward what hasn't been seen without ever excluding what has. */
+  private unvisitedFirst<T>(items: T[], visited: Set<string>, keyOf: (item: T) => string): T[] {
+    const unvisited = items.filter((i) => !visited.has(keyOf(i)));
+    const seen = items.filter((i) => visited.has(keyOf(i)));
+    return [...unvisited, ...seen];
+  }
+
+  /**
+   * Q&A retrieves for RELEVANCE (answer this question). Review retrieves for
+   * BLAST RADIUS (judge this change). Interview retrieves for COVERAGE,
+   * gated by DRILL DEPTH: it must move around the repository instead of
+   * orbiting whatever the candidate last happened to mention, and it must
+   * open with a genuine orientation question rather than an arbitrary
+   * implementation detail.
+   *
+   * DELIBERATELY fetches zero code chunks. The previous implementation
+   * seeded the opening question with code chunks from graph-fan-in "seed
+   * files" — plausible-sounding but, once retrieved, structurally
+   * indistinguishable from arbitrary (a Mongoose schema field and an
+   * entry-point route handler both just look like "a chunk"). The model was
+   * then told to "prefer" the architecturally central ones, and it didn't,
+   * because the instruction couldn't actually tell them apart either. The
+   * fix is structural, not instructional: retrieval simply doesn't offer
+   * code at REPOSITORY scope, so turn 1 is grounded in `moduleInventory`
+   * (real, Phase-1-only) plus whatever of {repository, architecture,
+   * docChunks} happens to be available — never an arbitrary code snippet.
+   */
+  public async retrieveInterviewStartContext(clerkUserId: string, repositoryId: string, opts?: RetrievalOptions): Promise<InterviewStartContext> {
     const options = { ...DEFAULT_OPTIONS, ...opts };
     await this.ensureSearchable(clerkUserId, repositoryId);
 
-    const context: RetrievedContext = {
-      repository: null,
-      architecture: null,
-      components: [],
-      files: [],
-      codeChunks: [],
-      docChunks: [],
-      metadata: {
-        mode: "interview",
-        usedFallback: false,
-        query: "",
-        retrievalStage: "start",
-      },
-    };
+    const queryVectorStr = await semanticRetrievalService.getQueryVectorStr(
+      "What does this project do? Explain its architecture, main components, and how it's structured.",
+    );
 
-    const repoSummaries = await semanticRetrievalService.listSummariesByType(repositoryId, "repository", 1);
-    if (repoSummaries.length > 0) context.repository = repoSummaries[0].summary as any;
+    const [moduleInventory, docChunks, statusRes] = await Promise.all([
+      this.buildModuleInventory(repositoryId),
+      semanticRetrievalService.searchDocumentationChunks(
+        repositoryId, queryVectorStr,
+        options.maxDocChunks ?? DEFAULT_OPTIONS.maxDocChunks,
+        options.docSimilarityThreshold ?? DEFAULT_OPTIONS.docSimilarityThreshold,
+      ),
+      pool.query(`SELECT indexing_status FROM repositories WHERE id = $1`, [repositoryId]),
+    ]);
 
-    const archSummaries = await semanticRetrievalService.listSummariesByType(repositoryId, "architecture", 1);
-    if (archSummaries.length > 0) context.architecture = archSummaries[0].summary as any;
-
-    let componentKeys: string[] = [];
-    if (context.architecture && context.architecture.majorComponents) {
-      componentKeys = context.architecture.majorComponents;
+    // Repository/architecture summaries: enrichment only, and ONLY when the
+    // repo is fully caught up. Not READY -> omit entirely, same reasoning as
+    // retrieveReviewContext — a summary may describe an older revision than
+    // the code retrieved alongside it while SEARCHABLE-but-not-READY, and
+    // silence beats presenting a stale summary as current.
+    let repository: RepositorySummary | null = null;
+    let architecture: ArchitectureSummary | null = null;
+    if (statusRes.rows[0]?.indexing_status === "READY") {
+      const [repoSummaries, archSummaries] = await Promise.all([
+        semanticRetrievalService.listSummariesByType(repositoryId, "repository", 1),
+        semanticRetrievalService.listSummariesByType(repositoryId, "architecture", 1),
+      ]);
+      if (repoSummaries.length > 0) repository = repoSummaries[0].summary as RepositorySummary;
+      if (archSummaries.length > 0) architecture = archSummaries[0].summary as ArchitectureSummary;
     }
 
-    if (componentKeys.length > 0) {
-      const compSummaries = await semanticRetrievalService.getComponentSummaries(repositoryId, componentKeys.slice(0, options.maxComponents || 3));
-      context.components = compSummaries.map(c => c.summary as ComponentSummary);
-    } else {
-      const compSummaries = await semanticRetrievalService.listSummariesByType(repositoryId, "component", options.maxComponents || 3);
-      context.components = compSummaries.map(c => c.summary as ComponentSummary);
-      context.metadata.usedFallback = true;
-    }
+    const contextPaths = moduleInventory.flatMap((m) => m.files);
+    const contextModules = moduleInventory.map((m) => m.module);
 
-    return context;
+    console.log(
+      `[INTERVIEW-RETRIEVAL] start repo=${repositoryId}: 0 code chunks (v2 — code is fetched only ` +
+        `once focus narrows to FILE granularity), ${moduleInventory.length} module(s) ` +
+        `[${contextModules.join(", ")}], ${docChunks.length} doc section(s), repoSummary=${!!repository} ` +
+        `architecture=${!!architecture} (READY-gated).`,
+    );
+
+    return { repository, architecture, moduleInventory, docChunks, contextPaths, contextModules };
   }
 
-  public async retrieveInterviewFollowUpContext(clerkUserId: string, repositoryId: string, query: string, opts?: RetrievalOptions): Promise<RetrievedContext> {
-    const options = { ...DEFAULT_OPTIONS, ...opts };
-    const queryVectorStr = await semanticRetrievalService.getQueryVectorStr(query);
+  /**
+   * Follow-up retrieval is granularity-keyed (plan v2 §5/§6), not
+   * action-keyed: `granularity` is the CURRENT focus's granularity — i.e.
+   * what the just-asked question (the one the candidate is now answering)
+   * was actually scoped to — and drives GROUNDING, STAY and NARROW alike.
+   * The hard rule: code chunks are fetched ONLY at FILE granularity. STAY
+   * and NARROW are always assembled TOGETHER (never one instead of the
+   * other) so the model's own `nextFocus` decides whether the next question
+   * stays or narrows — retrieval only offers the menu, exactly like the
+   * existing LOCAL/FRONTIER split this mirrors.
+   */
+  public async retrieveInterviewFollowUpContext(
+    repositoryId: string,
+    question: string,
+    state: InterviewState,
+  ): Promise<InterviewFollowUpContext> {
+    await this.assertSearchable(repositoryId);
 
-    const context: RetrievedContext = {
-      repository: null,
-      architecture: null,
-      components: [],
-      files: [],
-      codeChunks: [],
-      docChunks: [],
-      metadata: {
-        mode: "interview",
-        usedFallback: false,
-        query,
-        retrievalStage: "follow_up",
-      },
+    const granularity: InterviewGranularity = granularityOf(state.currentFocus ?? { filePath: null, symbolName: null, module: null });
+    const focusFile = state.currentFocus?.filePath ?? null;
+    const focusModule = state.currentFocus?.module ?? null;
+    const visitedFiles = new Set(state.visitedFiles ?? []);
+    const visitedModules = new Set(state.visitedModules ?? []);
+
+    // lastAction/turnsOnCurrentModule are the PREVIOUS turn's known state —
+    // it lets FRONTIER sizing route with zero extra LLM calls. The action
+    // for THIS question was already decided last turn; the action for the
+    // NEXT one isn't known until this turn's call returns, which is why
+    // STAY/NARROW/FRONTIER are always all assembled regardless.
+    const moduleBoundReached = (state.turnsOnCurrentModule ?? 0) >= MAX_TURNS_ON_MODULE;
+    const wantsFrontierLarge = moduleBoundReached || state.lastAction === "NEW_TOPIC";
+
+    const questionVectorStr = await semanticRetrievalService.getQueryVectorStr(question);
+
+    // A second, distinct embedding for STAY's deeper doc framing — only one
+    // of these ever actually fires per turn, gated by granularity below.
+    const stayDocQuery =
+      granularity === "MODULE"
+        ? `${focusModule}: purpose, responsibilities, and how it fits into the rest of the system`
+        : granularity === "REPOSITORY"
+          ? "Why were these architectural and technical choices made in this project? Tradeoffs and design decisions."
+          : null;
+    const stayDocVectorPromise = stayDocQuery
+      ? semanticRetrievalService.getQueryVectorStr(stayDocQuery)
+      : Promise.resolve(null);
+
+    const moduleInventoryPromise = this.buildModuleInventory(repositoryId);
+
+    const [
+      moduleInventory,
+      stayDocVectorStr,
+      statusRes,
+    ] = await Promise.all([
+      moduleInventoryPromise,
+      stayDocVectorPromise,
+      pool.query(`SELECT indexing_status FROM repositories WHERE id = $1`, [repositoryId]),
+    ]);
+    const isReady = statusRes.rows[0]?.indexing_status === "READY";
+
+    // GROUNDING — keyed on the QUESTION, never the answer. Restricted to
+    // the CURRENT granularity's real material: code only at FILE, since a
+    // MODULE/REPOSITORY-scope question wasn't about specific code and there
+    // is nothing to check the answer against.
+    let groundingCode: CodeChunkSearchResult[] = [];
+    let groundingDocsPromise: Promise<DocChunkSearchResult[]>;
+    let groundingSummaryPromise: Promise<RepositorySummary | ArchitectureSummary | ComponentSummary | null>;
+
+    // STAY — deeper material at the unchanged granularity.
+    let stayCode: CodeChunkSearchResult[] = [];
+    let stayDocsPromise: Promise<DocChunkSearchResult[]> = Promise.resolve([]);
+    let staySummaryPromise: Promise<ArchitectureSummary | ComponentSummary | null> = Promise.resolve(null);
+
+    // NARROW — one level finer, offered ALONGSIDE stay.
+    let narrowModules: ModuleInventoryEntry[] = [];
+    let narrowFiles: string[] = [];
+
+    if (granularity === "FILE" && focusFile) {
+      const [deps, dependents] = await Promise.all([
+        repositoryGraphService.getDirectDependencies(repositoryId, focusFile),
+        repositoryGraphService.getDirectDependents(repositoryId, focusFile),
+      ]);
+      const neighbourFiles = Array.from(new Set([focusFile, ...deps, ...dependents]));
+
+      const [groundingCodeRes, stayCodeRaw] = await Promise.all([
+        semanticRetrievalService.searchCodeChunksInFiles(
+          repositoryId, questionVectorStr, neighbourFiles,
+          INTERVIEW_LIMITS.localPerFileChunks, INTERVIEW_LIMITS.groundingCodeLimit,
+          DEFAULT_OPTIONS.similarityThreshold,
+        ),
+        semanticRetrievalService.searchCodeChunksInFiles(
+          repositoryId, questionVectorStr, neighbourFiles,
+          INTERVIEW_LIMITS.localPerFileChunks, INTERVIEW_LIMITS.localTotalLimit, 0,
+        ),
+      ]);
+      groundingCode = groundingCodeRes;
+
+      // Within-turn dedup: grounding and STAY both centre on the focus file,
+      // so the same chunk can legitimately come back from both. Grounding
+      // wins (it's what's actually used to judge the answer) and STAY drops
+      // its copy, so the model isn't shown one span twice under two labels.
+      const groundingKeys = new Set(groundingCode.map((c) => `${c.filePath}#${c.lineStart}-${c.lineEnd}`));
+      stayCode = stayCodeRaw.filter((c) => !groundingKeys.has(`${c.filePath}#${c.lineStart}-${c.lineEnd}`));
+
+      groundingDocsPromise = semanticRetrievalService.searchDocumentationChunks(
+        repositoryId, questionVectorStr, INTERVIEW_LIMITS.groundingDocLimit, DEFAULT_OPTIONS.docSimilarityThreshold,
+      );
+      groundingSummaryPromise = Promise.resolve(null);
+      // No NARROW at FILE — nothing finer than an implementation to offer.
+    } else if (granularity === "MODULE" && focusModule) {
+      groundingDocsPromise = semanticRetrievalService.searchDocumentationChunks(
+        repositoryId, questionVectorStr, INTERVIEW_LIMITS.groundingDocLimit, DEFAULT_OPTIONS.docSimilarityThreshold,
+      );
+      const componentSummaryPromise: Promise<ComponentSummary | null> = isReady
+        ? semanticRetrievalService
+            .getComponentSummaries(repositoryId, [focusModule])
+            .then((rows) => (rows.length > 0 ? (rows[0].summary as ComponentSummary) : null))
+        : Promise.resolve(null);
+      groundingSummaryPromise = componentSummaryPromise;
+      staySummaryPromise = componentSummaryPromise;
+
+      stayDocsPromise = stayDocVectorStr
+        ? semanticRetrievalService.searchDocumentationChunks(
+            repositoryId, stayDocVectorStr, INTERVIEW_LIMITS.stayDocLimit, DEFAULT_OPTIONS.docSimilarityThreshold,
+          )
+        : Promise.resolve([]);
+
+      const moduleEntry = moduleInventory.find((m) => m.module === focusModule);
+      if (moduleEntry) {
+        narrowFiles = this.unvisitedFirst(moduleEntry.files, visitedFiles, (f) => f).slice(
+          0, INTERVIEW_LIMITS.narrowFileLimit,
+        );
+      }
+    } else {
+      // REPOSITORY
+      groundingDocsPromise = semanticRetrievalService.searchDocumentationChunks(
+        repositoryId, questionVectorStr, INTERVIEW_LIMITS.groundingDocLimit, DEFAULT_OPTIONS.docSimilarityThreshold,
+      );
+      const architecturePromise: Promise<ArchitectureSummary | null> = isReady
+        ? semanticRetrievalService
+            .listSummariesByType(repositoryId, "architecture", 1)
+            .then((rows) => (rows.length > 0 ? (rows[0].summary as ArchitectureSummary) : null))
+        : Promise.resolve(null);
+      const repositorySummaryPromise: Promise<RepositorySummary | null> = isReady
+        ? semanticRetrievalService
+            .listSummariesByType(repositoryId, "repository", 1)
+            .then((rows) => (rows.length > 0 ? (rows[0].summary as RepositorySummary) : null))
+        : Promise.resolve(null);
+      groundingSummaryPromise = repositorySummaryPromise;
+      staySummaryPromise = architecturePromise;
+
+      stayDocsPromise = stayDocVectorStr
+        ? semanticRetrievalService.searchDocumentationChunks(
+            repositoryId, stayDocVectorStr, INTERVIEW_LIMITS.stayDocLimit, DEFAULT_OPTIONS.docSimilarityThreshold,
+          )
+        : Promise.resolve([]);
+
+      narrowModules = this.unvisitedFirst(moduleInventory, visitedModules, (m) => m.module).slice(
+        0, INTERVIEW_LIMITS.narrowModuleLimit,
+      );
+    }
+
+    // FRONTIER — coverage. Unvisited-module names, ranked by fan-in (never
+    // filtered to "relevant" — the point is a genuinely different area, not
+    // one that merely resembles the current question). Feeds NEW_TOPIC.
+    // Falls back to the full inventory once every module has been visited —
+    // the interview should never structurally dead-end.
+    const unvisitedModules = moduleInventory.filter((m) => !visitedModules.has(m.module));
+    const frontierPool = unvisitedModules.length > 0 ? unvisitedModules : moduleInventory;
+    const frontierModules = frontierPool.slice(
+      0, wantsFrontierLarge ? INTERVIEW_LIMITS.frontierModuleLimitLarge : INTERVIEW_LIMITS.frontierModuleLimitSmall,
+    );
+
+    const [groundingDocs, groundingSummary, stayDocs, staySummary] = await Promise.all([
+      groundingDocsPromise, groundingSummaryPromise, stayDocsPromise, staySummaryPromise,
+    ]);
+
+    const contextPaths = Array.from(new Set([
+      ...groundingCode.map((c) => c.filePath),
+      ...stayCode.map((c) => c.filePath),
+      ...narrowFiles,
+    ]));
+    const contextModules = Array.from(new Set([
+      ...(focusModule ? [focusModule] : []),
+      ...narrowModules.map((m) => m.module),
+      ...frontierModules.map((m) => m.module),
+    ]));
+
+    const usedFallback = granularity === "FILE" && groundingCode.length === 0 && stayCode.length === 0;
+
+    console.log(
+      `[INTERVIEW-RETRIEVAL] follow-up repo=${repositoryId}: granularity=${granularity} ` +
+        `focus=${focusFile ?? focusModule ?? "(repository)"} turnsOnFocus=${state.turnsOnCurrentFocus ?? 0} ` +
+        `turnsOnModule=${state.turnsOnCurrentModule ?? 0} moduleBoundReached=${moduleBoundReached} ` +
+        `lastAction=${state.lastAction} -> grounding ${groundingCode.length}code/${groundingDocs.length}doc/` +
+        `${groundingSummary ? "1" : "0"}summary, stay ${stayCode.length}code/${stayDocs.length}doc/` +
+        `${staySummary ? "1" : "0"}summary, narrow ${narrowModules.length}module/${narrowFiles.length}file, ` +
+        `frontier ${frontierModules.length}module (${wantsFrontierLarge ? "large" : "small"}), ` +
+        `query="${docPreview(question, 80)}".`,
+    );
+
+    return {
+      granularity,
+      groundingCode, groundingDocs, groundingSummary,
+      stayCode, stayDocs, staySummary,
+      narrowModules, narrowFiles,
+      frontierModules,
+      contextPaths, contextModules, usedFallback,
     };
-
-    const components = await semanticRetrievalService.searchSummaries(repositoryId, queryVectorStr, "component", options.maxComponents, options.similarityThreshold);
-    context.components = components.map((c) => c.summary as ComponentSummary);
-
-    const componentKeys = components.map((c) => c.nodeKey);
-    if (componentKeys.length > 0) {
-       for (const key of componentKeys) {
-         const files = await semanticRetrievalService.resolveComponentFiles(repositoryId, key);
-         context.files.push(...files.slice(0, 2).map(f => f.summary as FileSummary));
-       }
-       context.files = context.files.slice(0, options.maxFiles);
-    }
-
-    if (options.includeCode) {
-      const filePaths = context.files.map((f) => f.path || (f as any).filePath).filter(Boolean);
-      context.codeChunks = await semanticRetrievalService.searchCodeChunks(repositoryId, queryVectorStr, options, filePaths.length > 0 ? filePaths : undefined);
-    }
-
-    return context;
   }
 
   // --- REVIEW MODE: Change-centric Retrieval Pipeline ---

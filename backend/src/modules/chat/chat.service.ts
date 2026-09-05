@@ -8,7 +8,6 @@ import {
 import { RepositoryContextProvider } from "./providers/repositoryContext.provider.js";
 import { ReviewContextProvider } from "./providers/reviewContext.provider.js";
 import { IssueContextProvider } from "./providers/issueContext.provider.js";
-import { InterviewContextProvider } from "./providers/interviewContext.provider.js";
 import { activityLogService } from "../../services/activityLog.service.js";
 
 export type StreamChunk =
@@ -24,7 +23,13 @@ export class ChatService {
     REVIEW_CHAT: new ReviewContextProvider(),
     REVIEW: new ReviewContextProvider(), // alias
     ISSUE_CHAT: new IssueContextProvider(),
-    INTERVIEW: new InterviewContextProvider(),
+    // INTERVIEW deliberately absent: interview.service.ts (POST /interview/*)
+    // is the sole implementation — see okay-so-the-thing-enumerated-crab.md.
+    // The old InterviewContextProvider did zero retrieval, read an orphaned
+    // table (interview_sessions) that Path A never wrote to, and crashed on
+    // resume for any session it had itself created. An INTERVIEW-typed chat
+    // stream now falls back to REPO_QA below, which is at least retrieval-
+    // backed rather than a silent no-op.
   };
 
   /**
@@ -90,15 +95,9 @@ export class ChatService {
 
     const session: ChatSessionRecord = rows[0];
 
-    // 3. If INTERVIEW mode, initialize companion state record in interview_sessions
-    if (normalizedType === "INTERVIEW" && repositoryId) {
-      await pool.query(
-        `INSERT INTO interview_sessions (session_id, user_id, repository_id, current_topic)
-         VALUES ($1, $2, $3, 'System Architecture & Engineering')
-         ON CONFLICT (session_id) DO NOTHING`,
-        [session.id, userId, repositoryId]
-      );
-    }
+    // interview_sessions is unused — interview.service.ts's startInterview
+    // (POST /interview/start) is the sole interview creation path and keeps
+    // all state in this row's own `state` JSONB instead.
 
     // 4. Log the creation activity
     await activityLogService.logEvent({
@@ -163,11 +162,23 @@ export class ChatService {
     return rows;
   }
 
-  async getMessages(sessionId: string) {
+  async getMessages(sessionId: string, userId: string) {
+    // Ownership check first: previously this ran with no user_id filter at
+    // all, so any authenticated user who knew a session UUID could read
+    // another user's transcript — including interview transcripts, since
+    // this is the endpoint the interview UI uses for history.
+    const { rows: owned } = await pool.query(
+      `SELECT 1 FROM chat_sessions WHERE id = $1 AND user_id = $2`,
+      [sessionId, userId]
+    );
+    if (owned.length === 0) {
+      throw new Error(`Chat session not found: ${sessionId}`);
+    }
+
     const { rows } = await pool.query(
-      `SELECT id, role, content, metadata, created_at 
-       FROM chat_messages 
-       WHERE session_id = $1 
+      `SELECT id, role, content, metadata, created_at
+       FROM chat_messages
+       WHERE session_id = $1
        ORDER BY created_at ASC`,
       [sessionId]
     );

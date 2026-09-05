@@ -298,6 +298,23 @@ export class SemanticRetrievalService {
   }
 
   /**
+   * Every distinct file path with at least one indexed CODE chunk (excludes
+   * documentation rows). This is the Interview module's coverage denominator
+   * — available at SEARCHABLE (Phase 1), unlike repository_summaries'
+   * component list, which is Phase-2-only. Also backs the nextFocus
+   * validation ladder (exact-match and unique-basename resolution) in
+   * interview.service.ts#resolveFocus.
+   */
+  public async listIndexedFilePaths(repositoryId: string): Promise<string[]> {
+    const { rows } = await pool.query(
+      `SELECT DISTINCT file_path FROM repository_embeddings
+       WHERE repository_id = $1 AND symbol_type <> 'documentation'`,
+      [repositoryId],
+    );
+    return rows.map((r) => r.file_path);
+  }
+
+  /**
    * Direct fetch of specific file summaries
    */
   public async getFileSummaries(

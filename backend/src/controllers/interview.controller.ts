@@ -21,13 +21,15 @@ export const startInterview = async (req: Request, res: Response) => {
     const userId = req.dbUser!.id;
     const clerkUserId = req.dbUser!.clerkId;
 
-    if (!config || !config.mode || !config.difficulty) {
-      return res.status(400).json({ error: "Invalid interview config" });
+    // Repository-only: the 'general' mode was never reachable from the UI
+    // and skipped retrieval entirely — see interviewTypes.ts.
+    if (!config || !config.difficulty || !config.repositoryId) {
+      return res.status(400).json({ error: "Invalid interview config — repositoryId and difficulty are required" });
     }
 
     const { sessionId, firstQuestion } = await interviewService.startInterview(
       userId,
-      config,
+      { ...config, mode: "repository" },
       clerkUserId,
     );
     res.json({ sessionId, firstQuestion });
@@ -42,22 +44,20 @@ export const answerQuestion = async (req: Request, res: Response) => {
     const { sessionId } = req.params;
     const { answer } = req.body;
     const userId = req.dbUser!.id;
-    const clerkUserId = req.dbUser!.clerkId;
 
     if (!answer) {
       return res.status(400).json({ error: "Answer is required" });
     }
 
-    const result = await interviewService.processAnswer(
-      sessionId,
-      userId,
-      answer,
-      clerkUserId,
-    );
+    const result = await interviewService.processAnswer(sessionId, userId, answer);
     res.json(result);
-  } catch (error) {
+  } catch (error: any) {
     console.error("Answer Question Error:", error);
-    res.status(500).json({ error: "Failed to process answer" });
+    // Was a bare 500 that discarded error.message — meant the readiness gate
+    // now added to follow-up retrieval (assertSearchable) could never surface
+    // as the catchable 409 it's supposed to be. See CLAUDE.md's note on
+    // callers needing to handle INDEXING_IN_PROGRESS / INDEXING_FAILED.
+    respondWithError(res, error, "Failed to process answer");
   }
 };
 

@@ -57,11 +57,13 @@ export const getSession = async (req: Request, res: Response) => {
 export const getMessages = async (req: Request, res: Response) => {
   try {
     const { sessionId } = req.params;
-    const messages = await chatService.getMessages(sessionId);
+    const userId = req.dbUser!.id;
+    const messages = await chatService.getMessages(sessionId, userId);
     res.json(messages);
   } catch (error: any) {
     console.error("Error fetching messages:", error);
-    res.status(500).json({ error: error.message || "Failed to fetch messages" });
+    const status = error.message?.includes("not found") ? 404 : 500;
+    res.status(status).json({ error: error.message || "Failed to fetch messages" });
   }
 };
 

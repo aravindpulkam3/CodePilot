@@ -112,14 +112,13 @@ export function InterviewPage() {
       const data = res.data.data || res.data;
 
       if (data.nextQuestion || data.question) {
+        // `nextQuestion` now holds the interviewer's full next spoken turn —
+        // any correction is already woven into it conversationally by the
+        // backend (see interview.service.ts / interviewPromptBuilder.ts), so
+        // it's rendered as-is rather than having a separate feedback block
+        // stapled in front of it.
         const rawNext = data.nextQuestion || data.question;
-        const safeNext = typeof rawNext === "string" ? rawNext : JSON.stringify(rawNext);
-        let finalContent = safeNext;
-
-        // If the AI returned corrective feedback, prepend it to the next question
-        if (data.correction && data.correction.needed) {
-           finalContent = `**Corrective Feedback:**\n${data.correction.explanation}\n\n**Key Points:**\n${data.correction.keyPoints.map((kp: string) => `- ${kp}`).join('\n')}\n\n---\n\n${safeNext}`;
-        }
+        const finalContent = typeof rawNext === "string" ? rawNext : JSON.stringify(rawNext);
 
         setMessages((prev) => [
           ...prev,

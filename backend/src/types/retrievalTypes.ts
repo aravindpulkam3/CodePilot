@@ -57,6 +57,95 @@ export interface RetrievedContext {
   };
 }
 
+/**
+ * A repository area (a cluster of files under one `initialModuleFor` label),
+ * with its files ranked by summed import fan-in. The Phase-1-only,
+ * non-LLM orientation primitive that lets Interview ask a genuinely
+ * repository-specific opening/NEW_TOPIC question with zero README/summaries
+ * — see RepositoryRetrievalService#buildModuleInventory.
+ */
+export interface ModuleInventoryEntry {
+  module: string;
+  fileCount: number;
+  /** Files in this module, highest import fan-in first. */
+  files: string[];
+}
+
+export type InterviewGranularity = "REPOSITORY" | "MODULE" | "FILE";
+
+/**
+ * Interview start context — structural, Phase-1-only by default, and
+ * DELIBERATELY carries zero code chunks.
+ *
+ * Retrieval used to seed the opening question with code chunks from
+ * graph-fan-in "seed files" — architecturally central by fan-in, perhaps,
+ * but structurally indistinguishable from arbitrary once retrieved, which is
+ * exactly how the opening question ended up anchored on an arbitrary
+ * low-level implementation detail instead of orienting the candidate. The
+ * fix: code is fetched only once the interview's focus actually narrows to
+ * FILE granularity (see InterviewFollowUpContext) — turn 1 always opens at
+ * REPOSITORY scope, using only `moduleInventory` (real, Phase-1-only) plus
+ * whatever of {repository, architecture, docChunks} happens to be available.
+ * `repository`/`architecture` are enrichment, populated ONLY when
+ * indexing_status === 'READY' (see retreival.service.ts).
+ */
+export interface InterviewStartContext {
+  repository: RepositorySummary | null;
+  architecture: ArchitectureSummary | null;
+  moduleInventory: ModuleInventoryEntry[];
+  docChunks: DocChunkSearchResult[];
+  /** Every indexed file path — the closed list a (discouraged but not forbidden) turn-1 filePath declaration must resolve against. */
+  contextPaths: string[];
+  /** Every module name in moduleInventory — the closed list nextFocus.module must resolve against. */
+  contextModules: string[];
+}
+
+/**
+ * Interview follow-up context — granularity-keyed, not action-keyed (plan
+ * v2 §5/§6). `granularity` is the CURRENT focus's granularity (i.e. what the
+ * just-asked question — the one the candidate is now answering — was
+ * actually scoped to), and drives all four blocks below identically; the
+ * model's own `nextFocus` declaration (validated in interview.service.ts)
+ * decides what actually happens next, retrieval only offers the menu:
+ *
+ * - grounding{Code,Docs,Summary}: keyed on the QUESTION vector, restricted to
+ *   the CURRENT granularity's real material — code only at FILE, since a
+ *   MODULE/REPOSITORY-scope question wasn't about specific code and there's
+ *   nothing to check the answer against. Never keyed on the answer itself,
+ *   since a wrong or "I don't know" answer would poison retrieval.
+ * - stay{Code,Docs,Summary}: deeper material at the SAME granularity —
+ *   feeds FOLLOW_UP/DEEP_DIVE/SIMPLIFY when they don't narrow.
+ * - narrow{Modules,Files}: one level finer, offered ALONGSIDE stay (never
+ *   instead of it) — feeds the same three actions when they DO narrow. Empty
+ *   at FILE granularity (nothing finer to offer).
+ * - frontierModules: unvisited-module coverage, names only. Feeds NEW_TOPIC,
+ *   always assembled regardless of granularity — code is fetched for a
+ *   frontier module only once a later turn's resolved focus actually
+ *   narrows there to FILE.
+ */
+export interface InterviewFollowUpContext {
+  granularity: InterviewGranularity;
+
+  groundingCode: CodeChunkSearchResult[];
+  groundingDocs: DocChunkSearchResult[];
+  groundingSummary: RepositorySummary | ArchitectureSummary | ComponentSummary | null;
+
+  stayCode: CodeChunkSearchResult[];
+  stayDocs: DocChunkSearchResult[];
+  staySummary: ArchitectureSummary | ComponentSummary | null;
+
+  narrowModules: ModuleInventoryEntry[];
+  narrowFiles: string[];
+
+  frontierModules: ModuleInventoryEntry[];
+
+  /** Union of file paths across all blocks — the closed list nextFocus.filePath must resolve against. */
+  contextPaths: string[];
+  /** Union of module names across all blocks — the closed list nextFocus.module must resolve against. */
+  contextModules: string[];
+  usedFallback: boolean;
+}
+
 export interface RetrievalOptions {
   maxComponents?: number;
   maxFiles?: number;

@@ -34,6 +34,27 @@ export class RepositoryGraphService {
   }
 
   /**
+   * Import fan-in (count of distinct importers) for every file that has at
+   * least one, repository-wide — a structural proxy for "architecturally
+   * central", available at SEARCHABLE (Phase 1) with no LLM summary
+   * required. Underlies Interview's module inventory (see
+   * RepositoryRetrievalService#buildModuleInventory), which sums this per
+   * module to rank the areas offered for orientation/NEW_TOPIC.
+   */
+  public async getImportFanInCounts(repositoryId: string): Promise<Map<string, number>> {
+    const { rows } = await pool.query(
+      `SELECT target_node_key, COUNT(*)::int AS fan_in
+       FROM repository_relationships
+       WHERE repository_id = $1
+         AND target_node_type = 'file'
+         AND relationship_type = 'IMPORTS'
+       GROUP BY target_node_key`,
+      [repositoryId],
+    );
+    return new Map(rows.map((r) => [r.target_node_key as string, r.fan_in as number]));
+  }
+
+  /**
    * Retrieves all file paths belonging to a given component.
    */
   public async getFilesInComponent(repositoryId: string, componentName: string): Promise<string[]> {

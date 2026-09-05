@@ -41,7 +41,14 @@ export interface ModuleAssignment {
 }
 
 function directorySegments(filePath: string): string[] {
-  return path.dirname(filePath).split(path.sep).filter((s) => s && s !== ".");
+  // path.posix, not path.sep: repo-relative paths always use "/", but on
+  // Windows path.sep is "\", which made the whole dirname collapse into one
+  // segment and silently disabled the infra/layer grouping below (modules
+  // stayed distinct, since the collapsed string was still unique per
+  // directory, but labels degraded to e.g. "Backend/Src/Services" instead of
+  // "Utilities"). importResolver.ts:12 already uses path.posix for the same
+  // reason.
+  return path.posix.dirname(filePath).split(path.posix.sep).filter((s) => s && s !== ".");
 }
 
 // Strips common layer suffixes so "auth.controller.ts" and
