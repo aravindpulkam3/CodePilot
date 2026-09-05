@@ -6,6 +6,7 @@ import { CodeReviewPromptBuilder } from "../promptBuilders/codeReviewPromptBuild
 import { retrievalService } from "./retreival.service.js";
 import { repositorySyncService } from "./repositorySync.service.js";
 import { isDocumentationFile } from "../utils/documentationPaths.js";
+import { buildDocumentationQuery } from "../utils/documentationQuery.js";
 // TEMPORARY verification logging — see utils/readmeDebugLog.ts for removal.
 import { docRetrievalLog } from "../utils/readmeDebugLog.js";
 export interface StructuredReview {
@@ -62,6 +63,25 @@ export class ReviewService {
       const changedFileNames = changedFilePaths.join(", ");
       const ragQuery = `Pull Request Title: ${prDetails.title}. Description: ${prDetails.description || "None"}. Files modified: ${changedFileNames}`;
 
+      // Documentation gets its OWN query, deliberately excluding the file list.
+      //
+      // ragQuery is dominated by file paths, and the sections that match a
+      // path-heavy string are the ones that CONTAIN paths — "Project
+      // Structure" is literally a file tree, "Installation" is full of
+      // commands and directories. Observed twice in practice: PRs about
+      // routing and dependencies pulled Prerequisites / Project Structure /
+      // Installation while the sections describing the changed behaviour
+      // scored lower.
+      //
+      // Title and description are the human-language statement of what the
+      // change does, which is what prose should be matched against. File
+      // paths are already handled far better by the structural stages.
+      const docQuery = buildDocumentationQuery(
+        prDetails.title,
+        prDetails.description,
+        changedFilePaths,
+      );
+
       // No maxCodeChunks override: that was a SQL LIMIT on one stage, not an
       // output cap, so it starved recall while the token budget went unspent.
       // The context budget does the capping now.
@@ -70,6 +90,8 @@ export class ReviewService {
         repositoryId,
         ragQuery,
         changedFilePaths,
+        undefined,
+        docQuery,
       );
 
       const codebaseChunks = retrievedContext.codeChunks;

@@ -431,6 +431,15 @@ export class RepositoryRetrievalService {
     query: string,
     changedFiles: string[],
     opts?: RetrievalOptions,
+    /**
+     * Separate query for documentation retrieval. Code retrieval wants the
+     * changed file list; prose retrieval is actively harmed by it (a README's
+     * file-tree section outscores its behaviour sections). Pass null to skip
+     * documentation entirely — see buildDocumentationQuery. Omitting the
+     * argument falls back to `query`, preserving the old behaviour for any
+     * other caller.
+     */
+    docQuery?: string | null,
   ): Promise<RetrievedContext> {
     const startTime = performance.now();
     const options = { ...DEFAULT_OPTIONS, ...opts };
@@ -481,7 +490,30 @@ export class RepositoryRetrievalService {
       return emptyContext();
     }
 
-    const queryVectorStr = await semanticRetrievalService.getQueryVectorStr(query);
+    // `docQuery === undefined` means the caller didn't opt in — reuse the code
+    // query. `docQuery === null` is an explicit "there isn't enough prose to
+    // search on", and documentation is skipped rather than matched against
+    // whatever sits nearest the origin.
+    const effectiveDocQuery = docQuery === undefined ? query : docQuery;
+    const skipDocumentation = effectiveDocQuery === null;
+
+    // Both embeddings issue together, so the second costs no wall-clock.
+    const [queryVectorStr, docVectorStr] = await Promise.all([
+      semanticRetrievalService.getQueryVectorStr(query),
+      skipDocumentation || effectiveDocQuery === query
+        ? Promise.resolve(null)
+        : semanticRetrievalService.getQueryVectorStr(effectiveDocQuery!),
+    ]);
+
+    if (skipDocumentation) {
+      docRetrievalLog(
+        `Review: skipping documentation retrieval — the PR has no meaningful ` +
+          `title/description to match prose against. Returning no docs beats ` +
+          `returning an arbitrary section.`,
+      );
+    } else if (docVectorStr) {
+      docRetrievalLog(`Review: documentation searched with its own query: "${docPreview(effectiveDocQuery!, 120)}"`);
+    }
 
     // ---- STAGE A: resolve the structural file set (paths only, no content)
     let t0 = performance.now();
@@ -567,13 +599,15 @@ export class RepositoryRetrievalService {
           undefined,
           changedPaths,
         ),
-        // ---- STAGE D: documentation (relevance-gated, unchanged)
-        semanticRetrievalService.searchDocumentationChunks(
-          repositoryId,
-          queryVectorStr,
-          options.maxDocChunks ?? DEFAULT_OPTIONS.maxDocChunks,
-          options.docSimilarityThreshold ?? DEFAULT_OPTIONS.docSimilarityThreshold,
-        ),
+        // ---- STAGE D: documentation, using its own vector (see above)
+        skipDocumentation
+          ? Promise.resolve([])
+          : semanticRetrievalService.searchDocumentationChunks(
+              repositoryId,
+              docVectorStr ?? queryVectorStr,
+              options.maxDocChunks ?? DEFAULT_OPTIONS.maxDocChunks,
+              options.docSimilarityThreshold ?? DEFAULT_OPTIONS.docSimilarityThreshold,
+            ),
       ]);
 
     for (const c of changedChunks) {
