@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from "react";
-import { MessageSquare, Plus, Send, User, Bot, Loader2 } from "lucide-react";
+import { Send, User, Bot, Loader2 } from "lucide-react";
 import { cn } from "@/utils/cn";
 import { SourceList } from "./SourceList";
+import { SessionSidebar } from "./SessionSidebar";
 import { MarkdownRenderer } from "../ui/MarkdownRenderer";
 
 export interface Message {
@@ -55,9 +56,9 @@ export function ChatInterface({
 }: ChatInterfaceProps) {
   const [input, setInput] = useState("");
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [optimisticUserMessage, setOptimisticUserMessage] = useState("");
   const [selectedSource, setSelectedSource] = useState<any>(null);
-  
 
   // Use localized scrolling so the main page doesn't jump
   useEffect(() => {
@@ -83,6 +84,18 @@ export function ChatInterface({
     setInput("");
     setOptimisticUserMessage(msg);
     onSendMessage(msg);
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "44px";
+    }
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setInput(e.target.value);
+    const el = textareaRef.current;
+    if (el) {
+      el.style.height = "auto";
+      el.style.height = `${Math.min(el.scrollHeight, 128)}px`;
+    }
   };
 
   // Deduplicate user message if history already caught up with our optimistic message
@@ -114,41 +127,13 @@ export function ChatInterface({
     <div className="flex h-full w-full overflow-hidden rounded-xl border border-border-light dark:border-border-dark bg-surface-light dark:bg-surface-dark shadow-sm">
       {/* Sidebar for Sessions */}
       {showSidebar && (
-        <div className="w-64 border-r border-border-light dark:border-border-dark bg-slate-50 dark:bg-slate-900/50 flex flex-col shrink-0">
-          <div className="p-4 border-b border-border-light dark:border-border-dark">
-            <button
-              onClick={onNewSession}
-              className="flex w-full items-center justify-center gap-2 rounded-md bg-signal-500 px-3 py-2 text-sm font-medium text-white hover:bg-signal-600 transition-colors shadow-sm"
-            >
-              <Plus className="h-4 w-4" /> New Chat
-            </button>
-          </div>
-          <div className="flex-1 overflow-y-auto p-2 space-y-1">
-            {sessions.length === 0 ? (
-              <p className="px-2 py-3 text-center text-xs text-muted-light dark:text-muted-dark">
-                No conversations yet.
-              </p>
-            ) : (
-              sessions.map((session: any) => (
-                <button
-                  key={session.id}
-                  onClick={() => onSelectSession?.(session.id)}
-                  className={cn(
-                    "flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-left transition-colors truncate",
-                    activeSessionId === session.id
-                      ? "bg-white dark:bg-slate-800 text-ink-light dark:text-ink-dark shadow-sm ring-1 ring-border-light dark:ring-border-dark"
-                      : "text-muted-light dark:text-muted-dark hover:bg-white/50 dark:hover:bg-slate-800/50",
-                  )}
-                >
-                  <MessageSquare className="h-4 w-4 shrink-0" />
-                  <span className="truncate">
-                    Chat {new Date(session.created_at).toLocaleDateString()}
-                  </span>
-                </button>
-              ))
-            )}
-          </div>
-        </div>
+        <SessionSidebar
+          sessions={sessions}
+          activeSessionId={activeSessionId}
+          onSelectSession={onSelectSession}
+          onNewSession={onNewSession}
+          newLabel={mode === "INTERVIEW" ? "New Interview" : "New Chat"}
+        />
       )}
 
       {/* Main Chat Area */}
@@ -276,8 +261,9 @@ export function ChatInterface({
           >
             <div className="flex-1 relative">
               <textarea
+                ref={textareaRef}
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
+                onChange={handleInputChange}
                 placeholder={placeholder}
                 className="w-full max-h-32 min-h-[44px] resize-none rounded-xl border border-border-light dark:border-border-dark bg-white dark:bg-slate-950 pl-4 pr-12 py-3 text-[15px] shadow-sm focus:border-signal-500 focus:outline-none focus:ring-1 focus:ring-signal-500 transition-all scrollbar-thin"
                 disabled={isStreaming}
@@ -288,9 +274,6 @@ export function ChatInterface({
                   }
                 }}
                 rows={1}
-                style={{
-                  height: "auto",
-                }}
               />
             </div>
             <button

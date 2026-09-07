@@ -44,6 +44,92 @@
       transparent 1px
     );
   }
+
+  /* Real thin scrollbars for the PR Review workspace panes — the
+     `scrollbar-thin`/`scrollbar-thumb-*` classes used elsewhere in the app
+     are inert (no plugin defines them); this is a genuine CSS utility. */
+  .thin-scrollbar {
+    scrollbar-width: thin;
+  }
+  .thin-scrollbar::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  .thin-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .thin-scrollbar::-webkit-scrollbar-thumb {
+    background-color: theme("colors.border.light");
+    border-radius: 6px;
+  }
+  .dark .thin-scrollbar::-webkit-scrollbar-thumb {
+    background-color: theme("colors.border.dark");
+  }
+}
+
+/* Prism token colors, mapped to the app's design tokens rather than an
+   imported theme stylesheet, so highlighting works in both light and dark
+   mode via the same .dark class-toggle strategy as everything else
+   (ThemeContext.tsx). Scoped to .prism-code so it never leaks into
+   MarkdownRenderer's own (unrelated) code blocks. */
+.prism-code {
+  --prism-comment: #8b93a7;
+  --prism-keyword: #0f766e;
+  --prism-string: #0d9488;
+  --prism-function: #2563eb;
+  --prism-number: #b45309;
+  --prism-class: #7c3aed;
+  --prism-operator: theme("colors.ink.light");
+  --prism-punctuation: theme("colors.muted.light");
+}
+.dark .prism-code {
+  --prism-comment: #64748b;
+  --prism-keyword: #5eead4;
+  --prism-string: #34d399;
+  --prism-function: #60a5fa;
+  --prism-number: #fbbf24;
+  --prism-class: #c4b5fd;
+  --prism-operator: theme("colors.ink.dark");
+  --prism-punctuation: theme("colors.muted.dark");
+}
+.prism-code .token.comment,
+.prism-code .token.prolog,
+.prism-code .token.doctype,
+.prism-code .token.cdata {
+  color: var(--prism-comment);
+  font-style: italic;
+}
+.prism-code .token.keyword,
+.prism-code .token.tag,
+.prism-code .token.boolean,
+.prism-code .token.important {
+  color: var(--prism-keyword);
+}
+.prism-code .token.string,
+.prism-code .token.attr-value,
+.prism-code .token.char {
+  color: var(--prism-string);
+}
+.prism-code .token.function,
+.prism-code .token.method {
+  color: var(--prism-function);
+}
+.prism-code .token.number,
+.prism-code .token.constant,
+.prism-code .token.symbol {
+  color: var(--prism-number);
+}
+.prism-code .token.class-name,
+.prism-code .token.builtin {
+  color: var(--prism-class);
+}
+.prism-code .token.operator,
+.prism-code .token.entity,
+.prism-code .token.url {
+  color: var(--prism-operator);
+}
+.prism-code .token.punctuation {
+  color: var(--prism-punctuation);
 }
 
 @media (prefers-reduced-motion: reduce) {

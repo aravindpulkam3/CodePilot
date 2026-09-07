@@ -17,7 +17,7 @@ export function AppShell() {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   return (
-    <div className="flex min-h-screen bg-canvas-light dark:bg-canvas-dark">
+    <div className="flex h-screen overflow-hidden bg-canvas-light dark:bg-canvas-dark">
       <Sidebar
         collapsed={collapsed}
         onToggle={() => setCollapsed((c) => !c)}
@@ -26,7 +26,7 @@ export function AppShell() {
       />
       <div className="flex min-w-0 flex-1 flex-col">
         <Navbar onOpenMobileSidebar={() => setMobileOpen(true)} />
-        <main className="flex-1 px-4 py-6 sm:px-6 lg:px-8">
+        <main className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6 lg:px-8">
           <Outlet />
         </main>
       </div>

@@ -71,7 +71,9 @@ export interface PullRequestDetail {
   description: string | null;
   state: string;
   merged: boolean;
-  head_sha: string; // <-- ADD THIS LINE HERE
+  head_sha: string;
+  base_sha: string;
+  base_ref: string;
   author: {
     login: string;
     avatar_url: string;
@@ -84,6 +86,7 @@ export interface PullRequestDetail {
   updated_at: string;
   files: Array<{
     filename: string;
+    previous_filename?: string;
     status: string;
     additions: number;
     deletions: number;

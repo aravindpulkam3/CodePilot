@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { Lock, Globe, GitBranch, ArrowLeft, ExternalLink, Clock, Rocket, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
 import { LocalRepository } from "@/types/repositoryTypes";
 import { useRepositorySyncStatus, useStartWorking } from "@/hooks/useRepository";
 
@@ -52,37 +53,37 @@ export function RepositoryHeader({ repo }: { repo: LocalRepository }) {
           )}
         </div>
 
-        <div className="flex shrink-0 items-center gap-3 text-xs text-muted-light dark:text-muted-dark">
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
           {repo.language && <Badge tone="neutral">{repo.language}</Badge>}
-          <span className="flex items-center gap-1">
-            <GitBranch className="h-3.5 w-3.5" />
+          <Badge tone="neutral">
+            <GitBranch className="mr-1 h-3 w-3" />
             {repo.default_branch}
-          </span>
-          <span className="flex items-center gap-1">
-            <Clock className="h-3.5 w-3.5" />
+          </Badge>
+          <Badge tone="neutral">
+            <Clock className="mr-1 h-3 w-3" />
             {repo.last_pushed_at
               ? `Pushed ${new Date(repo.last_pushed_at).toLocaleDateString()}`
               : "No pushes yet"}
-          </span>
+          </Badge>
         </div>
       </div>
 
       {!inWorkspace ? (
-        <div className="mt-3 flex items-center justify-between rounded-lg bg-indigo-50 px-4 py-2.5 dark:bg-indigo-500/10">
-          <p className="text-sm text-indigo-700 dark:text-indigo-300">
+        <div className="mt-3 flex items-center justify-between rounded-lg bg-signal-50 px-4 py-2.5 dark:bg-signal-500/10">
+          <p className="text-sm text-signal-700 dark:text-signal-300">
             Q&amp;A, Review, and Interview need this repo indexed first.
           </p>
-          <button
+          <Button
+            size="sm"
             onClick={() => startWorking.mutate()}
-            disabled={startWorking.isPending}
-            className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
+            isLoading={startWorking.isPending}
           >
             <Rocket className="h-3.5 w-3.5" />
             {startWorking.isPending ? "Starting…" : "Start Working on This Repo"}
-          </button>
+          </Button>
         </div>
       ) : syncStatus && syncStatus.status !== "READY" ? (
-        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg bg-slate-50 px-4 py-2.5 text-xs text-slate-600 dark:bg-slate-800/60 dark:text-slate-400">
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg bg-black/[.03] px-4 py-2.5 text-xs text-muted-light dark:bg-white/[.04] dark:text-muted-dark">
           {syncStatus.status === "FAILED" ? (
             <span className="text-rose-600 dark:text-rose-400">
               Indexing failed — try syncing again.

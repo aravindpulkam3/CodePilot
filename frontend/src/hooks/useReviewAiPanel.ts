@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useCallback, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@clerk/clerk-react";
 import {
@@ -12,73 +12,76 @@ import { ChatMessage } from "@/types/chatTypes";
 import { readSseStream } from "@/utils/parseSseStream";
 import { toast } from "sonner";
 
-export function useFindingDiscussion(findingId: string | null, repositoryId?: string) {
+export type ReviewAiScope = "review" | "finding";
+
+/**
+ * Drives the PR Review AI panel's two scopes on one shared hook shape:
+ * "review" (whole-PR Q&A, type REVIEW_CHAT + reviewId) and "finding"
+ * (scoped discussion, type ISSUE_CHAT + findingId). This is a new,
+ * independent hook (not a change to useUnifiedChat.ts's
+ * useFindingDiscussion, which Q&A/Interview-adjacent code still uses)
+ * so the review panel's needs (scope switching) don't leak into it.
+ */
+export function useReviewAiPanel(
+  scope: ReviewAiScope,
+  id: string | null,
+  repositoryId?: string
+) {
   const queryClient = useQueryClient();
   const { getToken } = useAuth();
 
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamedText, setStreamedText] = useState("");
-  const [streamedSources, setStreamedSources] = useState<any[]>([]);
 
-  // 1. Fetch or initialize the single finding session
+  const sessionParams =
+    scope === "review"
+      ? { type: "REVIEW_CHAT" as const, reviewId: id, repositoryId }
+      : { type: "ISSUE_CHAT" as const, findingId: id, repositoryId };
+
   const {
     data: session,
     isLoading: isSessionLoading,
     error: sessionError,
   } = useQuery<UnifiedChatSession>({
-    queryKey: ["findingSession", findingId],
-    queryFn: () =>
-      getOrCreateChatSession({
-        type: "ISSUE_CHAT",
-        findingId: findingId!,
-        repositoryId,
-        title: `Discussion for Finding #${findingId?.slice(0, 8)}`,
-      }),
-    enabled: !!findingId,
-    staleTime: 1000 * 60 * 5, // 5 minutes
+    queryKey: ["reviewAiSession", scope, id],
+    queryFn: () => getOrCreateChatSession(sessionParams),
+    enabled: !!id,
+    staleTime: 1000 * 60 * 5,
   });
 
-  // 2. Fetch persistent message history for this finding
   const {
     data: messages = [],
     isLoading: isMessagesLoading,
     refetch: refetchMessages,
   } = useQuery<ChatMessage[]>({
-    queryKey: ["chatMessages", session?.id],
+    queryKey: ["reviewAiMessages", session?.id],
     queryFn: () => getChatMessages(session!.id),
     enabled: !!session?.id,
   });
 
-  // 3. Send streaming message
   const sendMessage = useCallback(
     async (userMessage: string) => {
-      if (!findingId || !userMessage.trim() || isStreaming) return;
+      if (!id || !userMessage.trim() || isStreaming) return;
 
       const token = await getToken();
       if (!token) throw new Error("Authentication token required.");
 
       setIsStreaming(true);
       setStreamedText("");
-      setStreamedSources([]);
 
       try {
         let activeSessionId = session?.id;
-
-        // Ensure session exists
         if (!activeSessionId) {
-          const newSession = await getOrCreateChatSession({
-            type: "ISSUE_CHAT",
-            findingId,
-            repositoryId,
-          });
+          const newSession = await getOrCreateChatSession(sessionParams);
           activeSessionId = newSession.id;
-          queryClient.setQueryData(["findingSession", findingId], newSession);
+          queryClient.setQueryData(["reviewAiSession", scope, id], newSession);
         }
 
         const response = await streamChatMessage(activeSessionId, userMessage, token, {
-          type: "ISSUE_CHAT",
-          findingId,
+          type: sessionParams.type,
           repositoryId,
+          reviewId: scope === "review" ? id ?? undefined : undefined,
+          findingId: scope === "finding" ? id ?? undefined : undefined,
         });
 
         if (!response.ok) {
@@ -92,29 +95,22 @@ export function useFindingDiscussion(findingId: string | null, repositoryId?: st
             streamError = payload.data || "Something went wrong.";
           } else if (payload.type === "text") {
             setStreamedText((prev) => prev + payload.data);
-          } else if (payload.type === "sources") {
-            setStreamedSources(payload.data);
           }
         });
         if (streamError) throw new Error(streamError);
 
-        // Invalidate message history cache to sync DB state
-        await queryClient.invalidateQueries({
-          queryKey: ["chatMessages", activeSessionId],
-        });
+        await queryClient.invalidateQueries({ queryKey: ["reviewAiMessages", activeSessionId] });
       } catch (err) {
-        console.error("Finding discussion stream error:", err);
+        console.error("Review AI panel stream error:", err);
         toast.error(err instanceof Error ? err.message : "Failed to send message.");
       } finally {
         setIsStreaming(false);
         setStreamedText("");
-        setStreamedSources([]);
       }
     },
-    [findingId, session?.id, repositoryId, isStreaming, getToken, queryClient]
+    [id, session?.id, repositoryId, isStreaming, getToken, queryClient, scope]
   );
 
-  // 4. Clear chat history mutation
   const clearMutation = useMutation({
     mutationFn: async () => {
       if (!session?.id) return;
@@ -122,7 +118,7 @@ export function useFindingDiscussion(findingId: string | null, repositoryId?: st
     },
     onSuccess: () => {
       if (session?.id) {
-        queryClient.setQueryData(["chatMessages", session.id], []);
+        queryClient.setQueryData(["reviewAiMessages", session.id], []);
       }
     },
   });
@@ -133,7 +129,6 @@ export function useFindingDiscussion(findingId: string | null, repositoryId?: st
     isLoading: isSessionLoading || isMessagesLoading,
     isStreaming,
     streamedText,
-    streamedSources,
     sendMessage,
     clearHistory: clearMutation.mutate,
     isClearing: clearMutation.isPending,

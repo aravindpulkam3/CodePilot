@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from "react";
+import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useAuth } from "@clerk/clerk-react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -21,19 +21,12 @@ export default function RepositoryChat() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamedText, setStreamedText] = useState("");
   const [streamedSources, setStreamedSources] = useState<any[]>([]);
-  const [optimisticUserMessage, setOptimisticUserMessage] = useState("");
 
   const { data: chatSessions = [] } = useChatSessions(repositoryId!, "QA");
   const { data: history = [], isLoading: isHistoryLoading } = useChatHistory(sessionId ?? null);
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [history, streamedText, optimisticUserMessage]);
-
   const handleSendMessage = async (msgToSend: string) => {
     if (!repositoryId || !msgToSend.trim() || isStreaming) return;
-    setOptimisticUserMessage(msgToSend);
     setStreamedText("");
     setStreamedSources([]);
     setIsStreaming(true);
@@ -98,7 +91,6 @@ export default function RepositoryChat() {
       toast.error(error instanceof Error ? error.message : "Failed to send message.");
     } finally {
       setIsStreaming(false);
-      setOptimisticUserMessage("");
       setStreamedText("");
       setStreamedSources([]);
     }

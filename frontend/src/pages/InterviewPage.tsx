@@ -1,12 +1,13 @@
 // pages/InterviewPage.tsx
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Card, CardBody } from "@/components/ui/Card";
+import { Card, CardHeader, CardBody } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
-import { PageHeader } from "@/components/ui/PageHeader";
+import { Badge } from "@/components/ui/Badge";
 import { useRepositoryDetails } from "@/hooks/useRepository";
 import { apiClient } from "@/services/api/clientApi";
 import { ChatInterface } from "@/components/chat/ChatInterface";
+import { SessionSidebar } from "@/components/chat/SessionSidebar";
 import { useChatHistory, useChatSessions } from "@/hooks/useChat";
 
 interface Message {
@@ -20,6 +21,12 @@ interface InterviewConfig {
   mode: "repository" | "general";
 }
 
+const DEFAULT_CONFIG: InterviewConfig = {
+  difficulty: "medium",
+  domain: "development",
+  mode: "repository",
+};
+
 export function InterviewPage() {
   const { repositoryId, sessionId } = useParams<{ repositoryId: string, sessionId?: string }>();
   const navigate = useNavigate();
@@ -28,11 +35,7 @@ export function InterviewPage() {
   const { data: interviewSessions = [] } = useChatSessions(repositoryId!, 'INTERVIEW');
   const { data: history = [], isLoading: historyLoading } = useChatHistory(sessionId || null);
 
-  const [config, setConfig] = useState<InterviewConfig>({
-    difficulty: "medium",
-    domain: "development",
-    mode: "repository",
-  });
+  const [config, setConfig] = useState<InterviewConfig>(DEFAULT_CONFIG);
   const [isStarting, setIsStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
 
@@ -87,7 +90,7 @@ export function InterviewPage() {
 
       // Navigate to the dynamic route
       navigate(`/repositories/${repositoryId}/interview/${data.sessionId}`);
-      
+
     } catch (e) {
       console.error(e);
       setStartError("Could not start the interview. Please try again.");
@@ -169,193 +172,130 @@ export function InterviewPage() {
     }
   };
 
-  const header = (
-    <div className="mb-6 shrink-0">
-      <button
-        onClick={() => navigate(-1)}
-        className="text-sm text-muted-light hover:text-ink-light mb-4 inline-flex items-center gap-1"
-      >
-        ← Back to repository
-      </button>
-      {repoLoading ? (
-        <div className="h-8 w-64 rounded bg-surface-light dark:bg-surface-dark animate-pulse border border-border-light dark:border-border-dark" />
-      ) : repo ? (
-        <PageHeader
-          title={`Technical Interview: ${repo.name}`}
-          description={
-            repo.description ||
-            "Interactive technical interview based on repository context"
-          }
-        />
-      ) : null}
-
-      {sessionId && !isComplete && (
-        <div className="mt-4 flex justify-end">
-          <Button variant="danger" onClick={endInterview} disabled={isEnding || isAnswering}>
-            {isEnding ? "Ending..." : "End Interview"}
-          </Button>
-        </div>
-      )}
-      
-      {sessionId && isComplete && !assessment && (
-        <div className="mt-4 flex justify-end">
-          <Button onClick={generateInsights} disabled={isGeneratingInsights}>
-            {isGeneratingInsights ? "Generating Insights..." : "Generate AI Insights"}
-          </Button>
-        </div>
-      )}
-    </div>
-  );
-
+  // ---- Landing / config screen (no active session) ----
   if (!sessionId) {
     return (
-      <div className="max-w-4xl mx-auto py-10 px-4">
-        {header}
-        <Card>
-          <CardBody className="p-6">
-            <h2 className="text-lg font-semibold mb-1">
-              Start Technical Interview
-            </h2>
-            <p className="text-sm text-muted-light mb-6">
-              We'll ask questions grounded in this repository's architecture and
-              code.
-            </p>
-            <div className="space-y-4 max-w-md">
-              <div>
-                <label className="block text-sm mb-1">Difficulty</label>
-                <select
-                  className="w-full rounded-md border border-border-light bg-surface-light px-3 py-2 text-sm text-ink-light"
-                  value={config.difficulty}
-                  onChange={(e) =>
-                    setConfig({
-                      ...config,
-                      difficulty: e.target
-                        .value as InterviewConfig["difficulty"],
-                    })
-                  }
-                >
-                  <option value="easy">Easy</option>
-                  <option value="medium">Medium</option>
-                  <option value="hard">Hard</option>
-                  <option value="adaptive">Adaptive</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm mb-1">Domain</label>
-                <select
-                  className="w-full rounded-md border border-border-light bg-surface-light px-3 py-2 text-sm text-ink-light"
-                  value={config.domain}
-                  onChange={(e) =>
-                    setConfig({ ...config, domain: e.target.value })
-                  }
-                >
-                  <option value="development">Development</option>
-                  <option value="system-design">System Design</option>
-                  <option value="debugging">Debugging</option>
-                </select>
-              </div>
-              {startError && (
-                <p className="text-sm text-red-500">{startError}</p>
-              )}
-              <Button
-                onClick={startInterview}
-                disabled={isStarting || repoLoading}
-              >
-                {isStarting ? "Starting..." : "Start Interview"}
-              </Button>
-            </div>
-          </CardBody>
-        </Card>
+      <div className="flex h-full min-h-0 gap-4">
+        <SessionSidebar
+          sessions={interviewSessions}
+          activeSessionId={null}
+          onSelectSession={(id) => id && navigate(`/repositories/${repositoryId}/interview/${id}`)}
+          onNewSession={() => setConfig(DEFAULT_CONFIG)}
+          newLabel="New Interview"
+        />
+        <div className="flex-1 min-w-0 overflow-y-auto px-6 py-6">
+          <div className="mx-auto max-w-md">
+            {repoLoading ? (
+              <div className="mb-6 h-4 w-72 animate-pulse rounded bg-surface-light dark:bg-surface-dark border border-border-light dark:border-border-dark" />
+            ) : repo ? (
+              <p className="mb-6 text-sm text-muted-light dark:text-muted-dark">
+                Practice a technical interview grounded in {repo.name}'s
+                architecture and code.
+              </p>
+            ) : null}
 
-        <div className="mt-8 space-y-4">
-          <h3 className="text-md font-semibold text-ink-light dark:text-ink-dark">
-            Past Interviews
-          </h3>
-
-          {interviewSessions.length === 0 ? (
-            <p className="text-sm text-muted-light">
-              No past interview sessions found.
-            </p>
-          ) : (
-            interviewSessions.map((s: any) => {
-              const state =
-                typeof s.state === "string" ? JSON.parse(s.state) : s.state;
-              const isSessionCompleted = s.status === "completed";
-
-              return (
-                <Card
-                  key={s.id}
-                  className="transition-colors hover:border-slate-300 dark:hover:border-slate-700"
+            <Card>
+              <CardHeader>
+                <h2 className="text-sm font-semibold text-ink-light dark:text-ink-dark">
+                  Start a new interview
+                </h2>
+              </CardHeader>
+              <CardBody className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm mb-1 text-muted-light dark:text-muted-dark">Difficulty</label>
+                    <select
+                      className="w-full rounded-md border border-border-light dark:border-border-dark bg-surface-light dark:bg-surface-dark px-3 py-2 text-sm text-ink-light dark:text-ink-dark"
+                      value={config.difficulty}
+                      onChange={(e) =>
+                        setConfig({
+                          ...config,
+                          difficulty: e.target
+                            .value as InterviewConfig["difficulty"],
+                        })
+                      }
+                    >
+                      <option value="easy">Easy</option>
+                      <option value="medium">Medium</option>
+                      <option value="hard">Hard</option>
+                      <option value="adaptive">Adaptive</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm mb-1 text-muted-light dark:text-muted-dark">Domain</label>
+                    <select
+                      className="w-full rounded-md border border-border-light dark:border-border-dark bg-surface-light dark:bg-surface-dark px-3 py-2 text-sm text-ink-light dark:text-ink-dark"
+                      value={config.domain}
+                      onChange={(e) =>
+                        setConfig({ ...config, domain: e.target.value })
+                      }
+                    >
+                      <option value="development">Development</option>
+                      <option value="system-design">System Design</option>
+                      <option value="debugging">Debugging</option>
+                    </select>
+                  </div>
+                </div>
+                {startError && (
+                  <p className="text-sm text-red-500">{startError}</p>
+                )}
+                <Button
+                  className="w-full"
+                  onClick={startInterview}
+                  disabled={isStarting || repoLoading}
+                  isLoading={isStarting}
                 >
-                  <CardBody className="p-5 flex justify-between items-center">
-                    <div>
-                      <h4 className="font-semibold text-ink-light dark:text-ink-dark mb-1 capitalize">
-                        {state?.currentTopic || "General"} Interview
-                      </h4>
-                      <div className="flex gap-4 text-xs text-muted-light">
-                        <span>
-                          {new Date(s.created_at).toLocaleDateString()}
-                        </span>
-                        <span className="capitalize text-signal-500">
-                          Difficulty: {state?.difficulty}
-                        </span>
-                        {isSessionCompleted ? (
-                          <span className="text-green-600 font-medium">
-                            Completed
-                          </span>
-                        ) : (
-                          <span className="text-amber-500 font-medium">
-                            In Progress
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex gap-4 items-center">
-                      {state?.assessment && (
-                        <div className="text-right mr-4">
-                          <span className="block text-xl font-bold text-signal-500">
-                            {state.assessment.score}/10
-                          </span>
-                          <span className="text-xs text-muted-light">
-                            Final Score
-                          </span>
-                        </div>
-                      )}
-                      <Button
-                        variant="secondary"
-                        onClick={() =>
-                          navigate(
-                            `/repositories/${repositoryId}/interview/${s.id}`,
-                          )
-                        }
-                      >
-                        {isSessionCompleted ? "Review Transcript" : "Resume"}
-                      </Button>
-                    </div>
-                  </CardBody>
-                </Card>
-              );
-            })
-          )}
+                  {isStarting ? "Starting..." : "Start Interview"}
+                </Button>
+              </CardBody>
+            </Card>
+          </div>
         </div>
       </div>
     );
   }
 
+  // ---- Active session screen ----
   return (
-    <div className="w-full max-w-6xl mx-auto py-10 px-4 flex flex-col h-[calc(100vh-4rem)]">
-      {header}
-      {answerError && (
-        <p className="text-sm text-red-500 mb-2 shrink-0">{answerError}</p>
-      )}
-      <div className="flex-1 overflow-hidden min-h-0 flex gap-4">
-        <div className="flex-1 overflow-hidden min-h-0">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="mb-3 flex shrink-0 items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Badge tone={isComplete ? "neutral" : "signal"}>
+            {isComplete ? "Complete" : "In progress"}
+          </Badge>
+          {answerError && (
+            <span className="text-sm text-red-500">{answerError}</span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {!isComplete && (
+            <Button variant="danger" size="sm" onClick={endInterview} disabled={isEnding || isAnswering}>
+              {isEnding ? "Ending..." : "End Interview"}
+            </Button>
+          )}
+          {isComplete && !assessment && (
+            <Button size="sm" onClick={generateInsights} disabled={isGeneratingInsights}>
+              {isGeneratingInsights ? "Generating Insights..." : "Generate AI Insights"}
+            </Button>
+          )}
+        </div>
+      </div>
+
+      <div className="flex flex-1 min-h-0 gap-4">
+        <div className="flex-1 min-h-0 overflow-hidden">
           <ChatInterface
             mode="INTERVIEW"
             messages={messages}
             isStreaming={isAnswering}
             isLoadingHistory={historyLoading}
             onSendMessage={(msg) => submitAnswer(msg)}
+            showSidebar={true}
+            sessions={interviewSessions}
+            activeSessionId={sessionId}
+            onSelectSession={(id) =>
+              navigate(id ? `/repositories/${repositoryId}/interview/${id}` : `/repositories/${repositoryId}/interview`)
+            }
+            onNewSession={() => navigate(`/repositories/${repositoryId}/interview`)}
             emptyStateMessage="Interview started. Waiting for question..."
             placeholder={
               isComplete ? "Interview complete" : "Type your answer..."
@@ -369,15 +309,15 @@ export function InterviewPage() {
               <CardBody className="p-5 space-y-4">
                 <h3 className="text-xl font-bold">Interview Assessment</h3>
                 <div className="text-4xl font-bold text-signal-500">{assessment.score}<span className="text-lg text-muted-light">/10</span></div>
-                
+
                 <div>
                   <h4 className="font-semibold text-ink-light dark:text-ink-dark mb-1">Overall Assessment</h4>
                   <p className="text-sm text-slate-700 dark:text-slate-300">{assessment.overallAssessment}</p>
                 </div>
 
                 {assessment.strengths && assessment.strengths.length > 0 && (
-                  <div>
-                    <h4 className="font-semibold text-green-600 mb-1">Strengths</h4>
+                  <div className="border-l-4 border-emerald-500 pl-3">
+                    <h4 className="font-semibold text-emerald-600 dark:text-emerald-400 mb-1">Strengths</h4>
                     <ul className="list-disc pl-5 text-sm text-slate-700 dark:text-slate-300">
                       {assessment.strengths.map((s: string, i: number) => <li key={i}>{s}</li>)}
                     </ul>
@@ -385,8 +325,8 @@ export function InterviewPage() {
                 )}
 
                 {assessment.weaknesses && assessment.weaknesses.length > 0 && (
-                  <div>
-                    <h4 className="font-semibold text-red-600 mb-1">Areas for Improvement</h4>
+                  <div className="border-l-4 border-rose-500 pl-3">
+                    <h4 className="font-semibold text-rose-600 dark:text-rose-400 mb-1">Areas for Improvement</h4>
                     <ul className="list-disc pl-5 text-sm text-slate-700 dark:text-slate-300">
                       {assessment.weaknesses.map((w: string, i: number) => <li key={i}>{w}</li>)}
                     </ul>
