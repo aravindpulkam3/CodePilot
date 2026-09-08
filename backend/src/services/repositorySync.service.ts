@@ -172,9 +172,11 @@ export class RepositorySyncService {
       );
     }
 
-    // Emit event that sync is done (but indexing might still be ongoing).
-    // Cache keys are keyed by the internal app_users.id, not the Clerk id, so invalidation must use that.
-    appEvents.emit(EVENT_TYPES.REPOSITORY_SYNCED, { userId: repo.user_id, repositoryId });
+    // REPOSITORY_SYNCED is NOT emitted here — indexing is only enqueued at
+    // this point, not complete. repositoryIndex.service.ts emits it once
+    // the chunk-completion counter confirms every enqueued chunk actually
+    // committed and the repo is SEARCHABLE (see processRepositoryUpdate).
+    // Emitting here would invalidate caches before the new data exists.
 
     return {
       status: "indexed",

@@ -1,3 +1,5 @@
+import { ConversationTurn } from "../../utils/conversationalQuery.js";
+
 export type ChatSessionType = 'REPO_QA' | 'REVIEW_CHAT' | 'ISSUE_CHAT' | 'INTERVIEW' | 'QA' | 'REVIEW';
 
 export interface ChatSessionRecord {
@@ -29,11 +31,26 @@ export interface ChatContextPayload {
   metadata?: Record<string, any>;
 }
 
+export interface ConversationContext {
+  // True when this is the first turn of a brand-new session — lets a
+  // provider that calls retrieveQAContext use the cheap assertSearchable
+  // readiness check on follow-up turns instead of the full sync-enqueue
+  // ensureSearchable path on every message.
+  isNewSession: boolean;
+  // Oldest -> newest, may include the just-saved current user turn as the
+  // last element. Used only to resolve dangling references ("that",
+  // "where is this implemented") when constructing this turn's retrieval
+  // query — never rendered into the prompt context itself.
+  recentHistory: ConversationTurn[];
+}
+
 export interface ChatContextProvider {
   buildContext(
     session: ChatSessionRecord,
     userMessage: string,
-    clerkUserId: string
+    clerkUserId: string,
+    // Providers that do no retrieval (Review, Issue) simply ignore this.
+    conversation?: ConversationContext
   ): Promise<ChatContextPayload>;
 
   onAfterResponse?(

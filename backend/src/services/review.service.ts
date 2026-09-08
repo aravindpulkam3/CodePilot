@@ -7,6 +7,7 @@ import { retrievalService } from "./retreival.service.js";
 import { repositorySyncService } from "./repositorySync.service.js";
 import { isDocumentationFile } from "../utils/documentationPaths.js";
 import { buildDocumentationQuery } from "../utils/documentationQuery.js";
+import { appEvents, EVENT_TYPES } from "../events/eventEmitter.js";
 // TEMPORARY verification logging — see utils/readmeDebugLog.ts for removal.
 import { docRetrievalLog } from "../utils/readmeDebugLog.js";
 export interface StructuredReview {
@@ -268,7 +269,13 @@ export class ReviewService {
 
       await client.query("COMMIT");
 
-      
+      // Persisted successfully — safe to invalidate dashboard caches that
+      // could otherwise keep serving pending-review/activity state from
+      // before this review existed.
+      appEvents.emit(EVENT_TYPES.PR_REVIEW_COMPLETED, {
+        userId: repoDetails.user_id,
+        repositoryId,
+      });
 
       return { reviewId: newReviewId, ...aiReview };
     } catch (error) {

@@ -12,7 +12,9 @@ import {
   InterviewGranularity,
   ModuleInventoryEntry,
   DocChunkSearchResult,
+  QAGraphNeighbors,
 } from "../types/retrievalTypes.js";
+import { ConversationTurn, buildQAEmbeddingQuery } from "../utils/conversationalQuery.js";
 import {
   ArchitectureSummary,
   ComponentSummary,
@@ -46,6 +48,15 @@ const DEFAULT_OPTIONS: RetrievalOptions = {
   maxDocChunks: 3,
   docSimilarityThreshold: 0.6,
 };
+
+/**
+ * QA's minimal graph augmentation ("what depends on X"). A higher bar than
+ * the base 0.6 threshold, deliberately: this only fires once code is already
+ * a CONFIDENT match on its own terms, not via any cross-type comparison
+ * against docs/summaries — see retrieveQAContext's graph-augmentation block.
+ */
+const QA_GRAPH_AUGMENTATION_SIMILARITY_FLOOR = 0.75;
+const QA_GRAPH_NEIGHBOR_LIMIT = 12;
 
 /**
  * Bounds for review's structural expansion.
@@ -223,11 +234,34 @@ export class RepositoryRetrievalService {
   }
 
   // --- QA Mode ---
-  public async retrieveQAContext(clerkUserId: string, repositoryId: string, query: string, opts?: RetrievalOptions): Promise<RetrievedContext> {
+  public async retrieveQAContext(
+    clerkUserId: string,
+    repositoryId: string,
+    query: string,
+    opts?: RetrievalOptions,
+    // Absent (or isNewSession true) swaps to the full sync-enqueue-and-poll
+    // ensureSearchable; false uses the cheap read-only assertSearchable, the
+    // same distinction Interview's follow-up turns already rely on
+    // (assertSearchable's own doc comment). recentHistory is used ONLY to
+    // resolve dangling references ("that", "where is this implemented") in
+    // the embedding query below — it is never rendered into the returned
+    // context or the prompt built from it.
+    conversation?: { isNewSession: boolean; recentHistory: ConversationTurn[] },
+  ): Promise<RetrievedContext> {
     const options = { ...DEFAULT_OPTIONS, ...opts };
-    await this.ensureSearchable(clerkUserId, repositoryId);
+    const isNewSession = conversation?.isNewSession ?? true;
+    if (isNewSession) {
+      await this.ensureSearchable(clerkUserId, repositoryId);
+    } else {
+      await this.assertSearchable(repositoryId);
+    }
 
-    const queryVectorStr = await semanticRetrievalService.getQueryVectorStr(query);
+    // recentHistory's last element is the just-saved CURRENT user turn (see
+    // chat.service.ts#streamMessage) — excluded here so buildQAEmbeddingQuery
+    // resolves against the turn BEFORE this one, not against itself.
+    const priorHistory = (conversation?.recentHistory ?? []).slice(0, -1);
+    const embeddingQuery = buildQAEmbeddingQuery(query, priorHistory);
+    const queryVectorStr = await semanticRetrievalService.getQueryVectorStr(embeddingQuery.text);
 
     const context: RetrievedContext = {
       repository: null,
@@ -236,7 +270,13 @@ export class RepositoryRetrievalService {
       files: [],
       codeChunks: [],
       docChunks: [],
-      metadata: { mode: "qa", usedFallback: false, query },
+      metadata: {
+        mode: "qa",
+        usedFallback: false,
+        query,
+        embeddingQuery: embeddingQuery.text,
+        usedConversationalBlend: embeddingQuery.usedHistory,
+      },
     };
 
     const summaryResults = await semanticRetrievalService.searchSummaries(
@@ -259,6 +299,18 @@ export class RepositoryRetrievalService {
     // and is what repository_embeddings.file_path is matched against.
     const relevantFilePathsInOrder: string[] = [];
 
+    // searchSummaries's own similarity score, per node type — discarded by
+    // the loop below (only res.summary is kept on context.*), but the
+    // provider needs these to weight repository/architecture/component
+    // sections against code/doc evidence by relevance, not just render
+    // whatever happened to clear the threshold. "First match wins" for
+    // repository/architecture already means the FIRST (highest-similarity,
+    // since summaryResults is similarity-ordered) hit is the one kept, so
+    // capturing its similarity alongside is exact, not approximate.
+    let repositorySimilarity: number | null = null;
+    let architectureSimilarity: number | null = null;
+    let topComponentSimilarity: number | null = null;
+
     for (const res of summaryResults) {
       // Repository- and architecture-level hits were previously retrieved
       // here (searchSummaries is called with nodeType undefined) and then
@@ -266,9 +318,15 @@ export class RepositoryRetrievalService {
       // Those are exactly the rows that answer "what does this project do",
       // so capture them instead of discarding them.
       if (res.nodeType === "repository") {
-        if (!context.repository) context.repository = res.summary as RepositorySummary;
+        if (!context.repository) {
+          context.repository = res.summary as RepositorySummary;
+          repositorySimilarity = res.similarity;
+        }
       } else if (res.nodeType === "architecture") {
-        if (!context.architecture) context.architecture = res.summary as ArchitectureSummary;
+        if (!context.architecture) {
+          context.architecture = res.summary as ArchitectureSummary;
+          architectureSimilarity = res.similarity;
+        }
       } else if (res.nodeType === "file") {
         context.files.push(res.summary as FileSummary);
         relevantFilePaths.add(res.nodeKey);
@@ -277,6 +335,7 @@ export class RepositoryRetrievalService {
         res.nodeType === "component" &&
         context.components.length < (options.maxComponents || 3)
       ) {
+        if (topComponentSimilarity === null) topComponentSimilarity = res.similarity;
         context.components.push(res.summary as ComponentSummary);
         const childFiles = await semanticRetrievalService.resolveComponentFiles(
           repositoryId,
@@ -368,6 +427,19 @@ export class RepositoryRetrievalService {
     context.docChunks = docChunks;
     context.codeChunks = codeChunks;
 
+    // Per-type top similarity, for the provider's relevance-and-role
+    // weighting (which section gets full/reduced/omitted budget). Doc/code
+    // are already similarity-ordered by their own queries, so [0] is exact,
+    // not approximate. Never used to compare raw scores directly across
+    // types on its own — see the Design principle note in the Q&A plan.
+    context.metadata.evidenceSimilarities = {
+      repository: repositorySimilarity,
+      architecture: architectureSimilarity,
+      component: topComponentSimilarity,
+      doc: docChunks[0]?.similarity ?? null,
+      code: codeChunks[0]?.similarity ?? null,
+    };
+
     console.log(
       `[Retrieval] QA for ${repositoryId}: ${codeChunks.length} code chunk(s), ${docChunks.length} doc section(s), repoSummary=${!!context.repository}.`,
     );
@@ -378,6 +450,11 @@ export class RepositoryRetrievalService {
         `${codeChunks.length} code chunk(s), repoSummary=${!!context.repository}, ` +
         `docThreshold=${options.docSimilarityThreshold ?? DEFAULT_OPTIONS.docSimilarityThreshold}.`,
     );
+    if (embeddingQuery.usedHistory) {
+      docRetrievalLog(
+        `  Conversational blend fired — embedded "${docPreview(embeddingQuery.text, 120)}" instead of the raw question.`,
+      );
+    }
     docRetrievalLog(
       `  Code scope: ${
         relevantFilePaths.size === 0
@@ -399,6 +476,33 @@ export class RepositoryRetrievalService {
         `  Top doc sim=${Number(docChunks[0].similarity).toFixed(4)} vs ` +
           `top code sim=${Number(codeChunks[0].similarity).toFixed(4)}.`,
       );
+    }
+
+    // Minimal graph augmentation ("what depends on X" / "what does X
+    // import"): single anchor file (the top code match, not every changed
+    // file like Review), single hop, names only — no code fetched for
+    // neighbors, no candidate/rerank/budget machinery. Gated on a HIGHER bar
+    // than the base 0.6 threshold so this only fires when code is already a
+    // confident match, deliberately not a cross-type comparison against
+    // docs/summaries — see the Design principle note on evidence roles.
+    context.graphNeighbors = null;
+    if (codeChunks.length > 0 && codeChunks[0].similarity >= QA_GRAPH_AUGMENTATION_SIMILARITY_FLOOR) {
+      const anchorFile = codeChunks[0].filePath;
+      const [deps, dependents] = await Promise.all([
+        repositoryGraphService.getDirectDependencies(repositoryId, anchorFile),
+        repositoryGraphService.getDirectDependents(repositoryId, anchorFile),
+      ]);
+      // Excludes the anchor itself in case of a self-referential edge, and
+      // never overlaps with the file already shown in full in ## Code.
+      const dependencies = deps.filter((f) => f !== anchorFile).slice(0, QA_GRAPH_NEIGHBOR_LIMIT);
+      const dependentsList = dependents.filter((f) => f !== anchorFile).slice(0, QA_GRAPH_NEIGHBOR_LIMIT);
+      if (dependencies.length > 0 || dependentsList.length > 0) {
+        context.graphNeighbors = { anchorFile, dependencies, dependents: dependentsList };
+        docRetrievalLog(
+          `  Graph augmentation fired on ${anchorFile} (sim=${Number(codeChunks[0].similarity).toFixed(4)}): ` +
+            `${dependencies.length} dependenc(y/ies), ${dependentsList.length} dependent(s).`,
+        );
+      }
     }
 
     return context;

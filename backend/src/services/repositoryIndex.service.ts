@@ -9,6 +9,7 @@ import {
 } from "../utils/transactionBuffer.js";
 import { RelationshipIndexingService } from "./relationshipIndexing.service.js";
 import { repositorySummarizeService } from "./repositorySummarize.service.js";
+import { appEvents, EVENT_TYPES } from "../events/eventEmitter.js";
 // TEMPORARY verification logging — see utils/readmeDebugLog.ts for removal.
 import { readmeLog, docPreview } from "../utils/readmeDebugLog.js";
 
@@ -45,10 +46,11 @@ export class RepositoryIndexingService {
 
     // Capture consistency snapshot
     const { rows: repoRows } = await pool.query(
-      "SELECT last_indexed_sha FROM repositories WHERE id = $1",
+      "SELECT last_indexed_sha, user_id FROM repositories WHERE id = $1",
       [repositoryId],
     );
     const snapshotSha = repoRows[0]?.last_indexed_sha;
+    const ownerUserId = repoRows[0]?.user_id;
     console.log(`[Index] Snapshot SHA for ${repositoryId}: ${snapshotSha || "(none — initial index)"}.`);
 
     const chunksToDelete: { filePath: string; contentHashes: string[] }[] = [];
@@ -306,6 +308,16 @@ export class RepositoryIndexingService {
       // fully done for this revision.
       if (isFinalChunk) {
         await repositorySummarizeService.enqueueSummarize(repositoryId, commitSha);
+
+        // This is the actual completion point for a chunked sync — the
+        // chunk-completion counter above just confirmed every enqueued
+        // chunk committed and the repo is now SEARCHABLE. Emitting here
+        // (rather than at enqueue time in repositorySync.service.ts) is
+        // what stops invalidation from firing before the new data exists.
+        appEvents.emit(EVENT_TYPES.REPOSITORY_SYNCED, {
+          userId: ownerUserId,
+          repositoryId,
+        });
       }
     } catch (error) {
       await client.query("ROLLBACK");

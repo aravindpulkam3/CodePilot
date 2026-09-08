@@ -48,13 +48,48 @@ export interface RetrievedContext {
   codeChunks: CodeChunkSearchResult[];
   /** Documentation sections. Always present; empty when none matched. */
   docChunks: DocChunkSearchResult[];
+  /** QA only — see QAGraphNeighbors. Absent/null when augmentation didn't fire. */
+  graphNeighbors?: QAGraphNeighbors | null;
   metadata: {
     mode: RetrievalMode;
     usedFallback: boolean;
     query: string;
     retrievalStage?: "start" | "follow_up";
     trace?: RetrievalTrace;
+    /** QA only — the text actually embedded, after any conversational blend. */
+    embeddingQuery?: string;
+    /** QA only — true when the previous user turn was folded into embeddingQuery. */
+    usedConversationalBlend?: boolean;
+    /**
+     * QA only — each evidence type's top similarity this turn (null when
+     * nothing of that type matched). Used by the provider to weight
+     * sections by relevance AND role, never to compare raw scores directly
+     * across types on their own — see the Design principle note in the Q&A
+     * retrieval plan (a 0.82 doc match and a 0.78 code match are not on one
+     * shared scale).
+     */
+    evidenceSimilarities?: {
+      repository: number | null;
+      architecture: number | null;
+      component: number | null;
+      doc: number | null;
+      code: number | null;
+    };
   };
+}
+
+/**
+ * QA only — a file's dependencies/dependents surfaced as auxiliary
+ * evidence once its top code match is a confident (not merely
+ * threshold-clearing) hit. Names only, single anchor file, single hop — see
+ * retreival.service.ts#retrieveQAContext's graph-augmentation block. Not a
+ * structural pipeline like Review's: no candidate/rerank/budget machinery,
+ * no per-changed-file expansion.
+ */
+export interface QAGraphNeighbors {
+  anchorFile: string;
+  dependencies: string[];
+  dependents: string[];
 }
 
 /**

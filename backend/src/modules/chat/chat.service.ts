@@ -9,6 +9,7 @@ import { RepositoryContextProvider } from "./providers/repositoryContext.provide
 import { ReviewContextProvider } from "./providers/reviewContext.provider.js";
 import { IssueContextProvider } from "./providers/issueContext.provider.js";
 import { activityLogService } from "../../services/activityLog.service.js";
+import { ConversationTurn } from "../../utils/conversationalQuery.js";
 
 export type StreamChunk =
   | { type: "sources"; data: any[] }
@@ -182,7 +183,16 @@ export class ChatService {
        ORDER BY created_at ASC`,
       [sessionId]
     );
-    return rows;
+
+    // metadata.sources (persisted per assistant turn, see streamMessage's
+    // saveMessage call below) surfaced at the top level — ChatInterface.tsx's
+    // Message type reads `msg.sources` directly, not `msg.metadata.sources`.
+    // Historical turns saved before this fix simply have no sources array in
+    // their metadata and fall back to [], same as if nothing had matched.
+    return rows.map((row) => ({
+      ...row,
+      sources: row.metadata?.sources ?? [],
+    }));
   }
 
   async saveMessage(
@@ -216,8 +226,8 @@ export class ChatService {
   /**
    * Universal streaming orchestrator:
    * 1. Saves user message
-   * 2. Resolves context from the appropriate provider
-   * 3. Fetches conversation history
+   * 2. Fetches conversation history (reused below for both retrieval and the LLM prompt)
+   * 3. Resolves context from the appropriate provider
    * 4. Streams response via LLM service
    * 5. Saves assistant message & executes after-hooks
    */
@@ -225,16 +235,49 @@ export class ChatService {
     session: ChatSessionRecord,
     userMessage: string,
     clerkUserId: string,
-    onChunk: (chunk: StreamChunk) => void
+    onChunk: (chunk: StreamChunk) => void,
+    // Defaults true (today's always-heavy searchability check) so any other
+    // caller that doesn't pass this explicitly keeps existing behavior.
+    isNewSession: boolean = true
   ): Promise<void> {
     // 1. Save user turn
     await this.saveMessage(session.id, "user", userMessage);
 
-    // 2. Fetch context from the registered provider
+    // 2. Fetch recent conversation history ONCE — moved ahead of
+    // buildContext (it used to run after, serving only the final LLM
+    // messages array) so the same single LIMIT 10 query can also let a
+    // retrieval-backed provider resolve dangling references ("that",
+    // "where is this implemented") in the current question.
+    const { rows: historyRows } = await pool.query(
+      `SELECT role, content
+       FROM chat_messages
+       WHERE session_id = $1
+       ORDER BY created_at DESC
+       LIMIT 10`,
+      [session.id]
+    );
+    const orderedHistory = historyRows.reverse();
+
+    const conversationHistory: LLMMessage[] = orderedHistory.map((row) => ({
+      role: row.role === "assistant" ? "assistant" : "user",
+      content: row.content,
+    }));
+    // Same rows, narrower role union — chat_messages never actually stores
+    // "system" rows, but LLMMessage's type allows one, so the two arrays
+    // can't share a single mapped value without widening ConversationTurn.
+    const recentHistory: ConversationTurn[] = orderedHistory.map((row) => ({
+      role: row.role === "assistant" ? "assistant" : "user",
+      content: row.content,
+    }));
+
+    // 3. Fetch context from the registered provider
     const normType = this.normalizeType(session.type);
     const provider = this.providers[normType] || this.providers["REPO_QA"];
 
-    const context = await provider.buildContext(session, userMessage, clerkUserId);
+    const context = await provider.buildContext(session, userMessage, clerkUserId, {
+      isNewSession,
+      recentHistory,
+    });
 
     if (context.sources && context.sources.length > 0) {
       onChunk({ type: "sources", data: context.sources });
@@ -242,23 +285,6 @@ export class ChatService {
     if (context.metadata) {
       onChunk({ type: "metadata", data: context.metadata });
     }
-
-    // 3. Fetch recent conversation history
-    const { rows: historyRows } = await pool.query(
-      `SELECT role, content 
-       FROM chat_messages 
-       WHERE session_id = $1 
-       ORDER BY created_at DESC 
-       LIMIT 10`,
-      [session.id]
-    );
-
-    const conversationHistory: LLMMessage[] = historyRows
-      .reverse()
-      .map((row) => ({
-        role: row.role === "assistant" ? "assistant" : "user",
-        content: row.content,
-      }));
 
     // 4. Build prompt
     const messages: LLMMessage[] = [
@@ -277,12 +303,15 @@ export class ChatService {
       }
     }
 
-    // 6. Save assistant turn to database
+    // 6. Save assistant turn to database — sources persisted alongside the
+    // existing count metadata so citation badges survive a reload instead
+    // of only ever existing for the live-streamed turn (context.sources is
+    // the same array already sent over the "sources" SSE event above).
     await this.saveMessage(
       session.id,
       "assistant",
       fullAiResponse,
-      context.metadata || {}
+      { ...(context.metadata || {}), sources: context.sources || [] }
     );
 
     // 7. Update session timestamp

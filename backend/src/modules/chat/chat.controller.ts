@@ -80,8 +80,14 @@ export const sendMessageStream = async (req: Request, res: Response) => {
 
   try {
     let session;
+    // Whether this is the session's first turn — REPO_QA/QA always create a
+    // fresh row via getOrCreateSession (no lookup-and-reuse path, unlike
+    // ISSUE_CHAT), so an absent/"new" sessionId reliably means "first turn"
+    // for the providers that actually care (RepositoryContextProvider).
+    let isNewSession: boolean;
     if (sessionId && sessionId !== "new") {
       session = await chatService.getSession(sessionId, userId);
+      isNewSession = false;
     } else {
       session = await chatService.getOrCreateSession({
         userId,
@@ -90,6 +96,7 @@ export const sendMessageStream = async (req: Request, res: Response) => {
         reviewId,
         findingId,
       });
+      isNewSession = true;
     }
 
     // Set Server-Sent Events (SSE) headers
@@ -108,7 +115,8 @@ export const sendMessageStream = async (req: Request, res: Response) => {
       clerkUserId,
       (chunk) => {
         res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-      }
+      },
+      isNewSession
     );
 
     res.end();

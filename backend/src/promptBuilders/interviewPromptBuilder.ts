@@ -1,6 +1,8 @@
 import { LLMMessage } from "../services/llm.service.js";
 import { InterviewConfig, InterviewState, MAX_TURNS_ON_FOCUS, MAX_TURNS_ON_MODULE } from "../types/interviewTypes.js";
 import { InterviewStartContext, InterviewFollowUpContext, ModuleInventoryEntry } from "../types/retrievalTypes.js";
+import { truncate, renderCapped, renderSummaryBlock } from "./promptRendering.js";
+import { renderDocCitation, renderCodeCitation } from "./sharedCitations.js";
 
 /**
  * The single most important rule in either prompt. Stated as an explicit
@@ -45,61 +47,24 @@ GOOD (grounded in README, not code):          "The README frames this as optimiz
 
 If the context below is empty, say so honestly instead of inventing repository details you haven't seen.`;
 
+// NOT built from sharedCitations.ts's BASE_SOURCE_AUTHORITY by
+// concatenation, even though the two say roughly the same thing: this
+// project's own [Stay N] label and the "disagreement is itself excellent
+// interview material"/WHY-shaped-question framing are genuinely
+// interview-specific wording, already live-verified as part of the v3
+// conversational-voice redesign. Kept as its own local constant so that
+// redesign's exact, already-tested text is never silently altered by an
+// unrelated refactor — Q&A's BASE_SOURCE_AUTHORITY is the shared piece for
+// wording that's actually identical across pipelines, not a base this text
+// is derived from.
 const SOURCE_AUTHORITY = `Source authority:
 - Documentation ([Doc N]) states the maintainer's documented intent, setup, and project description — authoritative for WHAT THE PROJECT IS FOR and HOW TO RUN IT.
 - Code ([Source N] / [Stay N]) is authoritative for WHAT THE SYSTEM ACTUALLY DOES TODAY.
 - If documentation and code disagree, trust the code — and say so; that disagreement is itself excellent interview material.
 - Documentation is good material for WHY-shaped questions (design intent, tradeoffs, the reasoning behind a choice) rather than definitional ones ("what is X") — but don't force every such question into one fixed sentence shape. If a [Doc N] block and a [Source N]/[Stay N] block appear together and actually disagree, that discrepancy is itself excellent interview material — point it out.`;
 
-/** Common fields across RepositorySummary/ArchitectureSummary/ComponentSummary — enough for a short orientation block without a per-type renderer. */
-function renderSummaryBlock(summary: unknown): string {
-  const s = summary as any;
-  if (!s) return "";
-  return truncate(
-    [
-      s.purpose ? `Purpose: ${s.purpose}` : null,
-      s.summary ? `Summary: ${s.summary}` : null,
-      s.architectureStyle ? `Style: ${s.architectureStyle}` : null,
-      s.majorComponents?.length ? `Major components: ${s.majorComponents.join(", ")}` : null,
-      s.responsibilities?.length ? `Responsibilities: ${s.responsibilities.join(", ")}` : null,
-      s.techStack?.length ? `Tech stack: ${s.techStack.join(", ")}` : null,
-      s.technologies?.length ? `Technologies: ${s.technologies.join(", ")}` : null,
-    ]
-      .filter(Boolean)
-      .join("\n"),
-    1000,
-  );
-}
-
 function renderModuleList(modules: ModuleInventoryEntry[]): string {
   return modules.map((m) => `- ${m.module} (${m.fileCount} file${m.fileCount === 1 ? "" : "s"})`).join("\n");
-}
-
-/** Truncates PRESERVING structure (newlines, code formatting) — unlike
- * utils/readmeDebugLog.ts's docPreview, which collapses whitespace for a
- * single-line LOG message and would mangle code shown to the model. */
-function truncate(text: string, maxChars: number): string {
-  if (!text) return "";
-  return text.length <= maxChars ? text : `${text.slice(0, maxChars)}\n...[truncated]`;
-}
-
-/**
- * Renders as many whole items as fit under a combined character budget,
- * always including at least the first even if it alone exceeds the cap.
- * This is how "smallest amount of highly relevant context" (not a token
- * budget service) is enforced per block — see the context-budget table in
- * the design doc.
- */
-function renderCapped<T>(items: T[], render: (item: T, index: number) => string, maxChars: number): string {
-  const parts: string[] = [];
-  let total = 0;
-  for (let i = 0; i < items.length; i++) {
-    const piece = render(items[i], i);
-    if (parts.length > 0 && total + piece.length > maxChars) break;
-    parts.push(piece);
-    total += piece.length;
-  }
-  return parts.join("\n\n");
 }
 
 export class InterviewPromptBuilder {
@@ -113,7 +78,7 @@ export class InterviewPromptBuilder {
     // module inventory, documentation, and (READY-gated) summaries below.
     const docBlock = renderCapped(
       context.docChunks,
-      (d, i) => `[Doc ${i + 1}]: ${d.filePath} § ${d.sectionPath}\n${truncate(d.content, 1200)}`,
+      (d, i) => renderDocCitation(d, i, 1200),
       2500,
     );
 
@@ -195,12 +160,12 @@ export class InterviewPromptBuilder {
     // asked. Code only at FILE granularity (see retreival.service.ts).
     const groundingCode = renderCapped(
       context.groundingCode,
-      (c, i) => `[Source ${i + 1}]: ${c.filePath} (Lines ${c.lineStart}-${c.lineEnd})\n\`\`\`\n${truncate(c.content, 1500)}\n\`\`\``,
+      (c, i) => renderCodeCitation(c, i, 1500),
       4000,
     );
     const groundingDocs = renderCapped(
       context.groundingDocs,
-      (d, i) => `[Doc ${i + 1}]: ${d.filePath} § ${d.sectionPath}\n${truncate(d.content, 1000)}`,
+      (d, i) => renderDocCitation(d, i, 1000),
       2000,
     );
     const groundingSummaryBlock = renderSummaryBlock(context.groundingSummary);
@@ -208,12 +173,12 @@ export class InterviewPromptBuilder {
     // STAY — deeper material at the SAME granularity as the question just asked.
     const stayCode = renderCapped(
       context.stayCode,
-      (c, i) => `[Stay ${i + 1}]: ${c.filePath} (Lines ${c.lineStart}-${c.lineEnd})\n\`\`\`\n${truncate(c.content, 1200)}\n\`\`\``,
+      (c, i) => renderCodeCitation(c, i, 1200, "Stay"),
       3000,
     );
     const stayDocs = renderCapped(
       context.stayDocs,
-      (d, i) => `[Deeper Doc ${i + 1}]: ${d.filePath} § ${d.sectionPath}\n${truncate(d.content, 1000)}`,
+      (d, i) => renderDocCitation(d, i, 1000, "Deeper Doc"),
       2000,
     );
     const staySummaryBlock = renderSummaryBlock(context.staySummary);
