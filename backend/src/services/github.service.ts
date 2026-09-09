@@ -141,21 +141,18 @@ export const getRepositoryPullRequests = async (clerkUserId: string, repoId: str
 export const getPullRequestDetails = async (
   clerkUserId: string,
   repositoryId: string,
-  pullNumber: number
+  pullNumber: number,
+  // Lets callers that already loaded the repo row (e.g. review generation)
+  // skip a second identical findRepositoryById lookup.
+  preFetchedRepo?: repositoryService.RepositoryRow,
 ) => {
-  // 1. Using your correct token function
-  const token = await getGitHubAccessToken(clerkUserId); 
-  
-  // 2. Using your correct repository lookup function
-  const repo = await repositoryService.findRepositoryById(repositoryId);
+  const token = await getGitHubAccessToken(clerkUserId);
 
-  // 3. THE FIX (TS18047): Tell TypeScript we are handling the null case
+  const repo = preFetchedRepo ?? await repositoryService.findRepositoryById(repositoryId);
   if (!repo) {
     throw new Error(`Repository with ID ${repositoryId} not found.`);
   }
 
-  // From this line onward, TypeScript knows 'repo' is safe and not null!
-  
   const prResponse = await axios.get(
     `https://api.github.com/repos/${repo.owner}/${repo.name}/pulls/${pullNumber}`,
     {

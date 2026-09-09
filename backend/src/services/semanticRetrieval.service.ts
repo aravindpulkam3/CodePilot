@@ -1,5 +1,6 @@
 import { pool } from "../config/db.js";
 import { embedder } from "./embedding.service.js";
+import { withCache } from "../utils/cache.js";
 import type { CodeChunkSearchResult, DocChunkSearchResult, RetrievalOptions, SummarySearchResult } from "../types/retrievalTypes.js";
 // TEMPORARY verification logging — see utils/readmeDebugLog.ts for removal.
 import { docRetrievalLog, isReadmeDebugEnabled } from "../utils/readmeDebugLog.js";
@@ -306,12 +307,14 @@ export class SemanticRetrievalService {
    * interview.service.ts#resolveFocus.
    */
   public async listIndexedFilePaths(repositoryId: string): Promise<string[]> {
-    const { rows } = await pool.query(
-      `SELECT DISTINCT file_path FROM repository_embeddings
-       WHERE repository_id = $1 AND symbol_type <> 'documentation'`,
-      [repositoryId],
-    );
-    return rows.map((r) => r.file_path);
+    return withCache(`repo:${repositoryId}:indexed-paths`, 600, async () => {
+      const { rows } = await pool.query(
+        `SELECT DISTINCT file_path FROM repository_embeddings
+         WHERE repository_id = $1 AND symbol_type <> 'documentation'`,
+        [repositoryId],
+      );
+      return rows.map((r) => r.file_path);
+    });
   }
 
   /**
@@ -388,26 +391,28 @@ export class SemanticRetrievalService {
     nodeType: "repository" | "architecture" | "component" | "file",
     limit: number = 10,
   ): Promise<SummarySearchResult[]> {
-    const client = await pool.connect();
-    try {
-      const { rows } = await client.query(
-        `SELECT node_type, node_key, parent_key, summary_json
-         FROM repository_summaries
-         WHERE repository_id = $1 AND node_type = $2
-         LIMIT $3`,
-        [repositoryId, nodeType, limit],
-      );
+    return withCache(`repo:${repositoryId}:summary:${nodeType}:${limit}`, 600, async () => {
+      const client = await pool.connect();
+      try {
+        const { rows } = await client.query(
+          `SELECT node_type, node_key, parent_key, summary_json
+           FROM repository_summaries
+           WHERE repository_id = $1 AND node_type = $2
+           LIMIT $3`,
+          [repositoryId, nodeType, limit],
+        );
 
-      return rows.map((r) => ({
-        nodeType: r.node_type,
-        nodeKey: r.node_key,
-        parentKey: r.parent_key,
-        summary: r.summary_json,
-        similarity: 1.0,
-      }));
-    } finally {
-      client.release();
-    }
+        return rows.map((r) => ({
+          nodeType: r.node_type,
+          nodeKey: r.node_key,
+          parentKey: r.parent_key,
+          summary: r.summary_json,
+          similarity: 1.0,
+        }));
+      } finally {
+        client.release();
+      }
+    });
   }
 
   public async resolveComponentFiles(

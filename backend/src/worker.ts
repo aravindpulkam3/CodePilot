@@ -12,13 +12,7 @@ import { repositorySummarizeService } from "./services/repositorySummarize.servi
 
 console.log("Starting BullMQ Workers...");
 
-// Jobs are durable by design — that's the point of a queue instead of doing
-// this inline on the request (the worker can restart/be down without losing
-// work). But a job queued while the worker was down has no natural upper
-// bound on how long it waits; without this, restarting the worker after it's
-// been off for a while fires every backlog request at once, including ones
-// tied to a browser session nobody's looking at anymore. Anything older than
-// this just gets skipped instead of silently running late.
+// Jobs are durable by design — that's the point of a queue instead of doing this inline on the request (the worker can restart/be down without losing work). But a job queued while the worker was down has no natural upper bound on how long it waits; without this, restarting the worker after it's been off for a while fires every backlog request at once, including ones tied to a browser session nobody's looking at anymore. Anything older than this just gets skipped instead of silently running late.
 const MAX_JOB_AGE_MS = 60 * 60 * 1000; // 1 hour
 
 function isTooStale(job: { id?: string; timestamp: number }): boolean {
@@ -120,7 +114,10 @@ const summarizeWorker = new Worker(
     console.log(
       `[SummarizeWorker] Processing Job ${job.id} for Repo ${repositoryId} (target ${targetSha})`,
     );
-    return await repositorySummarizeService.processSummarizeJob(repositoryId, targetSha);
+    return await repositorySummarizeService.processSummarizeJob(
+      repositoryId,
+      targetSha,
+    );
   },
   {
     connection: createQueueConnection(),
@@ -139,7 +136,10 @@ summarizeWorker.on("completed", async (job) => {
     try {
       await repositorySummarizeService.reconverge(repositoryId);
     } catch (err) {
-      console.error(`[SummarizeWorker] Reconverge check failed for ${repositoryId}:`, err);
+      console.error(
+        `[SummarizeWorker] Reconverge check failed for ${repositoryId}:`,
+        err,
+      );
     }
   }
 });
@@ -151,7 +151,10 @@ summarizeWorker.on("failed", async (job, err) => {
     try {
       await repositorySummarizeService.reconverge(repositoryId);
     } catch (e) {
-      console.error(`[SummarizeWorker] Reconverge check failed for ${repositoryId}:`, e);
+      console.error(
+        `[SummarizeWorker] Reconverge check failed for ${repositoryId}:`,
+        e,
+      );
     }
   }
 });

@@ -50,9 +50,7 @@ export function buildDocumentationQuery(
   }
 
   // Thin prose. Fall back to BASENAMES only — never full paths.
-  //
-  // "backend/src/services/auth.service.ts" is mostly directory structure, and
-  // that structure is what drags a query toward a README's file-tree section.
+  // "backend/src/services/auth.service.ts" is mostly directory structure, and that structure is what drags a query toward a README's file-tree section.
   // "auth.service" is the part that actually describes the subject.
   const basenames = Array.from(
     new Set(

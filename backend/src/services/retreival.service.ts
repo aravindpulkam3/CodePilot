@@ -204,7 +204,7 @@ export class RepositoryRetrievalService {
   }
 
   /**
-   * Read-only readiness check — no sync enqueue, no polling, no GitHub round
+   *R ead-only readiness check — no sync enqueue, no polling, no GitHub round
    * trip. Throws the same catchable error strings as ensureSearchable when
    * the repo isn't currently searchable, but returns instantly otherwise.
    *
@@ -850,14 +850,6 @@ export class RepositoryRetrievalService {
     query: string,
     changedFiles: string[],
     opts?: RetrievalOptions,
-    /**
-     * Separate query for documentation retrieval. Code retrieval wants the
-     * changed file list; prose retrieval is actively harmed by it (a README's
-     * file-tree section outscores its behaviour sections). Pass null to skip
-     * documentation entirely — see buildDocumentationQuery. Omitting the
-     * argument falls back to `query`, preserving the old behaviour for any
-     * other caller.
-     */
     docQuery?: string | null,
   ): Promise<RetrievedContext> {
     const startTime = performance.now();
@@ -947,11 +939,16 @@ export class RepositoryRetrievalService {
     // EXPANSION only — every changed file still appears in the diff.
     const expansionFiles = changedFiles.slice(0, REVIEW_LIMITS.maxChangedFilesForExpansion);
 
+    // Batched across all expansion files (2 queries total) instead of one
+    // deps+dependents round trip per file.
+    const [depsByFile, dependentsByFile] = await Promise.all([
+      repositoryGraphService.getDirectDependenciesForFiles(repositoryId, expansionFiles),
+      repositoryGraphService.getDirectDependentsForFiles(repositoryId, expansionFiles),
+    ]);
+
     for (const file of expansionFiles) {
-      const [deps, dependents] = await Promise.all([
-        repositoryGraphService.getDirectDependencies(repositoryId, file),
-        repositoryGraphService.getDirectDependents(repositoryId, file),
-      ]);
+      const deps = depsByFile.get(file) ?? [];
+      const dependents = dependentsByFile.get(file) ?? [];
 
       // Tests are derived from the dependents we already have, rather than
       // calling discoverTestsForFile (which would re-run the same query).

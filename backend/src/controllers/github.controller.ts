@@ -49,8 +49,10 @@ export const getRepositories = async (req: Request, res: Response) => {
     
     const appUserId = req.dbUser!.id
 
-    const repositories = await withCache(`user:${appUserId}:repos`, 300, async () => {
-      // Fetch from GitHub and upsert into Postgres
+    // Throttle the GitHub sync/upsert, not the read — the repo list itself
+    // always comes straight from Postgres so a newly imported/removed repo
+    // shows up on the very next request instead of waiting out a TTL.
+    await withCache(`github:sync:${appUserId}`, 60, async () => {
       try {
         await syncAndGetGitHubRepositories(clerkUserId, appUserId);
       } catch (e: any) {
@@ -59,10 +61,10 @@ export const getRepositories = async (req: Request, res: Response) => {
         }
         // If not connected, we still want to return any 'public_import' repos they might have
       }
-      
-      // Fetch ALL repositories for this user (connected + public_import) from the database
-      return await findRepositoriesByUserId(appUserId);
+      return true;
     });
+
+    const repositories = await findRepositoriesByUserId(appUserId);
 
     return res.status(200).json(repositories);
     
@@ -82,7 +84,9 @@ export const getPullRequests = async (req: Request, res: Response) => {
     const clerkUserId = req.dbUser!.clerkId;
     const repoId = req.params.repositoryId as string;
 
-    const pulls = await getRepositoryPullRequests(clerkUserId, repoId);
+    const pulls = await withCache(`repo:${repoId}:pulls`, 90, () =>
+      getRepositoryPullRequests(clerkUserId, repoId),
+    );
     return res.status(200).json(pulls);
   } catch (error: any) {
     if (error.message === 'REPO_NOT_FOUND') {
@@ -98,7 +102,9 @@ export const getPullRequestDetail = async (req: Request, res: Response) => {
     const repoId = req.params.repositoryId as string;
     const pullNumber = parseInt(req.params.pullNumber as string, 10);
 
-    const prDetail = await getPullRequestDetails(clerkUserId, repoId, pullNumber);
+    const prDetail = await withCache(`repo:${repoId}:pr:${pullNumber}:details`, 90, () =>
+      getPullRequestDetails(clerkUserId, repoId, pullNumber),
+    );
     return res.status(200).json(prDetail);
   } catch (error: any) {
     if (error.message === 'REPO_NOT_FOUND') {

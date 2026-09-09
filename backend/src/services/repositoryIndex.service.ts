@@ -4,9 +4,7 @@ import { documentationChunker } from "./documentationChunking.service.js";
 import { isDocumentationFile } from "../utils/documentationPaths.js";
 import { embedder } from "./embedding.service.js";
 import { extractLocalImports } from "../utils/importResolver.js";
-import {
-  MemoryRelationshipIndexer,
-} from "../utils/transactionBuffer.js";
+import { MemoryRelationshipIndexer } from "../utils/transactionBuffer.js";
 import { RelationshipIndexingService } from "./relationshipIndexing.service.js";
 import { repositorySummarizeService } from "./repositorySummarize.service.js";
 import { appEvents, EVENT_TYPES } from "../events/eventEmitter.js";
@@ -51,7 +49,9 @@ export class RepositoryIndexingService {
     );
     const snapshotSha = repoRows[0]?.last_indexed_sha;
     const ownerUserId = repoRows[0]?.user_id;
-    console.log(`[Index] Snapshot SHA for ${repositoryId}: ${snapshotSha || "(none — initial index)"}.`);
+    console.log(
+      `[Index] Snapshot SHA for ${repositoryId}: ${snapshotSha || "(none — initial index)"}.`,
+    );
 
     const chunksToDelete: { filePath: string; contentHashes: string[] }[] = [];
     const chunksToInsert: any[] = [];
@@ -76,14 +76,16 @@ export class RepositoryIndexingService {
     for (const file of changedFiles) {
       if (file.status === "removed") {
         chunksToDelete.push({ filePath: file.path, contentHashes: [] }); // Empty array means delete all for file
-        await memRelationshipIndexer.deleteFileRelationships(repositoryId, file.path);
+        await memRelationshipIndexer.deleteFileRelationships(
+          repositoryId,
+          file.path,
+        );
         continue;
       }
 
       if (!file.content) continue;
 
-      // Documentation (README) is chunked by Markdown structure rather than
-      // by AST — but into the SAME table, in this SAME transaction, stamped
+      // Documentation (README) is chunked by Markdown structure rather than by AST — but into the SAME table, in this SAME transaction, stamped
       // with this SAME commitSha as the code chunks around it. That is what
       // guarantees retrieval can never serve README content from a different
       // revision than the code it is reasoned about alongside.
@@ -101,7 +103,9 @@ export class RepositoryIndexingService {
       const newHashes = new Set(newChunks.map((c) => c.content_hash));
 
       if (isDoc) {
-        readmeLog(`Chunked "${file.path}" into ${newChunks.length} section(s):`);
+        readmeLog(
+          `Chunked "${file.path}" into ${newChunks.length} section(s):`,
+        );
         newChunks.forEach((c, i) => {
           readmeLog(
             `  [${i + 1}/${newChunks.length}] § "${c.symbol_name}" ` +
@@ -164,10 +168,21 @@ export class RepositoryIndexingService {
       // Skipped for documentation: Markdown has no imports to resolve, and
       // extractFileAstMetadata would return null for it anyway.
       if (!isDoc) {
-        const astMeta = await astChunker.extractFileAstMetadata(file.path, file.content);
+        const astMeta = await astChunker.extractFileAstMetadata(
+          file.path,
+          file.content,
+        );
         if (astMeta) {
-          const localImports = extractLocalImports(astMeta.filePath, astMeta.imports, knownPaths);
-          await memRelationshipIndexer.indexFileRelationships(repositoryId, astMeta.filePath, localImports);
+          const localImports = extractLocalImports(
+            astMeta.filePath,
+            astMeta.imports,
+            knownPaths,
+          );
+          await memRelationshipIndexer.indexFileRelationships(
+            repositoryId,
+            astMeta.filePath,
+            localImports,
+          );
         }
       }
     }
@@ -270,7 +285,8 @@ export class RepositoryIndexingService {
          RETURNING index_chunks_done, index_chunks_total`,
         [repositoryId, changedFiles.length],
       );
-      const { index_chunks_done: chunksDone, index_chunks_total: chunksTotal } = progressRows[0];
+      const { index_chunks_done: chunksDone, index_chunks_total: chunksTotal } =
+        progressRows[0];
       const isFinalChunk = chunksTotal != null && chunksDone >= chunksTotal;
 
       if (isFinalChunk) {
@@ -282,11 +298,15 @@ export class RepositoryIndexingService {
            WHERE id = $2`,
           [commitSha, repositoryId],
         );
-        console.log(`[Index] Repo ${repositoryId} marked SEARCHABLE at ${commitSha}.`);
+        console.log(
+          `[Index] Repo ${repositoryId} marked SEARCHABLE at ${commitSha}.`,
+        );
       }
 
       await client.query("COMMIT");
-      console.log(`[Index] Transaction committed for ${repositoryId} (chunk ${chunksDone}/${chunksTotal}).`);
+      console.log(
+        `[Index] Transaction committed for ${repositoryId} (chunk ${chunksDone}/${chunksTotal}).`,
+      );
 
       // Doc rows are committed by this SAME transaction, at this SAME
       // commitSha, as the code rows around them — that shared stamp is what
@@ -307,7 +327,10 @@ export class RepositoryIndexingService {
       // Outside the transaction — kick off Phase 2 only once Phase 1 is
       // fully done for this revision.
       if (isFinalChunk) {
-        await repositorySummarizeService.enqueueSummarize(repositoryId, commitSha);
+        await repositorySummarizeService.enqueueSummarize(
+          repositoryId,
+          commitSha,
+        );
 
         // This is the actual completion point for a chunked sync — the
         // chunk-completion counter above just confirmed every enqueued
@@ -321,7 +344,10 @@ export class RepositoryIndexingService {
       }
     } catch (error) {
       await client.query("ROLLBACK");
-      console.error(`[Index] Error during indexing transaction for ${repositoryId}:`, error);
+      console.error(
+        `[Index] Error during indexing transaction for ${repositoryId}:`,
+        error,
+      );
       try {
         await pool.query(
           `UPDATE repositories SET indexing_status = 'FAILED' WHERE id = $1`,

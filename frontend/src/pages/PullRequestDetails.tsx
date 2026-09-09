@@ -9,13 +9,7 @@ import { DiffViewer } from "@/components/review/DiffViewer";
 import { ReviewAIPanel, ReviewAiPanelScope } from "@/components/review/ReviewAIPanel";
 import { Finding, compareBySeverity, getFindingsForFile } from "@/types/reviewTypes";
 
-/**
- * PR Review workspace: a compact PullRequestBar (this page's entire
- * chrome — RepositoryLayout renders no header/sub-nav on this route) over
- * a three-pane row (changed files -> diff -> AI panel). Code-dominant by
- * construction: the rail and AI panel are both shrink-0 at modest widths,
- * the diff pane is flex-1 and always the largest region.
- */
+
 export default function PullRequestDetails() {
   const { repositoryId, pullNumber } = useParams<{ repositoryId: string; pullNumber: string }>();
 

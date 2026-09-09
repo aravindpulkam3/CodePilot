@@ -8,6 +8,7 @@ import { repositorySyncService } from "./repositorySync.service.js";
 import { isDocumentationFile } from "../utils/documentationPaths.js";
 import { buildDocumentationQuery } from "../utils/documentationQuery.js";
 import { appEvents, EVENT_TYPES } from "../events/eventEmitter.js";
+import { withCache } from "../utils/cache.js";
 // TEMPORARY verification logging — see utils/readmeDebugLog.ts for removal.
 import { docRetrievalLog } from "../utils/readmeDebugLog.js";
 export interface StructuredReview {
@@ -37,22 +38,26 @@ export class ReviewService {
     const client = await pool.connect();
 
     try {
-      // 1. Fetch Repository using your existing helper
+      // 1. Fetch Repository
       const repoDetails = await findRepositoryById(repositoryId);
       if (!repoDetails) {
         throw new Error("Repository not found in database.");
       }
-      // 2. Fetch GitHub PR Data
+      // 2. Fetch GitHub PR Data — always fresh, never cached (correctness-critical: review generation must see the latest commit, not a stale diff).
       const prDetails = await githubService.getPullRequestDetails(
         clerkUserId,
         repositoryId,
         pullNumber,
+        repoDetails,
       );
       const headSha = prDetails.head_sha || "unknown_sha";
 
+      // We just fetched this PR's real current state — invalidate any
+      // display cache for it now instead of waiting out its TTL.
+      appEvents.emit(EVENT_TYPES.PR_UPDATED, { repositoryId, pullNumber });
+
       // Renamed files are listed by GitHub under their NEW name, but the index
-      // holds the old one — so every graph and chunk lookup would miss. Include
-      // both so structural expansion still finds the file's callers and tests.
+      // holds the old one — so every graph and chunk lookup would miss. Include both so structural expansion still finds the file's callers and tests.
       const changedFilePaths: string[] = [];
       for (const f of prDetails.files as any[]) {
         changedFilePaths.push(f.filename);
@@ -66,17 +71,10 @@ export class ReviewService {
 
       // Documentation gets its OWN query, deliberately excluding the file list.
       //
-      // ragQuery is dominated by file paths, and the sections that match a
-      // path-heavy string are the ones that CONTAIN paths — "Project
-      // Structure" is literally a file tree, "Installation" is full of
-      // commands and directories. Observed twice in practice: PRs about
-      // routing and dependencies pulled Prerequisites / Project Structure /
-      // Installation while the sections describing the changed behaviour
-      // scored lower.
-      //
-      // Title and description are the human-language statement of what the
-      // change does, which is what prose should be matched against. File
-      // paths are already handled far better by the structural stages.
+      // ragQuery is dominated by file paths, and the sections that match a path-heavy string are the ones that CONTAIN paths — "Project Structure" is literally a file tree, "Installation" is full of commands and directories. Observed twice in practice: PRs about
+      // routing and dependencies pulled Prerequisites / Project Structure
+      // Installation while the sections describing the changed behaviour scored lower.
+      // Title and description are the human-language statement of what the change does, which is what prose should be matched against. File paths  are already handled far better by the structural stages.
       const docQuery = buildDocumentationQuery(
         prDetails.title,
         prDetails.description,
@@ -275,6 +273,7 @@ export class ReviewService {
       appEvents.emit(EVENT_TYPES.PR_REVIEW_COMPLETED, {
         userId: repoDetails.user_id,
         repositoryId,
+        pullNumber,
       });
 
       return { reviewId: newReviewId, ...aiReview };
@@ -294,32 +293,44 @@ export const getReviewsForPullRequest = async (
   repositoryId: string,
   pullNumber: number,
 ) => {
-  // 1. Fetch all reviews for this PR, ordered by newest first
-  const { rows: reviews } = await pool.query(
-    `SELECT * FROM reviews 
-     WHERE repository_id = $1 AND pull_number = $2 
-     ORDER BY created_at DESC`,
-    [repositoryId, pullNumber],
-  );
+  const reviews = await withCache(`repo:${repositoryId}:pr:${pullNumber}:reviews`, 300, async () => {
+    const { rows } = await pool.query(
+      `SELECT * FROM reviews
+       WHERE repository_id = $1 AND pull_number = $2
+       ORDER BY created_at DESC`,
+      [repositoryId, pullNumber],
+    );
+    return rows;
+  });
 
   if (reviews.length === 0) {
     return { latest: null, history: [] };
   }
 
-  // 2. Separate the latest review from the historical ones
   const latest = reviews.find((r) => r.is_latest) || reviews[0];
   const history = reviews.filter((r) => r.id !== latest.id);
 
-  // 3. Fetch the specific inline findings only for the latest review
-  const { rows: findings } = await pool.query(
-    `SELECT * FROM review_findings WHERE review_id = $1 ORDER BY file_path, line_number`,
-    [latest.id],
-  );
-
-  // 4. Bump last_accessed_at for the latest review
+  // Runs on every call, cache hit or miss — this drives the dashboard's
+  // "recent work" ordering, so a cache hit must not silently stop counting
+  // a viewer's visit as engagement.
   await pool.query(
     `UPDATE reviews SET last_accessed_at = NOW() WHERE id = $1`,
     [latest.id]
+  );
+
+  // Keyed by head_sha, not TTL alone: a review's findings never change
+  // once written, so this cache can never go stale — a new review just
+  // produces a new key.
+  const findings = await withCache(
+    `repo:${repositoryId}:pr:${pullNumber}:review:${latest.head_sha}:findings`,
+    3600,
+    async () => {
+      const { rows } = await pool.query(
+        `SELECT * FROM review_findings WHERE review_id = $1 ORDER BY file_path, line_number`,
+        [latest.id],
+      );
+      return rows;
+    },
   );
 
   return {

@@ -8,6 +8,7 @@ import { MemorySummaryStore } from "../utils/transactionBuffer.js";
 import { summarizeQueue } from "../config/queues.js";
 import { enqueueWithDedup } from "../utils/queueHelpers.js";
 import { FileChange } from "./repositoryIndex.service.js";
+import { appEvents, EVENT_TYPES } from "../events/eventEmitter.js";
 // TEMPORARY verification logging — see utils/readmeDebugLog.ts for removal.
 import { docSummaryLog, docPreview } from "../utils/readmeDebugLog.js";
 
@@ -42,7 +43,7 @@ export class RepositorySummarizeService {
 
     // 1. Current state
     const { rows } = await pool.query(
-      `SELECT r.name, r.owner, r.source_type, r.last_indexed_sha, r.last_summarized_sha, au.clerk_id
+      `SELECT r.name, r.owner, r.source_type, r.last_indexed_sha, r.last_summarized_sha, r.user_id, au.clerk_id
        FROM repositories r JOIN app_users au ON au.id = r.user_id
        WHERE r.id = $1`,
       [repositoryId],
@@ -228,6 +229,7 @@ export class RepositorySummarizeService {
         );
         await client.query("COMMIT");
         console.log(`[Summarize] ${repo.name} marked READY at ${targetSha}.`);
+        appEvents.emit(EVENT_TYPES.REPOSITORY_INDEXED, { userId: repo.user_id, repositoryId });
       }
     } catch (error) {
       await client.query("ROLLBACK");

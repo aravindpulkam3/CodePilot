@@ -6,33 +6,14 @@ import { ChunkMetadata } from "./astChunking.service.js";
  * Structure-aware Markdown chunker for documentation files (README today).
  *
  * Emits the same `ChunkMetadata` shape the AST chunker produces, so every
- * downstream stage — content-hash delta detection, embedding, insert/delete,
- * orphan cleanup — works unchanged. There is no separate documentation
- * pipeline and no separate table.
- *
- * The guiding rule is: split on Markdown STRUCTURE, never on raw line
- * offsets. A README's value lives in exactly the things an arbitrary cut
- * destroys — a truncated `docker compose` invocation, half a config table, a
- * setup sequence severed mid-step. A chunk like that retrieves confidently
- * and is actively wrong, which is worse than not retrieving at all. Raw line
- * splitting survives only as a last resort, applied to a single indivisible
- * block that is oversized on its own (see `splitBlockByLines`).
  */
 
-// maxLines mirrors CHUNK_LIMITS in astChunking.service.ts. maxChars is a
-// conservative proxy for gemini-embedding-001's 2048-token input limit —
-// nothing in this codebase counts tokens, and the line cap alone does not
-// bound dense prose. It errs small for non-Latin scripts, which is the safe
-// direction.
 const DOC_CHUNK_LIMITS = {
   maxLines: 200,
   maxChars: 6000,
   overlapLines: 10,
 };
 
-// Bounds the sequential-scan cost a single pathological document can add.
-// Dropping from the tail keeps the overview and setup sections — the
-// highest-value ones — and discards trailing changelog/appendix material.
 const MAX_CHUNKS_PER_DOCUMENT = 40;
 
 const INTRO_SECTION_NAME = "(intro)";
@@ -240,19 +221,7 @@ export class DocumentationChunkingService {
     return blocks.map((b) => b.lines.join("\n")).join("\n\n");
   }
 
-  /**
-   * True when a section has actual body content, not just its own heading.
-   *
-   * A heading whose content lives entirely in its child sections ("## Getting
-   * Started" followed immediately by "### Prerequisites") produces a section
-   * containing nothing but the heading line. Embedding that costs an API
-   * call, a stored row, and sequential-scan time on every future search, and
-   * returns text the children already carry in their own breadcrumbs. Same
-   * for decorative headers like "## Screenshots" above a bare image link.
-   *
-   * The intro section has no heading block at all, so it is kept whenever it
-   * has any content — which is what the `kind !== "heading"` test gives us.
-   */
+ 
   private hasBody(section: Section): boolean {
     return section.blocks.some(
       (b) => b.kind !== "heading" && b.lines.join("").trim().length > 0,

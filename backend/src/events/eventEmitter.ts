@@ -12,6 +12,7 @@ export const EVENT_TYPES = {
   REPOSITORY_ADDED: "repository.added",
   REPOSITORY_REMOVED: "repository.removed",
   PR_REVIEW_COMPLETED: "pr_review.completed",
+  PR_UPDATED: "pr.updated",
 };
 
 /**
@@ -31,17 +32,26 @@ appEvents.on(EVENT_TYPES.REPOSITORY_REMOVED, async ({ userId }) => {
 appEvents.on(EVENT_TYPES.REPOSITORY_SYNCED, async ({ userId, repositoryId }) => {
   await invalidatePattern(`user:${userId}:repos*`);
   await invalidatePattern(`repo:${repositoryId}:details*`);
+  await invalidatePattern(`repo:${repositoryId}:indexed-paths`);
+  await invalidatePattern(`repo:${repositoryId}:import-fan-in`);
   await invalidatePattern(`user:${userId}:dashboard*`);
 });
 
 appEvents.on(EVENT_TYPES.REPOSITORY_INDEXED, async ({ userId, repositoryId }) => {
   await invalidatePattern(`user:${userId}:repos*`);
   await invalidatePattern(`repo:${repositoryId}:details*`);
+  await invalidatePattern(`repo:${repositoryId}:summary:*`);
   await invalidatePattern(`user:${userId}:dashboard*`);
 });
 
-appEvents.on(EVENT_TYPES.PR_REVIEW_COMPLETED, async ({ userId, repositoryId }) => {
+appEvents.on(EVENT_TYPES.PR_REVIEW_COMPLETED, async ({ userId, repositoryId, pullNumber }) => {
+  await invalidatePattern(`repo:${repositoryId}:pr:${pullNumber}:reviews*`);
   await invalidatePattern(`user:${userId}:dashboard:pending-prs*`);
   await invalidatePattern(`user:${userId}:dashboard:recent-work*`);
   await invalidatePattern(`user:${userId}:dashboard:activity*`);
+});
+
+appEvents.on(EVENT_TYPES.PR_UPDATED, async ({ repositoryId, pullNumber }) => {
+  await invalidatePattern(`repo:${repositoryId}:pulls*`);
+  await invalidatePattern(`repo:${repositoryId}:pr:${pullNumber}:details*`);
 });

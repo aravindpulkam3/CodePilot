@@ -1,6 +1,10 @@
 import { GoogleGenAI } from "@google/genai";
+import { createHash } from "crypto";
 import { ChunkMetadata } from "./astChunking.service.js";
 import type { EmbeddingClient } from "../types/summaryTypes.js";
+import { withCache } from "../utils/cache.js";
+
+const EMBEDDING_MODEL = "gemini-embedding-001";
 
 export class EmbeddingService implements EmbeddingClient {
   private ai: GoogleGenAI;
@@ -24,7 +28,7 @@ export class EmbeddingService implements EmbeddingClient {
 
     try {
       const response = await this.ai.models.embedContent({
-        model: "gemini-embedding-001",
+        model: EMBEDDING_MODEL,
         contents: textsToEmbed,
         config: {
           taskType: "RETRIEVAL_DOCUMENT",
@@ -65,30 +69,33 @@ export class EmbeddingService implements EmbeddingClient {
   }
 
   public async embedQuery(queryText: string): Promise<number[]> {
-    try {
-      const response = await this.ai.models.embedContent({
-        model: "gemini-embedding-001",
-        contents: [queryText],
-        config: {
-          // Crucial: Tells the model this is a search query, not a stored document
-          taskType: "RETRIEVAL_QUERY",
-        },
-      });
+    const hash = createHash("sha256").update(queryText).digest("hex");
+    return withCache(`embed:query:${EMBEDDING_MODEL}:${hash}`, 3600, async () => {
+      try {
+        const response = await this.ai.models.embedContent({
+          model: EMBEDDING_MODEL,
+          contents: [queryText],
+          config: {
+            // Crucial: Tells the model this is a search query, not a stored document
+            taskType: "RETRIEVAL_QUERY",
+          },
+        });
 
-      const vectorValues = response.embeddings?.[0]?.values;
-      if (!vectorValues || vectorValues.length === 0) {
-        throw new Error("Failed to generate embedding for query.");
+        const vectorValues = response.embeddings?.[0]?.values;
+        if (!vectorValues || vectorValues.length === 0) {
+          throw new Error("Failed to generate embedding for query.");
+        }
+
+        // Log the shape, never the vector itself — dumping 3072 floats on every
+        // query buries every other log line in the process.
+        console.log(`[Embedding] Query embedded as RETRIEVAL_QUERY (dim=${vectorValues.length}).`);
+
+        return vectorValues;
+      } catch (error) {
+        console.error("Error embedding query:", error);
+        throw error;
       }
-
-      // Log the shape, never the vector itself — dumping 3072 floats on every
-      // query buries every other log line in the process.
-      console.log(`[Embedding] Query embedded as RETRIEVAL_QUERY (dim=${vectorValues.length}).`);
-
-      return vectorValues;
-    } catch (error) {
-      console.error("Error embedding query:", error);
-      throw error;
-    }
+    });
   }
 
   // Generic single-text embed for anything that isn't a ChunkMetadata[] batch
@@ -102,7 +109,7 @@ export class EmbeddingService implements EmbeddingClient {
   ): Promise<number[]> {
     try {
       const response = await this.ai.models.embedContent({
-        model: "gemini-embedding-001",
+        model: EMBEDDING_MODEL,
         contents: [text],
         config: {
           taskType,
