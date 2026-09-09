@@ -1,8 +1,8 @@
 import { Worker } from "bullmq";
 import { createQueueConnection } from "./config/redis.js";
-import { repositorySyncService } from "./services/repositorySync.service.js";
-import { repositoryIndexer } from "./services/repositoryIndex.service.js";
-import { repositorySummarizeService } from "./services/repositorySummarize.service.js";
+import { repositorySyncService } from "./features/repository/repositorySync.service.js";
+import { repositoryIndexer } from "./features/repository/repositoryIndex.service.js";
+import { repositorySummarizeService } from "./features/repository/repositorySummarize.service.js";
 
 /**
  * BullMQ Worker Entry Point

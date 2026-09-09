@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import { clerkMiddleware, getAuth } from "@clerk/express";
 import { pool } from "../config/db.js";
-import { userService } from "../services/user.service.js";
+import { userService } from "../features/user/user.service.js";
 
 export const attachClerkAuth = clerkMiddleware();
 

@@ -353,3 +353,19 @@ UPDATE repositories SET indexing_status = 'SYNCING'
 -- Rows already 'FAILED' are left as-is — see CLAUDE.md for the one-time
 -- backfill imprecision this implies (harmless, resolves on next sync).
 CREATE INDEX IF NOT EXISTS idx_repo_rels_type ON repository_relationships (repository_id, relationship_type);
+
+-- Size-adaptive AST chunking rework: astChunking.service.ts's ChunkMetadata
+-- already computed these but they were dropped before persistence. First
+-- time repository_embeddings itself is altered post-creation — do not fold
+-- these into the CREATE TABLE block above, that only affects brand-new
+-- databases. All nullable/no default: purely additive, safe to run ahead of
+-- the code deploy that starts writing them.
+-- symbol_type gains a new value from this rework, 'class_skeleton' — a
+-- signature-only chunk for a class too large to stay one whole chunk (see
+-- astChunking.service.ts). Still free-text, no CHECK constraint added.
+ALTER TABLE repository_embeddings ADD COLUMN IF NOT EXISTS qualified_name TEXT;
+ALTER TABLE repository_embeddings ADD COLUMN IF NOT EXISTS parent_symbol TEXT;
+ALTER TABLE repository_embeddings ADD COLUMN IF NOT EXISTS docstring TEXT;
+ALTER TABLE repository_embeddings ADD COLUMN IF NOT EXISTS is_exported BOOLEAN;
+ALTER TABLE repository_embeddings ADD COLUMN IF NOT EXISTS chunk_index INTEGER;
+ALTER TABLE repository_embeddings ADD COLUMN IF NOT EXISTS chunk_total INTEGER;
