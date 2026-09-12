@@ -1,3 +1,5 @@
+import type { SourceRef, SourcesProvenance } from "./sourceTypes";
+
 export interface ChatSession {
   id: string;
   repository_id: string;
@@ -11,14 +13,7 @@ export interface ChatMessage {
   role: "user" | "assistant" | "system";
   content: string;
   created_at?: string;
-}
-
-export interface ChatSource {
-  file_path: string;
-  symbol_type: string;
-  symbol_name: string;
-  start_line: number;
-  end_line: number;
-  content: string;
-  similarity_score: number;
+  /** Q&A only — context the model was given for this answer. */
+  sources?: SourceRef[];
+  sourcesProvenance?: SourcesProvenance | null;
 }

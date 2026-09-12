@@ -2,12 +2,10 @@ import { Request, Response } from 'express';
 // Adjust the import path for getAuth based on your Clerk setup (e.g., '@clerk/express' for v5)
 import { getAuth } from '@clerk/express';
 import { getGitHubUserProfile, getPullRequestDetails, getRepositoryPullRequests, syncAndGetGitHubRepositories, getGitHubAccessToken } from '../../infrastructure/github/github.service.js';
-import { repositorySyncService } from './repositorySync.service.js';
 import { createPublicRepository, findRepositoriesByUserId } from './repository.service.js';
 import axios from 'axios';
 import { userService } from '../user/user.service.js';
 import { withCache } from '../../shared/utils/cache.js';
-import { pool } from '../../config/db.js';
 
 const handleGitHubError = (res: Response, error: any) => {
   if (error.message === 'GITHUB_NOT_CONNECTED') {
@@ -165,20 +163,13 @@ export const importPublicRepository = async (req: Request, res: Response) => {
       lastPushedAt: repoData.pushed_at,
     });
 
-    // Importing a public repo by URL is itself an explicit "start working"
-    // action, same as clicking Start Working on a listed GitHub repo — so
-    // it joins the workspace and kicks off indexing immediately, unlike
-    // GET /github/repositories which never indexes anything on its own.
-    await pool.query(
-      `UPDATE repositories SET workspace_started_at = COALESCE(workspace_started_at, NOW()) WHERE id = $1`,
-      [repoRecord.id],
-    );
-    console.log(`[Workspace] Public import ${repoRecord.name} (${repoRecord.id}) joined workspace, triggering sync.`);
-
-    // Fire and forget indexing pipeline (don't await)
-    repositorySyncService.enqueueSync(req.dbUser!.clerkId, repoRecord.id).catch((err) => {
-      console.error(`Error syncing public repository ${repoRecord.name}:`, err);
-    });
+    // Importing a public repo by URL only adds it to the user's list, same
+    // as GET /github/repositories listing a connected repo — it must NOT
+    // join the workspace or trigger indexing on its own. Joining the
+    // workspace (and therefore kicking off indexing, via startWorking's own
+    // enqueueSync call) only happens once the user explicitly presses
+    // "Start Working" on it, exactly like any other listed repo.
+    console.log(`[Workspace] Public import ${repoRecord.name} (${repoRecord.id}) added to list, not yet started.`);
 
     return res.status(200).json({
       repository: {
@@ -186,7 +177,7 @@ export const importPublicRepository = async (req: Request, res: Response) => {
         name: repoRecord.name,
         fullName: `${repoRecord.owner}/${repoRecord.name}`,
         sourceType: 'public_import',
-        indexingStatus: 'pending'
+        indexingStatus: 'NOT_STARTED'
       }
     });
   } catch (error: any) {

@@ -2,17 +2,28 @@ import { CodeChunkSearchResult, DocChunkSearchResult } from "../../infrastructur
 import { truncate } from "./promptRendering.js";
 
 /**
- * Shared between Q&A and Interview only — Review's citation convention
- * (a `// File: / // Symbol: / // Retrieved as:` comment-header style tied to
- * its five retrieval-class labels, plus an explicit PROVENANCE line) is a
- * genuinely different shape and stays independent in codeReviewPromptBuilder.ts;
- * forcing it into this module would be a worse fit than the two small
- * hand-written copies this module replaces.
+ * BASE_SOURCE_AUTHORITY / NUMBERED_CITATION_RULE are Q&A's: its context is one
+ * unified [n] numbering, with each entry's kind label (CODE / DOCUMENTATION /
+ * AI SUMMARY / IMPORT RELATIONSHIPS) carrying source authority — see
+ * features/chat/providers/qaPromptContext.ts.
+ *
+ * renderDocCitation / renderCodeCitation are Interview's — its [Doc N] /
+ * [Source N] / [Stay N] labels are part of live-verified prompt wording and
+ * are deliberately unchanged.
+ *
+ * Review's citation convention (a `// File: / // Symbol: / // Retrieved as:`
+ * comment-header style tied to its five retrieval-class labels, plus an
+ * explicit PROVENANCE line) is a genuinely different shape and stays
+ * independent in codeReviewPromptBuilder.ts.
  */
 export const BASE_SOURCE_AUTHORITY = `Source authority:
-- Documentation ([Doc N]) states the maintainer's documented intent, setup, and project description — authoritative for WHAT THE PROJECT IS FOR and HOW TO RUN IT.
-- Code ([Source N]) is authoritative for WHAT THE SYSTEM ACTUALLY DOES TODAY.
+- DOCUMENTATION entries state the maintainer's documented intent, setup, and project description — authoritative for WHAT THE PROJECT IS FOR and HOW TO RUN IT.
+- CODE entries are authoritative for WHAT THE SYSTEM ACTUALLY DOES TODAY.
+- AI SUMMARY entries are generated descriptions of the repository, not repository content — useful orientation, but lower authority than code or documentation.
+- IMPORT RELATIONSHIPS entries are file-level structure taken from import statements (names only, possibly incomplete) — never describe a file's contents from them.
 - If documentation and code disagree, trust the code — and say so.`;
+
+export const NUMBERED_CITATION_RULE = `Citations: when a statement relies on a numbered context entry, cite it inline with its number in square brackets, e.g. "requireAuth validates the token [2]" or "[1][3]". Use only the numbers shown on the entries below — never invent a number, and never cite unnumbered background such as the Repository Overview.`;
 
 /**
  * [Doc N]: path § sectionPath\n<content>, truncated to keep one chunk from

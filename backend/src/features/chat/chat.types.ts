@@ -1,4 +1,5 @@
 import { ConversationTurn } from "../../shared/utils/conversationalQuery.js";
+import type { PromptContextSnapshot } from "../../shared/prompts/sourceRefs.js";
 
 export type ChatSessionType = 'REPO_QA' | 'REVIEW_CHAT' | 'ISSUE_CHAT' | 'INTERVIEW' | 'QA' | 'REVIEW';
 
@@ -27,7 +28,12 @@ export interface ChatMessageRecord {
 
 export interface ChatContextPayload {
   systemPrompt: string;
-  sources?: any[];
+  /**
+   * Authoritative snapshot of the retrieved context actually rendered into
+   * systemPrompt. Display sources are derived from it (toDisplaySources),
+   * never from a second retrieval. Providers that do no retrieval omit it.
+   */
+  promptContext?: PromptContextSnapshot;
   metadata?: Record<string, any>;
 }
 

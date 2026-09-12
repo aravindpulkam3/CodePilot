@@ -23,6 +23,12 @@ export interface CodeChunkSearchResult {
   lineStart: number;
   lineEnd: number;
   similarity: number;
+  /**
+   * repository_embeddings.commit_sha — the revision this chunk was indexed
+   * at. Lets Q&A sources link to a pinned blob instead of mutable HEAD.
+   * Optional because Review builds these objects from candidates without it.
+   */
+  commitSha?: string;
 }
 
 /**

@@ -36,22 +36,25 @@ export function renderCapped<T>(items: T[], render: (item: T, index: number) => 
 /**
  * Common fields across RepositorySummary/ArchitectureSummary/ComponentSummary
  * — enough for a short orientation block without a per-type renderer.
+ * Untruncated; Q&A caps it itself so it can record whether truncation happened.
  */
-export function renderSummaryBlock(summary: unknown, maxChars: number = 1000): string {
+export function summaryBlockText(summary: unknown): string {
   const s = summary as any;
   if (!s) return "";
-  return truncate(
-    [
-      s.purpose ? `Purpose: ${s.purpose}` : null,
-      s.summary ? `Summary: ${s.summary}` : null,
-      s.architectureStyle ? `Style: ${s.architectureStyle}` : null,
-      s.majorComponents?.length ? `Major components: ${s.majorComponents.join(", ")}` : null,
-      s.responsibilities?.length ? `Responsibilities: ${s.responsibilities.join(", ")}` : null,
-      s.techStack?.length ? `Tech stack: ${s.techStack.join(", ")}` : null,
-      s.technologies?.length ? `Technologies: ${s.technologies.join(", ")}` : null,
-    ]
-      .filter(Boolean)
-      .join("\n"),
-    maxChars,
-  );
+  return [
+    s.purpose ? `Purpose: ${s.purpose}` : null,
+    s.summary ? `Summary: ${s.summary}` : null,
+    s.architectureStyle ? `Style: ${s.architectureStyle}` : null,
+    s.majorComponents?.length ? `Major components: ${s.majorComponents.join(", ")}` : null,
+    s.responsibilities?.length ? `Responsibilities: ${s.responsibilities.join(", ")}` : null,
+    s.techStack?.length ? `Tech stack: ${s.techStack.join(", ")}` : null,
+    s.technologies?.length ? `Technologies: ${s.technologies.join(", ")}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+export function renderSummaryBlock(summary: unknown, maxChars: number = 1000): string {
+  if (!summary) return "";
+  return truncate(summaryBlockText(summary), maxChars);
 }

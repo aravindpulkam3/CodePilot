@@ -6,6 +6,8 @@ import { toast } from "sonner";
 import { useChatSessions, useChatHistory } from "@/hooks/useChat";
 import { sendChatMessageStream } from "@/services/api/repositoryApi";
 import { ChatInterface } from "@/components/chat/ChatInterface";
+import { readSseStream } from "@/utils/parseSseStream";
+import type { SourceRef } from "@/types/sourceTypes";
 
 /**
  * Codebase Q&A. The active conversation is a real URL param
@@ -20,7 +22,7 @@ export default function RepositoryChat() {
 
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamedText, setStreamedText] = useState("");
-  const [streamedSources, setStreamedSources] = useState<any[]>([]);
+  const [streamedSources, setStreamedSources] = useState<SourceRef[]>([]);
 
   const { data: chatSessions = [] } = useChatSessions(repositoryId!, "QA");
   const { data: history = [], isLoading: isHistoryLoading } = useChatHistory(sessionId ?? null);
@@ -42,47 +44,28 @@ export default function RepositoryChat() {
         const body = await response.json().catch(() => null);
         throw new Error(body?.error || `Request failed (${response.status})`);
       }
-      if (!response.body) throw new Error("No response body");
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value);
-        const lines = chunk.split("\n\n");
-
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            const jsonStr = line.replace("data: ", "");
-            let payload: any;
-            try {
-              payload = JSON.parse(jsonStr);
-            } catch (e) {
-              console.error("Failed to parse chunk", e);
-              continue;
-            }
-
-            // A server-side error mid-stream (e.g. still indexing) — throw
-            // so it reaches the outer catch/toast below instead of being
-            // silently dropped like a malformed chunk.
-            if (payload.type === "error") {
-              throw new Error(payload.data || "Something went wrong.");
-            } else if (payload.type === "sessionId") {
-              resolvedSessionId = payload.data;
-              // Same logical action as sending this message, not a
-              // distinct navigation — replace, not push.
-              navigate(`/repositories/${repositoryId}/chat/${payload.data}`, { replace: true });
-            } else if (payload.type === "sources") {
-              setStreamedSources(payload.data);
-            } else if (payload.type === "text") {
-              setStreamedText((prev) => prev + payload.data);
-            }
-          }
+      // Buffered across reads: the "sources" frame carries full excerpts and
+      // routinely spans several network reads, which the old per-read split
+      // silently dropped.
+      let streamError: string | null = null;
+      await readSseStream(response, (payload) => {
+        // A server-side error mid-stream (e.g. still indexing) — surfaced to
+        // the outer catch/toast below instead of being silently dropped.
+        if (payload.type === "error") {
+          streamError = payload.data || "Something went wrong.";
+        } else if (payload.type === "sessionId") {
+          resolvedSessionId = payload.data;
+          // Same logical action as sending this message, not a
+          // distinct navigation — replace, not push.
+          navigate(`/repositories/${repositoryId}/chat/${payload.data}`, { replace: true });
+        } else if (payload.type === "sources") {
+          setStreamedSources(payload.data);
+        } else if (payload.type === "text") {
+          setStreamedText((prev) => prev + payload.data);
         }
-      }
+      });
+      if (streamError) throw new Error(streamError);
 
       await queryClient.invalidateQueries({ queryKey: ["chatHistory", resolvedSessionId] });
       await queryClient.invalidateQueries({ queryKey: ["chatSessions", repositoryId, "QA"] });

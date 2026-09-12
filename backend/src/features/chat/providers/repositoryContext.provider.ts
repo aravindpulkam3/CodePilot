@@ -1,7 +1,8 @@
 import { ChatContextProvider, ChatContextPayload, ChatSessionRecord, ConversationContext } from "../chat.types.js";
 import { retrievalService } from "../../../infrastructure/retrieval/retreival.service.js";
-import { truncate, renderCapped, renderSummaryBlock } from "../../../shared/prompts/promptRendering.js";
-import { BASE_SOURCE_AUTHORITY, renderDocCitation, renderCodeCitation } from "../../../shared/prompts/sharedCitations.js";
+import { findRepositoryById } from "../../repository/repository.service.js";
+import { BASE_SOURCE_AUTHORITY, NUMBERED_CITATION_RULE } from "../../../shared/prompts/sharedCitations.js";
+import { buildQAPromptContext, BudgetTier } from "./qaPromptContext.js";
 // TEMPORARY verification logging — see utils/readmeDebugLog.ts for removal.
 import { docRetrievalLog } from "../../../shared/utils/readmeDebugLog.js";
 
@@ -17,8 +18,6 @@ const BASE_THRESHOLD = 0.6;
 const SOLID_MARGIN = 0.05;
 /** "Unambiguously strong in its own right" — lets a doc/summary section win full budget even alongside solid code. */
 const STRONG_MARGIN = 0.15;
-
-type BudgetTier = "full" | "reduced" | "omit";
 
 /**
  * Decides how much prompt budget a repository/architecture/component/doc
@@ -71,19 +70,21 @@ export class RepositoryContextProvider implements ChatContextProvider {
     // plus any README sections that independently matched the question.
     // conversation.recentHistory helps retrieval resolve dangling references
     // ("that", "where is this implemented") — it is never itself rendered
-    // into the returned context below.
-    const retrieved = await retrievalService.retrieveQAContext(
-      clerkUserId,
-      session.repository_id,
-      userMessage,
-      undefined,
-      conversation
-        ? { isNewSession: conversation.isNewSession, recentHistory: conversation.recentHistory }
-        : undefined
-    );
+    // into the returned context below. The repository row is only needed for
+    // html_url (pinned source links), so a failed lookup never fails the turn.
+    const [retrieved, repo] = await Promise.all([
+      retrievalService.retrieveQAContext(
+        clerkUserId,
+        session.repository_id,
+        userMessage,
+        undefined,
+        conversation
+          ? { isNewSession: conversation.isNewSession, recentHistory: conversation.recentHistory }
+          : undefined
+      ),
+      findRepositoryById(session.repository_id).catch(() => null),
+    ]);
 
-    const codeChunks = retrieved.codeChunks || [];
-    const docChunks = retrieved.docChunks || [];
     const sim = retrieved.metadata.evidenceSimilarities ?? {
       repository: null,
       architecture: null,
@@ -100,68 +101,38 @@ export class RepositoryContextProvider implements ChatContextProvider {
     // looks at the others. See the module-level comments on
     // summaryTierGivenCode/codeTier for the exact rule.
     const codeMargin = (sim.code ?? -Infinity) - BASE_THRESHOLD;
-    const repoTier = summaryTierGivenCode(sim.repository, codeMargin);
-    const archTier = summaryTierGivenCode(sim.architecture, codeMargin);
+    const repositoryTier = summaryTierGivenCode(sim.repository, codeMargin);
+    const architectureTier = summaryTierGivenCode(sim.architecture, codeMargin);
     const componentTier = summaryTierGivenCode(sim.component, codeMargin);
     const docTier = summaryTierGivenCode(sim.doc, codeMargin);
     const codeSectionTier = codeTier(sim.code);
 
-    // Documentation and code are numbered in SEPARATE citation namespaces
-    // ([Doc N] vs [Source N]). That distinction is what carries source
-    // authority through to the answer — the model can tell the user which
-    // of its claims came from the maintainer's prose and which from the
-    // code.
-    const docContext =
-      docTier === "omit"
-        ? ""
-        : renderCapped(docChunks, (d, i) => renderDocCitation(d, i), docTier === "full" ? 3000 : 1200);
+    // One numbered [n] list across every evidence type, rendered and
+    // recorded in the same pass — the snapshot below is exactly what the
+    // prompt contains, including which entries the budgets skipped (absent)
+    // and which were truncated. Docs and code keep distinct kind labels,
+    // which is what carries source authority now that they share numbering.
+    const { promptText, items } = buildQAPromptContext({
+      repository: retrieved.repository,
+      repositoryTier,
+      architecture: retrieved.architecture,
+      architectureTier,
+      components: retrieved.components,
+      componentTier,
+      docChunks: retrieved.docChunks || [],
+      docTier,
+      codeChunks: retrieved.codeChunks || [],
+      codeTier: codeSectionTier,
+      graphNeighbors: retrieved.graphNeighbors,
+    });
 
-    const codeContext =
-      codeSectionTier === "omit"
-        ? ""
-        : renderCapped(codeChunks, (s, i) => renderCodeCitation(s, i), codeSectionTier === "full" ? 6000 : 2500);
-
-    const overview =
-      repoTier === "omit"
-        ? ""
-        : renderSummaryBlock(retrieved.repository, repoTier === "full" ? 1200 : 500);
-
-    const architectureBlock =
-      archTier === "omit"
-        ? ""
-        : renderSummaryBlock(retrieved.architecture, archTier === "full" ? 1200 : 500);
-
-    const componentsBlock =
-      componentTier === "omit" || retrieved.components.length === 0
-        ? ""
-        : renderCapped(
-            retrieved.components,
-            (c) => renderSummaryBlock(c, 400),
-            componentTier === "full" ? 1500 : 600,
-          );
-
-    // Graph augmentation ("what depends on X") — already gated on a strict,
-    // absolute, code-only similarity floor upstream in retrieveQAContext
-    // (not part of the relevance-and-role weighting above), so no separate
-    // tiering needed here: if it's present at all, it's already confident
-    // and bounded (single anchor file, single hop, capped neighbor count).
-    const graphBlock = (() => {
-      const gn = retrieved.graphNeighbors;
-      if (!gn) return "";
-      const lines: string[] = [`Anchor: ${gn.anchorFile}`];
-      if (gn.dependencies.length > 0) lines.push(`Depends on: ${gn.dependencies.join(", ")}`);
-      if (gn.dependents.length > 0) lines.push(`Depended on by: ${gn.dependents.join(", ")}`);
-      return lines.join("\n");
-    })();
-
-    const hasAnyContext = Boolean(overview || architectureBlock || componentsBlock || docContext || codeContext || graphBlock);
+    const hasAnyContext = items.length > 0;
 
     const sections: string[] = [
       `You are a Senior Software Engineer helping explain a codebase.`,
       ``,
       BASE_SOURCE_AUTHORITY,
       ``,
-      `Cite sources as [Doc N] or [Source N] when referring to specific files or logic.`,
       `Give a clean, structured response without unnecessary symbols.`,
       ``,
       `Evidence handling:`,
@@ -175,11 +146,10 @@ export class RepositoryContextProvider implements ChatContextProvider {
     ];
 
     if (!hasAnyContext) {
-      // Previously this still instructed the model to cite [Source X] over
-      // the string "No specific code chunks retrieved." — which is what
-      // produced confident-sounding "I have no access to your files"
-      // answers that read like a broken integration rather than an empty
-      // search result.
+      // Previously this still instructed the model to cite sources over the
+      // string "No specific code chunks retrieved." — which is what produced
+      // confident-sounding "I have no access to your files" answers that
+      // read like a broken integration rather than an empty search result.
       sections.push(
         ``,
         `No indexed content matched this question. Tell the user that directly:`,
@@ -188,57 +158,35 @@ export class RepositoryContextProvider implements ChatContextProvider {
         `about the codebase and do not cite any sources.`,
       );
     } else {
-      if (overview) sections.push(``, `## Repository Overview`, overview);
-      if (architectureBlock) sections.push(``, `## Architecture`, architectureBlock);
-      if (componentsBlock) sections.push(``, `## Related Components`, componentsBlock);
-      if (docContext) sections.push(``, `## Documentation`, docContext);
-      if (codeContext) sections.push(``, `## Code`, codeContext);
-      if (graphBlock) {
-        sections.push(
-          ``,
-          `## Related files (import graph)`,
-          `Structural evidence only — names, not code. Mention only if relevant to the question; don't describe contents that weren't actually shown to you.`,
-          graphBlock,
-        );
-      }
+      sections.push(``, NUMBERED_CITATION_RULE, ``, promptText);
     }
 
     const systemPrompt = sections.join("\n");
 
+    const displayable = items.filter((i) => i.displayable);
+    const countOf = (kind: string) => displayable.filter((i) => i.kind === kind).length;
+
     // TEMPORARY verification logging — see utils/readmeDebugLog.ts.
-    // This is the last hop before the LLM: it proves documentation actually
+    // This is the last hop before the LLM: it proves which entries actually
     // reached the prompt, rather than merely being retrieved upstream.
     docRetrievalLog(
-      `Q&A prompt assembled: ${docChunks.length} [Doc] block(s) (tier=${docTier}), ` +
-        `${codeChunks.length} [Source] block(s) (tier=${codeSectionTier}), ` +
-        `overview=${overview ? "yes" : "no"} (tier=${repoTier}), architecture=${architectureBlock ? "yes" : "no"} (tier=${archTier}), ` +
-        `components=${componentsBlock ? "yes" : "no"} (tier=${componentTier}), graph=${graphBlock ? "yes" : "no"}, ` +
-        `systemPrompt=${systemPrompt.length} chars total.` +
+      `Q&A prompt assembled: ${displayable.length} numbered entr(y/ies) ` +
+        `[code=${countOf("code")} (tier=${codeSectionTier}), doc=${countOf("documentation")} (tier=${docTier}), ` +
+        `summary=${countOf("summary")} (arch tier=${architectureTier}, component tier=${componentTier}), ` +
+        `imports=${countOf("imports")}], overview=${items.some((i) => !i.displayable) ? "yes" : "no"} ` +
+        `(tier=${repositoryTier}), systemPrompt=${systemPrompt.length} chars total.` +
         (hasAnyContext ? "" : " NO CONTEXT — model instructed to say nothing matched."),
     );
-
-    // Both kinds go to the client as sources, tagged so the UI can render a
-    // README section differently from a code span. Excluded only when a
-    // whole section was omitted by its tier (the model saw none of it) —
-    // NOT reconciled against renderCapped's item-level cutoff at "reduced"
-    // budget, so a reduced section can show one or two more badges than
-    // strictly made it into the rendered text. Accepted, not fixed: these
-    // still represent real retrieved evidence for this question, and this
-    // provider already treats badges as "what was searched," not "what was
-    // literally quoted" (see the citation-spam tradeoff in the Q&A plan).
-    const sources = [
-      ...(docTier === "omit" ? [] : docChunks).map((d) => ({ ...d, sourceKind: "documentation" as const })),
-      ...(codeSectionTier === "omit" ? [] : codeChunks).map((c) => ({ ...c, sourceKind: "code" as const })),
-    ];
+    displayable.forEach((i) => docRetrievalLog(`  -> ${i.heading}${i.truncated ? " (truncated)" : ""}`));
 
     return {
       systemPrompt,
-      sources,
+      promptContext: { version: 1, repoHtmlUrl: repo?.html_url ?? null, items },
       metadata: {
         repositoryId: session.repository_id,
-        sourcesCount: sources.length,
-        codeSourcesCount: codeSectionTier === "omit" ? 0 : codeChunks.length,
-        docSourcesCount: docTier === "omit" ? 0 : docChunks.length,
+        sourcesCount: displayable.length,
+        codeSourcesCount: countOf("code"),
+        docSourcesCount: countOf("documentation"),
         noContextFound: !hasAnyContext,
       },
     };

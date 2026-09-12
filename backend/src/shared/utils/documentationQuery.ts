@@ -29,11 +29,7 @@ function stripPrNoise(text: string): string {
 /**
  * Builds the query used to retrieve README sections for a pull request.
  *
- * Returns null when there is not enough prose to justify a search — the
- * caller must then skip documentation retrieval entirely. Returning nothing
- * is strictly better than returning an arbitrary section: an irrelevant
- * <Documentation> block costs prompt budget and invites the reviewer to
- * compare the diff against documentation that has nothing to do with it.
+ * Returns null when there is not enough prose to justify a search — the caller must then skip documentation retrieval entirely. Returning nothing is strictly better than returning an arbitrary section: an irrelevant <Documentation> block costs prompt budget and invites the reviewer to compare the diff against documentation that has nothing to do with it.
  */
 export function buildDocumentationQuery(
   title: string | null | undefined,

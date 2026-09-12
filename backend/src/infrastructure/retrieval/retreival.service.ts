@@ -836,9 +836,7 @@ export class RepositoryRetrievalService {
    * Retrieves the "blast radius" of a pull request: the changed code itself,
    * its callers, its callees, its tests, and relevant documentation.
    *
-   * The governing rule: the GRAPH decides WHICH files matter, then pgvector
-   * fetches their CODE. Previously the structural stages fetched
-   * `getFileSummaries()` — LLM prose from `repository_summaries` — which
+   * The governing rule: the GRAPH decides WHICH files matter, then pgvector fetches their CODE. Previously the structural stages fetched `getFileSummaries()` — LLM prose from `repository_summaries` — which
    * (a) is written only by Phase 2, so it was empty during SEARCHABLE, when
    * review is most likely to run, and (b) landed in `context.files`, which the
    * review prompt never read. All of that work was computed, charged 60% of

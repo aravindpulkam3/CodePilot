@@ -14,6 +14,12 @@ interface MarkdownRendererProps {
    * the PR Review AI panel and inline diff annotations).
    */
   tone?: Tone;
+  /**
+   * Optional renderer for plain-text runs (never code fences or inline code)
+   * — Q&A uses it to turn [n] citations into source chips. Without it,
+   * output is unchanged.
+   */
+  renderPlainText?: (text: string) => React.ReactNode;
 }
 
 const TONE_CLASSES: Record<Tone, {
@@ -64,6 +70,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
   content,
   className = "",
   tone = "dark",
+  renderPlainText,
 }) => {
   if (!content) return null;
 
@@ -78,7 +85,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
         if (part.startsWith("```")) {
           return <CodeBlock key={index} rawBlock={part} t={t} />;
         }
-        return <FormattedParagraphs key={index} text={part} t={t} />;
+        return <FormattedParagraphs key={index} text={part} t={t} renderPlainText={renderPlainText} />;
       })}
     </div>
   );
@@ -143,9 +150,10 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ rawBlock, t }) => {
 interface FormattedParagraphsProps {
   text: string;
   t: ToneClasses;
+  renderPlainText?: (text: string) => React.ReactNode;
 }
 
-const FormattedParagraphs: React.FC<FormattedParagraphsProps> = ({ text, t }) => {
+const FormattedParagraphs: React.FC<FormattedParagraphsProps> = ({ text, t, renderPlainText }) => {
   if (!text.trim()) return null;
 
   const lines = text.split("\n");
@@ -180,7 +188,7 @@ const FormattedParagraphs: React.FC<FormattedParagraphsProps> = ({ text, t }) =>
       flushList();
       renderedElements.push(
         <h4 key={idx} className={`text-sm font-bold mt-3 mb-1 ${t.heading}`}>
-          {formatInline(trimmed.slice(4), t)}
+          {formatInline(trimmed.slice(4), t, renderPlainText)}
         </h4>
       );
       return;
@@ -189,7 +197,7 @@ const FormattedParagraphs: React.FC<FormattedParagraphsProps> = ({ text, t }) =>
       flushList();
       renderedElements.push(
         <h3 key={idx} className={`text-base font-bold mt-4 mb-1.5 ${t.heading}`}>
-          {formatInline(trimmed.slice(3), t)}
+          {formatInline(trimmed.slice(3), t, renderPlainText)}
         </h3>
       );
       return;
@@ -198,7 +206,7 @@ const FormattedParagraphs: React.FC<FormattedParagraphsProps> = ({ text, t }) =>
       flushList();
       renderedElements.push(
         <h2 key={idx} className={`text-lg font-bold mt-4 mb-2 ${t.heading}`}>
-          {formatInline(trimmed.slice(2), t)}
+          {formatInline(trimmed.slice(2), t, renderPlainText)}
         </h2>
       );
       return;
@@ -210,7 +218,7 @@ const FormattedParagraphs: React.FC<FormattedParagraphsProps> = ({ text, t }) =>
       isNumberedList = false;
       currentListItems.push(
         <li key={idx} className={t.listItem}>
-          {formatInline(trimmed.slice(2), t)}
+          {formatInline(trimmed.slice(2), t, renderPlainText)}
         </li>
       );
       return;
@@ -223,7 +231,7 @@ const FormattedParagraphs: React.FC<FormattedParagraphsProps> = ({ text, t }) =>
       isNumberedList = true;
       currentListItems.push(
         <li key={idx} className={t.listItem}>
-          {formatInline(numMatch[2], t)}
+          {formatInline(numMatch[2], t, renderPlainText)}
         </li>
       );
       return;
@@ -237,7 +245,7 @@ const FormattedParagraphs: React.FC<FormattedParagraphsProps> = ({ text, t }) =>
           key={idx}
           className={`border-l-2 pl-3 py-1 my-2 rounded-r text-xs italic ${t.blockquote}`}
         >
-          {formatInline(trimmed.slice(2), t)}
+          {formatInline(trimmed.slice(2), t, renderPlainText)}
         </blockquote>
       );
       return;
@@ -248,7 +256,7 @@ const FormattedParagraphs: React.FC<FormattedParagraphsProps> = ({ text, t }) =>
     if (trimmed) {
       renderedElements.push(
         <p key={idx} className={`my-1.5 ${t.paragraph}`}>
-          {formatInline(line, t)}
+          {formatInline(line, t, renderPlainText)}
         </p>
       );
     }
@@ -260,7 +268,11 @@ const FormattedParagraphs: React.FC<FormattedParagraphsProps> = ({ text, t }) =>
 };
 
 // Helper for inline markdown: `code`, **bold**, *italic*
-function formatInline(text: string, t: ToneClasses): React.ReactNode {
+function formatInline(
+  text: string,
+  t: ToneClasses,
+  renderPlainText?: (text: string) => React.ReactNode,
+): React.ReactNode {
   // Regex splitting inline code, bold, italic
   const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g);
 
@@ -288,6 +300,9 @@ function formatInline(text: string, t: ToneClasses): React.ReactNode {
           {part.slice(1, -1)}
         </em>
       );
+    }
+    if (renderPlainText && part) {
+      return <React.Fragment key={index}>{renderPlainText(part)}</React.Fragment>;
     }
     return part;
   });

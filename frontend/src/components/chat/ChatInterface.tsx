@@ -1,15 +1,20 @@
 import { useState, useRef, useEffect } from "react";
 import { Send, User, Bot, Loader2 } from "lucide-react";
 import { cn } from "@/utils/cn";
-import { SourceList } from "./SourceList";
 import { SessionSidebar } from "./SessionSidebar";
 import { MarkdownRenderer } from "../ui/MarkdownRenderer";
+import { SourcesButton } from "@/components/sources/SourcesButton";
+import { SourceInspector } from "@/components/sources/SourceInspector";
+import { renderWithCitations } from "@/components/sources/Citation";
+import { useSourceInspector } from "@/hooks/useSourceInspector";
+import type { SourceRef, SourcesProvenance } from "@/types/sourceTypes";
 
 export interface Message {
   id?: string;
   role: string;
   content: string;
-  sources?: any[];
+  sources?: SourceRef[];
+  sourcesProvenance?: SourcesProvenance | null;
 }
 
 interface ChatInterfaceProps {
@@ -17,7 +22,7 @@ interface ChatInterfaceProps {
   messages: Message[];
   isStreaming?: boolean;
   streamedText?: string;
-  streamedSources?: any[];
+  streamedSources?: SourceRef[];
   onSendMessage: (message: string) => void;
   isLoadingHistory?: boolean;
 
@@ -32,6 +37,8 @@ interface ChatInterfaceProps {
   emptyStateMessage?: string;
   placeholder?: string;
 }
+
+const INSPECTOR_ID = "source-inspector";
 
 // Ensure we correctly identify the user messages despite casing/role string differences
 function isUserMessage(msg: Message): boolean {
@@ -58,7 +65,11 @@ export function ChatInterface({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [optimisticUserMessage, setOptimisticUserMessage] = useState("");
-  const [selectedSource, setSelectedSource] = useState<any>(null);
+
+  // Sources are a Q&A feature — Interview deliberately shows none.
+  const sourcesEnabled = mode === "QA";
+  const inspector = useSourceInspector();
+  const { close: closeInspector } = inspector;
 
   // Use localized scrolling so the main page doesn't jump
   useEffect(() => {
@@ -76,6 +87,11 @@ export function ChatInterface({
       setOptimisticUserMessage("");
     }
   }, [isStreaming]);
+
+  // A different conversation never inherits the previous one's inspector.
+  useEffect(() => {
+    closeInspector();
+  }, [activeSessionId, closeInspector]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -122,9 +138,32 @@ export function ChatInterface({
     return true;
   });
 
+  const keyedMessages = deduplicatedMessages.map((msg, idx) => ({ msg, key: msg.id ?? `idx-${idx}` }));
+
+  // The inspector's content is always resolved from the message itself.
+  const inspected = inspector.messageKey
+    ? keyedMessages.find((m) => m.key === inspector.messageKey)?.msg
+    : undefined;
+  const inspectedSources = inspected?.sources ?? [];
+  const inspectorOpen = sourcesEnabled && inspectedSources.length > 0;
+
+  // The inspected message went away (e.g. history reloaded) — close cleanly.
+  useEffect(() => {
+    if (inspector.messageKey && !inspectorOpen) closeInspector();
+  }, [inspector.messageKey, inspectorOpen, closeInspector]);
+
+  useEffect(() => {
+    if (!inspectorOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeInspector();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [inspectorOpen, closeInspector]);
+
   return (
     // FIX: Replaced min-h/max-h with h-full w-full so it flexes properly
-    <div className="flex h-full w-full overflow-hidden rounded-xl border border-border-light dark:border-border-dark bg-surface-light dark:bg-surface-dark shadow-sm">
+    <div className="relative flex h-full w-full overflow-hidden rounded-xl border border-border-light dark:border-border-dark bg-surface-light dark:bg-surface-dark shadow-sm">
       {/* Sidebar for Sessions */}
       {showSidebar && (
         <SessionSidebar
@@ -137,14 +176,7 @@ export function ChatInterface({
       )}
 
       {/* Main Chat Area */}
-      <div
-        className={cn(
-          "flex-1 flex flex-col min-w-0",
-          selectedSource
-            ? "border-r border-border-light dark:border-border-dark"
-            : "",
-        )}
-      >
+      <div className="flex-1 flex flex-col min-w-0">
         {/* FIX: Attached scrollContainerRef here */}
         <div
           ref={scrollContainerRef}
@@ -162,11 +194,12 @@ export function ChatInterface({
               {emptyStateMessage}
             </div>
           ) : (
-            deduplicatedMessages.map((msg: any, idx: number) => {
+            keyedMessages.map(({ msg, key }) => {
               const fromUser = isUserMessage(msg);
+              const sources = sourcesEnabled && !fromUser ? msg.sources ?? [] : [];
               return (
                 <div
-                  key={msg.id ?? idx}
+                  key={key}
                   className={cn(
                     "flex items-start gap-3",
                     fromUser ? "justify-end" : "justify-start",
@@ -188,20 +221,33 @@ export function ChatInterface({
                     {fromUser ? (
                       <div className="whitespace-pre-wrap">{msg.content}</div>
                     ) : (
-                      <MarkdownRenderer content={msg.content} />
+                      <MarkdownRenderer
+                        content={msg.content}
+                        tone="auto"
+                        renderPlainText={
+                          sources.length > 0
+                            ? (text) =>
+                                renderWithCitations(text, {
+                                  sources,
+                                  provenance: msg.sourcesProvenance,
+                                  interactive: true,
+                                  onActivate: (n) => inspector.openAt(key, n),
+                                })
+                            : undefined
+                        }
+                      />
                     )}
 
-                    {mode !== "INTERVIEW" &&
-                      msg.sources &&
-                      msg.sources.length > 0 && (
-                        <div className="mt-3">
-                          <SourceList
-                            sources={msg.sources}
-                            onSourceSelect={setSelectedSource}
-                            selectedSourceId={selectedSource?.id}
-                          />
-                        </div>
-                      )}
+                    {sources.length > 0 && (
+                      <div className="mt-2">
+                        <SourcesButton
+                          count={sources.length}
+                          active={inspectorOpen && inspector.messageKey === key}
+                          controlsId={INSPECTOR_ID}
+                          onClick={() => inspector.toggle(key)}
+                        />
+                      </div>
+                    )}
                   </div>
                   {fromUser && (
                     <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-signal-100 border border-signal-200 dark:bg-signal-500/20 dark:border-signal-500/30 text-signal-600 dark:text-signal-400 shadow-sm mt-1">
@@ -225,26 +271,29 @@ export function ChatInterface({
             </div>
           )}
 
-          {/* Streaming Assistant Response */}
+          {/* Streaming Assistant Response — citations are styled as they
+              arrive but only become clickable once the answer is saved and
+              shows its Sources footer. */}
           {(isStreaming || streamedText) && (
             <div className="flex items-start justify-start gap-3 animate-in fade-in duration-300">
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 border border-slate-200 dark:bg-slate-800 dark:border-slate-700 text-muted-light dark:text-muted-dark shadow-sm mt-1">
                 <Bot className="h-4 w-4" />
               </div>
               <div className="max-w-[85%] rounded-2xl rounded-tl-sm bg-slate-50 border border-slate-200 text-slate-800 dark:bg-slate-900 dark:border-slate-800 dark:text-slate-200 px-5 py-3.5 text-[15px] leading-relaxed shadow-sm w-full">
-                {mode !== "INTERVIEW" &&
-                  streamedSources &&
-                  streamedSources.length > 0 && (
-                    <div className="mb-4">
-                      <SourceList
-                        sources={streamedSources}
-                        onSourceSelect={setSelectedSource}
-                        selectedSourceId={selectedSource?.id}
-                      />
-                    </div>
-                  )}
-
-                <MarkdownRenderer content={streamedText} />
+                <MarkdownRenderer
+                  content={streamedText}
+                  tone="auto"
+                  renderPlainText={
+                    sourcesEnabled && streamedSources.length > 0
+                      ? (text) =>
+                          renderWithCitations(text, {
+                            sources: streamedSources,
+                            provenance: "exact",
+                            interactive: false,
+                          })
+                      : undefined
+                  }
+                />
                 {isStreaming && (
                   <span className="inline-block w-2 h-4 ml-1 bg-signal-500 animate-pulse align-middle" />
                 )}
@@ -287,48 +336,17 @@ export function ChatInterface({
         </div>
       </div>
 
-      {/* Right Panel for Source Code */}
-      {selectedSource && (
-        <div className="w-1/3 flex flex-col min-w-[320px] max-w-[500px] bg-slate-50 dark:bg-slate-900 shrink-0">
-          <div className="flex items-center justify-between px-4 py-3 border-b border-border-light dark:border-border-dark bg-white dark:bg-slate-950">
-            <h3
-              className="text-sm font-semibold truncate text-slate-800 dark:text-slate-200"
-              title={selectedSource.filePath || selectedSource.file_path}
-            >
-              {(
-                selectedSource.filePath ||
-                selectedSource.file_path ||
-                "Unknown"
-              )
-                .split("/")
-                .pop()}
-            </h3>
-            <button
-              onClick={() => setSelectedSource(null)}
-              className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-500 transition-colors"
-            >
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-              >
-                <path d="M18 6L6 18M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
-          <div className="flex-1 overflow-auto p-4">
-            <div className="mb-2 text-[10px] uppercase font-bold tracking-wider text-slate-500">
-              Line{" "}
-              {selectedSource.lineStart || selectedSource.start_line || "?"}
-            </div>
-            <pre className="text-xs font-mono text-slate-800 dark:text-slate-200 whitespace-pre-wrap">
-              {selectedSource.content || "No source content available."}
-            </pre>
-          </div>
-        </div>
+      {inspectorOpen && inspector.messageKey && (
+        <SourceInspector
+          id={INSPECTOR_ID}
+          messageKey={inspector.messageKey}
+          sources={inspectedSources}
+          provenance={inspected?.sourcesProvenance}
+          focusedN={inspector.focusedN}
+          flashToken={inspector.flashToken}
+          onFocus={inspector.setFocused}
+          onClose={closeInspector}
+        />
       )}
     </div>
   );

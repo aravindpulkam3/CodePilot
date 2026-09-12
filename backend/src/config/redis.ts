@@ -19,7 +19,7 @@ cacheRedisClient.on("error", (err: any) => {
 
 /**
  * QUEUE REDIS CLIENT CONFIGURATION
- * BullMQ requires `maxRetriesPerRequest: null`. 
+ * BullMQ requires `maxRetriesPerRequest: null`.
  * This instance MUST have `maxmemory-policy noeviction`.
  */
 const queueRedisOptions: RedisOptions = {
@@ -28,7 +28,8 @@ const queueRedisOptions: RedisOptions = {
 };
 
 // We create separate connections for BullMQ workers and queues to avoid blocking issues
-export const createQueueConnection = () => new Redis(QUEUE_URL, queueRedisOptions);
+export const createQueueConnection = () =>
+  new Redis(QUEUE_URL, queueRedisOptions);
 export const queueConnection = createQueueConnection(); // For Queue instances which don't block
 
 // For Rate Limiting and Locks (using the queue/coordination instance to prevent eviction of locks)

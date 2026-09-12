@@ -97,6 +97,7 @@ export class SemanticRetrievalService {
           start_line,
           end_line,
           content,
+          commit_sha,
           1 - (embedding <=> $1::vector) AS similarity_score
         FROM repository_embeddings
         WHERE repository_id = $2
@@ -141,6 +142,7 @@ export class SemanticRetrievalService {
         lineEnd: r.end_line,
         content: r.content,
         similarity: r.similarity_score,
+        commitSha: r.commit_sha ?? undefined,
       }));
     } finally {
       client.release();
@@ -183,7 +185,7 @@ export class SemanticRetrievalService {
       // excludes it: a README-editing PR would otherwise get its README in
       // <RepositoryContext> as "code", in <Documentation>, AND in the diff.
       const query = `
-        SELECT file_path, symbol_type, symbol_name, start_line, end_line, content, similarity_score
+        SELECT file_path, symbol_type, symbol_name, start_line, end_line, content, commit_sha, similarity_score
         FROM (
           SELECT
             file_path,
@@ -192,6 +194,7 @@ export class SemanticRetrievalService {
             start_line,
             end_line,
             content,
+            commit_sha,
             1 - (embedding <=> $1::vector) AS similarity_score,
             ROW_NUMBER() OVER (
               PARTITION BY file_path
@@ -225,6 +228,7 @@ export class SemanticRetrievalService {
         lineEnd: r.end_line,
         content: r.content,
         similarity: r.similarity_score,
+        commitSha: r.commit_sha ?? undefined,
       }));
     } finally {
       client.release();
@@ -258,6 +262,7 @@ export class SemanticRetrievalService {
           start_line,
           end_line,
           content,
+          commit_sha,
           1 - (embedding <=> $1::vector) AS similarity_score
         FROM repository_embeddings
         WHERE repository_id = $2
@@ -292,6 +297,7 @@ export class SemanticRetrievalService {
         lineEnd: r.end_line,
         content: r.content,
         similarity: r.similarity_score,
+        commitSha: r.commit_sha ?? undefined,
       }));
     } finally {
       client.release();

@@ -10,9 +10,10 @@ import { ReviewContextProvider } from "./providers/reviewContext.provider.js";
 import { IssueContextProvider } from "./providers/issueContext.provider.js";
 import { activityLogService } from "../dashboard/activityLog.service.js";
 import { ConversationTurn } from "../../shared/utils/conversationalQuery.js";
+import { SourceRef, normalizeMessageSources, toDisplaySources } from "../../shared/prompts/sourceRefs.js";
 
 export type StreamChunk =
-  | { type: "sources"; data: any[] }
+  | { type: "sources"; data: SourceRef[] }
   | { type: "text"; data: string }
   | { type: "metadata"; data: any }
   | { type: "sessionId"; data: string };
@@ -184,15 +185,17 @@ export class ChatService {
       [sessionId]
     );
 
-    // metadata.sources (persisted per assistant turn, see streamMessage's
-    // saveMessage call below) surfaced at the top level — ChatInterface.tsx's
-    // Message type reads `msg.sources` directly, not `msg.metadata.sources`.
-    // Historical turns saved before this fix simply have no sources array in
-    // their metadata and fall back to [], same as if nothing had matched.
-    return rows.map((row) => ({
-      ...row,
-      sources: row.metadata?.sources ?? [],
-    }));
+    // Display sources are derived from the persisted prompt-context snapshot
+    // (exact provenance). Older turns stored raw retrieval objects in
+    // metadata.sources instead — normalized as "legacy", never re-retrieved.
+    // The bulky snapshot itself stays server-side.
+    return rows.map((row) => {
+      const { sources, provenance } = normalizeMessageSources(row.metadata);
+      const metadata = { ...(row.metadata ?? {}) };
+      delete metadata.promptContext;
+      delete metadata.sources;
+      return { ...row, metadata, sources, sourcesProvenance: provenance };
+    });
   }
 
   async saveMessage(
@@ -279,8 +282,11 @@ export class ChatService {
       recentHistory,
     });
 
-    if (context.sources && context.sources.length > 0) {
-      onChunk({ type: "sources", data: context.sources });
+    // Sent before any text so citations can be resolved as the answer
+    // streams. Derived from the same snapshot persisted below.
+    const displaySources = toDisplaySources(context.promptContext);
+    if (displaySources.length > 0) {
+      onChunk({ type: "sources", data: displaySources });
     }
     if (context.metadata) {
       onChunk({ type: "metadata", data: context.metadata });
@@ -303,15 +309,17 @@ export class ChatService {
       }
     }
 
-    // 6. Save assistant turn to database — sources persisted alongside the
-    // existing count metadata so citation badges survive a reload instead
-    // of only ever existing for the live-streamed turn (context.sources is
-    // the same array already sent over the "sources" SSE event above).
+    // 6. Save assistant turn — the prompt-context snapshot is persisted with
+    // it, so a reload (or a later re-index) still shows exactly the context
+    // this answer was generated from.
     await this.saveMessage(
       session.id,
       "assistant",
       fullAiResponse,
-      { ...(context.metadata || {}), sources: context.sources || [] }
+      {
+        ...(context.metadata || {}),
+        ...(context.promptContext ? { promptContext: context.promptContext } : {}),
+      }
     );
 
     // 7. Update session timestamp

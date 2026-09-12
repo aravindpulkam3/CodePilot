@@ -301,6 +301,7 @@ export async function getLatestCommit(token: string | undefined, owner: string, 
         const cachedData = await cacheRedisClient.get(cacheKey);
         const cachedEtag = await cacheRedisClient.get(etagKey);
 
+        //If an ETag was found, it adds the If-None-Match HTTP header. This tells GitHub: "Only send the data if the resource has changed since this specific ETag was issued."
         if (cachedEtag) {
             headers['If-None-Match'] = cachedEtag;
         }
@@ -317,6 +318,7 @@ export async function getLatestCommit(token: string | undefined, owner: string, 
         // Get the latest commit on the default branch
         const branchRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/branches/${defaultBranch}`, { headers });
         
+        //A 304 Not Modified response indicates that the resource has not changed since the last time you requested it.
         if (branchRes.status === 304 && cachedData) {
             // ETag match! No rate limit consumed, return cached data
             return JSON.parse(cachedData);
