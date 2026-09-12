@@ -206,6 +206,13 @@ export async function updateSummariesIncrementally(input: IncrementalPipelineInp
       continue;
     }
 
+    // Phase-1 clears the renamed file's chunks/edges under the old path; the
+    // old FILE SUMMARY row is this phase's equivalent. No `continue` — the new
+    // path still needs its summary generated, exactly like a modified file.
+    if (file.status === 'renamed' && file.previousPath) {
+      await deps.store.delete(repositoryId, 'file', file.previousPath);
+    }
+
     if (!file.content) continue;
 
     const meta = await astChunker.extractFileAstMetadata(file.path, file.content);

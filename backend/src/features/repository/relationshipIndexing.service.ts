@@ -62,6 +62,66 @@ export class RelationshipIndexingService implements IRelationshipIndexer {
   }
 
   /**
+   * Moves a file's relationships from its old path to its new one.
+   *
+   * NOT the same as delete-then-reindex. The renamed file's OUTGOING edges are
+   * dropped (the caller re-indexes them from the new content in this same
+   * transaction), but INCOMING edges are RETARGETED rather than deleted:
+   * an importer only appears in a sync's changed-file set if its own bytes
+   * changed, and several real renames don't require that — a case-only rename,
+   * an extension-only rename (foo.js -> foo.ts, which resolves either way),
+   * or file -> directory-index (src/auth.ts -> src/auth/index.ts). Deleting
+   * those edges would drop real relationships that nothing rebuilds until the
+   * importer is next edited.
+   */
+  public async renameFileRelationships(
+    repositoryId: string,
+    oldPath: string,
+    newPath: string
+  ): Promise<void> {
+    // 1. Outgoing edges of the renamed file — rebuilt from its new content.
+    await this.db.query(
+      `DELETE FROM repository_relationships
+       WHERE repository_id = $1
+         AND source_node_type = 'file'
+         AND source_node_key = $2`,
+      [repositoryId, oldPath]
+    );
+
+    // 2. Incoming edges -> point them at the new path. The NOT EXISTS guard
+    // covers the case where the importer ALREADY has an edge to newPath (a
+    // rename that overwrites a file the importer also imported): without it
+    // this UPDATE would violate the table's UNIQUE constraint.
+    await this.db.query(
+      `UPDATE repository_relationships r
+          SET target_node_key = $3, updated_at = NOW()
+        WHERE r.repository_id = $1
+          AND r.target_node_type = 'file'
+          AND r.target_node_key = $2
+          AND NOT EXISTS (
+            SELECT 1 FROM repository_relationships e
+             WHERE e.repository_id = r.repository_id
+               AND e.source_node_type = r.source_node_type
+               AND e.source_node_key = r.source_node_key
+               AND e.target_node_type = 'file'
+               AND e.target_node_key = $3
+               AND e.relationship_type = r.relationship_type
+          )`,
+      [repositoryId, oldPath, newPath]
+    );
+
+    // 3. Whatever step 2 deliberately skipped is now redundant (an equivalent
+    // edge to newPath already exists), so drop it.
+    await this.db.query(
+      `DELETE FROM repository_relationships
+       WHERE repository_id = $1
+         AND target_node_type = 'file'
+         AND target_node_key = $2`,
+      [repositoryId, oldPath]
+    );
+  }
+
+  /**
    * Clears all relationships where this file is either the source or target.
    * Useful when a file is deleted.
    */

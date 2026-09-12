@@ -366,20 +366,33 @@ export async function getChangedFilesBetweenCommits(
 
     // GitHub's compare API returns an array of 'files'
     for (const file of data.files || []) {
-        // Map GitHub's status to our expected status
+        // Map GitHub's status to our expected status,This line is doing purely TypeScript type-checking work for the developer; it does zero work at runtime when the JavaScript actually runs.
         const status = file.status as 'added' | 'modified' | 'removed' | 'renamed';
         
         let content: string | null = null;
-        
+
         // Only fetch content if the file wasn't deleted
         if (status !== 'removed') {
             content = await fetchRawFileContent(token, owner, repo, file.filename, headSha);
         }
 
+        // For a rename, GitHub lists the entry under its NEW name only. Without
+        // carrying the old one through, the indexer has no way to know the old
+        // path existed, so its chunks/edges/summary would be orphaned in the
+        // index forever (see processRepositoryUpdate's 'renamed' branch).
+        if (status === 'renamed' && !file.previous_filename) {
+            console.warn(
+                `[GitHub] ${owner}/${repo}: file "${file.filename}" is marked renamed but has no previous_filename — the old path cannot be cleaned up.`,
+            );
+        }
+
         fileChanges.push({
             path: file.filename,
             content,
-            status
+            status,
+            ...(status === 'renamed' && file.previous_filename
+                ? { previousPath: file.previous_filename as string }
+                : {}),
         });
     }
 

@@ -15,6 +15,13 @@ export interface FileChange {
   path: string;
   content: string | null;
   status: "added" | "modified" | "removed" | "renamed";
+  /**
+   * The path this file had BEFORE a rename. Populated only when
+   * status === "renamed" (see github.service.ts#getChangedFilesBetweenCommits).
+   * Without it the old path's rows would stay in the index forever, since
+   * GitHub reports a renamed file under its new name only.
+   */
+  previousPath?: string;
 }
 
 export class RepositoryIndexingService {
@@ -60,10 +67,7 @@ export class RepositoryIndexingService {
 
     const memRelationshipIndexer = new MemoryRelationshipIndexer();
 
-    // "Known paths" for import resolution: every file already indexed for
-    // this repo, plus every non-removed file in this chunk. Relationship
-    // edges pointing at files outside this set are treated as external
-    // (not yet indexed, or a real external package) by extractLocalImports.
+    // "Known paths" for import resolution: every file already indexed for this repo, plus every non-removed file in this chunk. Relationship edges pointing at files outside this set are treated as external (not yet indexed, or a real external package) by extractLocalImports.
     const { rows: knownFileRows } = await pool.query(
       `SELECT DISTINCT file_path FROM repository_embeddings WHERE repository_id = $1`,
       [repositoryId],
@@ -81,6 +85,22 @@ export class RepositoryIndexingService {
           file.path,
         );
         continue;
+      }
+
+      // A rename is a delete of the OLD path plus a full index of the new one. Deliberately NOT deleteFileRelationships here: that clears edges where
+      // the old path is source OR target, and the incoming half can't be rebuilt from this sync — an importer only shows up in changedFiles if
+      // its own bytes changed, which a case-only / extension-only /
+      // file-to-index rename doesn't require. renameFileRelationships drops
+      // the old outgoing edges (rebuilt below from the new content) and
+      // RETARGETS the incoming ones onto the new path instead.
+      // No `continue` — the new path still needs chunking/embedding/linking.
+      if (file.status === "renamed" && file.previousPath) {
+        chunksToDelete.push({ filePath: file.previousPath, contentHashes: [] });
+        await memRelationshipIndexer.renameFileRelationships(
+          repositoryId,
+          file.previousPath,
+          file.path,
+        );
       }
 
       if (!file.content) continue;
@@ -264,6 +284,15 @@ export class RepositoryIndexingService {
 
       // 3. Apply Relationships
       const realTxRelIndexer = new RelationshipIndexingService(client);
+      // Renames first: retargeting incoming edges has to happen while the old
+      // path's rows are still present, before any delete can remove them.
+      for (const { oldPath, newPath } of memRelationshipIndexer.pendingRenames) {
+        await realTxRelIndexer.renameFileRelationships(
+          repositoryId,
+          oldPath,
+          newPath,
+        );
+      }
       for (const filePath of memRelationshipIndexer.pendingDeletes) {
         await realTxRelIndexer.deleteFileRelationships(repositoryId, filePath);
       }
