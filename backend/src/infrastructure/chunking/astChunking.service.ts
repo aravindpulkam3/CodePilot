@@ -132,6 +132,11 @@ const LANGUAGE_REGISTRY: Record<string, LangConfig> = {
 // Hard limit for the full embedding payload, including whitespace and headers.
 const CHUNK_BUDGET_CHARS = 6000;
 
+// Minimum non-whitespace characters a top-level gap needs before it earns its
+// own chunk. Keeps a stray blank line or lone "}" between two functions from
+// becoming a retrievable row.
+const MIN_TOP_LEVEL_GAP_CHARS = 10;
+
 interface SymbolMeta {
   symbolType: string;
   symbolName: string;
@@ -666,6 +671,77 @@ export class AstChunkingService {
       filePath, config, meta, boundaryNode.startPosition.row + 1, node.endPosition.row + 1);
   }
 
+  // Everything at file scope that no captured symbol covers: imports,
+  // side-effecting calls (app.use(...), route registration), top-level
+  // constants, trailing bootstrap code. Before this, a file containing even
+  // one function silently dropped all of it — buildWholeFileFallback only runs
+  // when NOTHING was captured, so this material was never chunked, never
+  // embedded, and could never be retrieved.
+  //
+  // `consumed` MUST be each root's [boundaryNode.startIndex, node.endIndex),
+  // the same span processNode chunks — using the bare node start instead would
+  // put a symbol's leading JSDoc in both its own chunk and the gap before it.
+  private buildTopLevelGapChunks(
+    consumed: { start: number; end: number }[],
+    sourceCode: string,
+    filePath: string,
+    config: LangConfig,
+    rootNode: any,
+  ): ChunkMetadata[] {
+    const merged: { start: number; end: number }[] = [];
+    for (const range of [...consumed].sort((a, b) => a.start - b.start)) {
+      const last = merged[merged.length - 1];
+      if (last && range.start <= last.end) last.end = Math.max(last.end, range.end);
+      else merged.push({ ...range });
+    }
+
+    // The complement of the consumed spans over the whole file.
+    const gaps: { start: number; end: number }[] = [];
+    let cursor = 0;
+    for (const range of merged) {
+      if (range.start > cursor) gaps.push({ start: cursor, end: range.start });
+      cursor = Math.max(cursor, range.end);
+    }
+    if (cursor < sourceCode.length) gaps.push({ start: cursor, end: sourceCode.length });
+
+    const lineStarts = [0];
+    for (let i = 0; i < sourceCode.length; i++) {
+      if (sourceCode[i] === "\n") lineStarts.push(i + 1);
+    }
+    const lineAt = (index: number): number => {
+      let low = 0;
+      let high = lineStarts.length;
+      while (low + 1 < high) {
+        const mid = (low + high) >>> 1;
+        if (lineStarts[mid] <= index) low = mid;
+        else high = mid;
+      }
+      return low + 1;
+    };
+
+    const name = `${path.basename(filePath)} (top-level)`;
+    const meta: SymbolMeta = {
+      symbolType: "module_top_level", symbolName: name, qualifiedName: name,
+      parentSymbol: null, isExported: false, docstring: null,
+    };
+
+    const chunks: ChunkMetadata[] = [];
+    for (const gap of gaps) {
+      // Trim to the gap's real content, so blank runs between symbols don't
+      // inflate the reported line range.
+      let start = gap.start;
+      let end = gap.end;
+      while (start < end && /\s/.test(sourceCode[start])) start++;
+      while (end > start && /\s/.test(sourceCode[end - 1])) end--;
+      if (end <= start) continue;
+      if (sourceCode.slice(start, end).replace(/\s+/g, "").length < MIN_TOP_LEVEL_GAP_CHARS) continue;
+
+      chunks.push(...this.boundedChunks(rootNode, start, end, sourceCode, filePath, config, meta,
+        lineAt(start), lineAt(end - 1)));
+    }
+    return chunks;
+  }
+
   // Only successful parses without captured symbols use whole-file fallback.
   private buildWholeFileFallback(sourceCode: string, filePath: string, config: LangConfig, rootNode: any): ChunkMetadata[] {
     const meta: SymbolMeta = {
@@ -732,10 +808,24 @@ export class AstChunkingService {
       const roots = captured.filter((c) => !captured.some((o) => o !== c && this.isContained(c.node, o.node)));
 
       let chunks: ChunkMetadata[] = [];
+      // Each root's consumed span, recorded so the leftover top-level material
+      // between them can be chunked too. resolveLeadingContext is pure and
+      // cheap, and calling it here returns exactly the boundaryNode processNode
+      // resolves internally — which is what keeps a symbol's leading comments
+      // out of the neighbouring gap chunk.
+      const consumedRanges: { start: number; end: number }[] = [];
       for (const root of roots) {
+        const { boundaryNode } = this.resolveLeadingContext(root.node);
+        consumedRanges.push({ start: boundaryNode.startIndex, end: root.node.endIndex });
         const symbolChunks = this.processNode(root.node, root.symbolType, captured, sourceCode, filePath, config);
         if (!symbolChunks.length) throw new Error(`No chunks produced for ${this.resolveSymbolName(root.node)}`);
         chunks.push(...symbolChunks);
+      }
+
+      if (captured.length > 0) {
+        chunks.push(
+          ...this.buildTopLevelGapChunks(consumedRanges, sourceCode, filePath, config, tree.rootNode),
+        );
       }
 
       if (captured.length === 0) {

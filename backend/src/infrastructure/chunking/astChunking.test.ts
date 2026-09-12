@@ -221,6 +221,147 @@ describe("astChunker.chunkFile - malformed and symbol-free input", () => {
   });
 });
 
+describe("astChunker.chunkFile - top-level code outside symbols", () => {
+  test("imports alongside a function are chunked instead of dropped", async () => {
+    const src = [
+      "import { Router } from 'express';",
+      "import { auth } from './auth.js';",
+      "",
+      "function handler() { return 1; }",
+    ].join("\n");
+    const chunks = await astChunker.chunkFile("routes.ts", src);
+
+    assert.equal(chunks.length, 2, "the import block must get its own chunk");
+    const topLevel = chunks.find((c) => c.symbol_type === "module_top_level")!;
+    assert.ok(topLevel, "expected a module_top_level chunk");
+    assert.ok(topLevel.content.includes("import { Router }"));
+    assert.ok(topLevel.content.includes("import { auth }"));
+    assert.ok(chunks.some((c) => c.symbol_type === "function"));
+  });
+
+  test("a symbol-free file still uses the whole-file fallback, not the gap path", async () => {
+    const src = ["import { x } from './x.js';", "export const CONFIG = { a: 1, b: 2 };"].join("\n");
+    const chunks = await astChunker.chunkFile("config.ts", src);
+
+    assert.equal(chunks[0].symbol_type, "file");
+    assert.ok(
+      !chunks.some((c) => c.symbol_type === "module_top_level"),
+      "captured.length === 0 must keep taking the old fallback branch",
+    );
+  });
+
+  test("a blank line between two functions does not become a chunk", async () => {
+    const src = ["function a() { return 1; }", "", "function b() { return 2; }"].join("\n");
+    const chunks = await astChunker.chunkFile("pair.ts", src);
+
+    assert.equal(chunks.length, 2, "a whitespace-only gap must be skipped");
+    assert.ok(!chunks.some((c) => c.symbol_type === "module_top_level"));
+  });
+
+  test("both a leading and a trailing gap are captured, with disjoint line ranges", async () => {
+    const src = [
+      "import { app } from './app.js';",
+      "",
+      "function start() { return app; }",
+      "",
+      "app.listen(3000, () => console.log('up'));",
+    ].join("\n");
+    const chunks = await astChunker.chunkFile("server.ts", src);
+
+    const topLevel = chunks.filter((c) => c.symbol_type === "module_top_level");
+    assert.equal(topLevel.length, 2, "leading imports and trailing bootstrap are separate gaps");
+    assert.ok(topLevel.some((c) => c.content.includes("import { app }")));
+    assert.ok(topLevel.some((c) => c.content.includes("app.listen(3000")));
+
+    const sorted = [...chunks].sort((a, b) => a.start_line - b.start_line);
+    for (let i = 1; i < sorted.length; i++) {
+      assert.ok(
+        sorted[i].start_line > sorted[i - 1].end_line,
+        `chunk ranges overlap: ${sorted[i - 1].start_line}-${sorted[i - 1].end_line} vs ${sorted[i].start_line}-${sorted[i].end_line}`,
+      );
+    }
+  });
+
+  test("a symbol's leading JSDoc belongs to the symbol, never to the gap before it", async () => {
+    const src = [
+      "const CONFIG = { retries: 3 };",
+      "",
+      "/** Creates a user. */",
+      "function createUser() { return 1; }",
+    ].join("\n");
+    const chunks = await astChunker.chunkFile("user.ts", src);
+
+    const gap = chunks.find((c) => c.symbol_type === "module_top_level")!;
+    const fn = chunks.find((c) => c.symbol_type === "function")!;
+
+    assert.ok(gap.content.includes("const CONFIG"));
+    assert.ok(
+      !gap.content.includes("Creates a user"),
+      "the gap must stop at the symbol's boundaryNode, not at its bare node start",
+    );
+    assert.ok(fn.content.includes("Creates a user"), "the docstring stays with its symbol");
+  });
+
+  test("an oversized gap splits into parts rather than blowing the budget", async () => {
+    const decls = Array.from(
+      { length: 200 },
+      (_, i) => `const SETTING_${i} = { key: "value_${i}", enabled: true, retries: 3 };`,
+    );
+    const src = [...decls, "function noop() { return null; }"].join("\n");
+    const chunks = await astChunker.chunkFile("settings.ts", src);
+
+    const topLevel = chunks.filter((c) => c.symbol_type === "module_top_level");
+    assert.ok(topLevel.length > 1, "a >6000 char gap must be split");
+    assert.ok(topLevel.every((c) => c.chunk_total === topLevel.length));
+    assert.deepEqual(
+      topLevel.map((c) => c.chunk_index).sort((a, b) => a! - b!),
+      topLevel.map((_, i) => i + 1),
+    );
+  });
+
+  test("symbol and gap chunks together cover every meaningful line exactly once", async () => {
+    // The invariant that catches both failure modes at once: a gap silently
+    // dropped (omission) and a gap re-including a symbol's docstring (overlap).
+    // Every symbol here is well under CHUNK_BUDGET_CHARS on purpose —
+    // class_skeleton and split parts overlap by design and would defeat the
+    // no-overlap half of the assertion.
+    const src = [
+      "import { Router } from 'express';",
+      "",
+      "const PREFIX = '/api';",
+      "",
+      "/** Handles a request. */",
+      "function handle(req) {",
+      "  return req;",
+      "}",
+      "",
+      "class Service {",
+      "  run() { return handle(null); }",
+      "}",
+      "",
+      "export const router = Router();",
+      "router.use(PREFIX, handle);",
+    ].join("\n");
+    const chunks = await astChunker.chunkFile("app.ts", src);
+    const lines = src.split("\n");
+
+    const coverage = new Map<number, number>();
+    for (const chunk of chunks) {
+      for (let ln = chunk.start_line; ln <= chunk.end_line; ln++) {
+        coverage.set(ln, (coverage.get(ln) ?? 0) + 1);
+      }
+    }
+
+    for (const [ln, count] of coverage) {
+      assert.equal(count, 1, `line ${ln} covered ${count}x: ${JSON.stringify(lines[ln - 1])}`);
+    }
+    lines.forEach((text, i) => {
+      if (text.trim() === "") return;
+      assert.ok(coverage.has(i + 1), `line ${i + 1} was dropped: ${JSON.stringify(text)}`);
+    });
+  });
+});
+
 describe("astChunker.chunkFile - content_hash uniqueness", () => {
   test("two symbols that hash identically are deduplicated before reaching the caller", async () => {
     const src = ["export function doThing() { return 1; }", "export function doThing() { return 1; }"].join("\n");
