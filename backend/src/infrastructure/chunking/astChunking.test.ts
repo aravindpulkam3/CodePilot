@@ -41,32 +41,47 @@ describe("astChunker.chunkFile - class handling", () => {
     assert.ok(!chunks.some((c) => c.symbol_type === "method"), "no separate method rows for a small class");
   });
 
-  test("a large class becomes one class_skeleton chunk plus one chunk per method, with no duplication", async () => {
+  test("a large class becomes one class_skeleton chunk plus packed member chunks, with no duplication", async () => {
     const src = buildLargeClassSource();
     const chunks = await astChunker.chunkFile("big.service.ts", src);
 
     const skeleton = chunks.filter((c) => c.symbol_type === "class_skeleton");
+    const groups = chunks.filter((c) => c.symbol_type === "class_member_group");
     const methods = chunks.filter((c) => c.symbol_type === "method");
 
     assert.equal(skeleton.length, 1);
-    assert.equal(methods.length, 5, "one chunk per method — never merged across sibling methods");
-    assert.equal(chunks.length, 6, "no extra full-body class chunk alongside the skeleton");
+    // Five ~2.8KB methods pack two-per-chunk until the budget runs out; the
+    // odd one left over stays a plain method chunk rather than a lone group.
+    assert.equal(groups.length, 2, "adjacent small members share a chunk");
+    assert.equal(methods.length, 1, "the leftover member keeps its own identity");
+    assert.equal(chunks.length, 4, "no extra full-body class chunk alongside the skeleton");
+    assert.ok(chunks.every((c) => c.content.length <= 6000), "packing never exceeds the payload budget");
+    assert.deepEqual(
+      groups.map((g) => /^\/\/ Members: (.*)$/m.exec(g.content)?.[1]),
+      ["createUser, updateUser", "deleteUser, validateInput"],
+      "members are packed in source order, never regrouped across the file",
+    );
+    for (const name of ["createUser", "updateUser", "deleteUser", "validateInput", "notifyAdmins"]) {
+      const bodies = chunks.filter((c) => c.symbol_type !== "class_skeleton" && c.content.includes(`${name}()`));
+      assert.equal(bodies.length, 1, `${name}'s body lives in exactly one chunk`);
+    }
 
     for (const name of ["createUser", "updateUser", "deleteUser", "validateInput", "notifyAdmins"]) {
       assert.ok(skeleton[0].content.includes(`${name}()`), `skeleton must list ${name}'s signature`);
     }
     assert.ok(!skeleton[0].content.includes("doWork0_0"), "skeleton must not include method bodies");
     assert.ok(
-      methods.some((m) => m.content.includes("doWork0_0")),
-      "the real body must live in the method's own chunk",
+      groups.some((g) => g.content.includes("doWork0_0")),
+      "the real body must live in a member chunk, not the skeleton",
     );
     assert.ok(skeleton[0].content.includes("extends BaseService"), "inheritance is preserved in the skeleton");
 
     const hashes = new Set(chunks.map((c) => c.content_hash));
     assert.equal(hashes.size, chunks.length, "every chunk for this file has a distinct hash");
 
-    assert.ok(methods.every((m) => m.parent_symbol === "BigService"));
-    assert.ok(methods.every((m) => m.content.includes("// Class: BigService")));
+    const memberChunks = [...groups, ...methods];
+    assert.ok(memberChunks.every((m) => m.parent_symbol === "BigService"));
+    assert.ok(memberChunks.every((m) => m.content.includes("// Class: BigService")));
   });
 });
 
@@ -457,7 +472,7 @@ const work = (label: string, count = 180) => Array.from({ length: count }, (_, i
   `      ${label}(${i}, repository.currentRevision, options.force);`).join("\n");
 
 function sourcePayload(content: string): string {
-  return content.replace(/^(?:\/\/ (?:File|Language|Type|Name|Exported|Class|Part|Signature|Context):[^\n]*\n)+/, "");
+  return content.replace(/^(?:\/\/ (?:File|Language|Type|Name|Exported|Class|Members|Part|Signature|Context):[^\n]*\n)+/, "");
 }
 
 describe("astChunker - bounded contextual chunks", () => {
@@ -481,8 +496,16 @@ describe("astChunker - bounded contextual chunks", () => {
       "execute = async (id: string): Promise<void>"]) assert.ok(skeleton.includes(declaration), declaration);
     assert.ok(!skeleton.includes("executeWork") && !skeleton.includes("runWork") && !skeleton.includes("this.db = db"));
     assert.ok(!skeleton.includes("initialize()") && !skeleton.includes("return value + 1"));
-    assert.ok(chunks.some((c) => c.symbol_type === "block" && c.content.includes("initialize()")));
-    assert.ok(chunks.some((c) => c.qualified_name === "Service.helper" && c.content.includes("return value + 1")));
+    // The five small members (static block, helper, constructor, both accessors)
+    // are adjacent and tiny, so they pack into one member-group chunk instead of
+    // five near-empty rows. Their bodies must still be retrievable there.
+    const group = chunks.filter((c) => c.symbol_type === "class_member_group");
+    assert.equal(group.length, 1);
+    assert.ok(group[0].content.includes("initialize()"), "static block body lives in the group");
+    assert.ok(group[0].content.includes("return value + 1"), "helper body lives in the group");
+    assert.ok(group[0].content.includes("this.db = db"), "constructor body lives in the group");
+    assert.match(group[0].content, /^\/\/ Members: static, helper, constructor, size, size$/m);
+    assert.equal(group[0].parent_symbol, "Service");
     assert.ok(chunks.some((c) => c.symbol_type === "method" && c.content.includes("executeWork(179")));
     assert.ok(chunks.every((c) => c.content.length <= 6000));
     assert.ok(chunks.filter((c) => c.qualified_name === "Service.execute").every((c) =>
@@ -644,5 +667,96 @@ describe("astChunker - installed grammar naming", () => {
     const meta = await service.extractFileAstMetadata("inventory.ts", buildLargeClassSource());
     assert.deepEqual(meta?.classes, ["BigService"]);
     assert.equal(meta?.functions.length, 5);
+  });
+});
+
+describe("astChunker - member packing and lead-in absorption", () => {
+  const tiny = (name: string) => `  ${name}() { return this.repo.${name}(); }`;
+  const bulky = (name: string) =>
+    `  ${name}() {\n` +
+    Array.from({ length: 200 }, (_, i) => `    step_${i}(alpha, beta, gamma, delta);`).join("\n") +
+    "\n  }";
+
+  const packedSource = [
+    "export class UserService extends Base {",
+    "  private db: Database;",
+    tiny("getUser"), tiny("exists"), tiny("getByEmail"),
+    bulky("processBulkUsers"),
+    tiny("deleteUser"), tiny("deactivateUser"),
+    "}",
+  ].join("\n");
+
+  test("a large member flushes the pending group and grouping resumes after it", async () => {
+    const chunks = await astChunker.chunkFile("user.service.ts", packedSource);
+    assert.deepEqual(
+      chunks.map((c) => c.symbol_type),
+      ["class_skeleton", "class_member_group", "method", "method", "class_member_group"],
+      "small members either side of the split member pack separately, never across it",
+    );
+    assert.deepEqual(
+      chunks.filter((c) => c.symbol_type === "class_member_group")
+        .map((g) => /^\/\/ Members: (.*)$/m.exec(g.content)?.[1]),
+      ["getUser, exists, getByEmail", "deleteUser, deactivateUser"],
+    );
+    const split = chunks.filter((c) => c.symbol_type === "method");
+    assert.ok(split.every((c) => c.qualified_name === "UserService.processBulkUsers"),
+      "the large member keeps its own AST-aware split untouched");
+    assert.deepEqual(split.map((c) => c.chunk_index), [1, 2]);
+  });
+
+  test("packed members stay inside the payload budget and duplicate nothing", async () => {
+    const chunks = await astChunker.chunkFile("user.service.ts", packedSource);
+    assert.ok(chunks.every((c) => c.content.length <= 6000));
+
+    for (const name of ["getUser", "exists", "getByEmail", "deleteUser", "deactivateUser"]) {
+      const bodies = chunks.filter(
+        (c) => c.symbol_type !== "class_skeleton" && c.content.includes(`this.repo.${name}()`),
+      );
+      assert.equal(bodies.length, 1, `${name}'s body appears exactly once outside the skeleton`);
+    }
+    // A field between members belongs to the skeleton alone — a group slices
+    // each member individually rather than spanning first-to-last, so nothing
+    // between them is copied twice.
+    assert.ok(!chunks.some((c) => c.symbol_type === "class_member_group" && c.content.includes("private db")));
+    assert.ok(chunks.some((c) => c.symbol_type === "class_skeleton" && c.content.includes("private db: Database")));
+
+    const hashes = new Set(chunks.map((c) => c.content_hash));
+    assert.equal(hashes.size, chunks.length);
+  });
+
+  test("a group's line range spans its own members", async () => {
+    const chunks = await astChunker.chunkFile("user.service.ts", packedSource);
+    const [first, second] = chunks.filter((c) => c.symbol_type === "class_member_group");
+    const lines = packedSource.split("\n");
+    assert.ok(lines[first.start_line - 1].includes("getUser"));
+    assert.ok(lines[first.end_line - 1].includes("getByEmail"));
+    assert.ok(lines[second.start_line - 1].includes("deleteUser"));
+    assert.ok(lines[second.end_line - 1].includes("deactivateUser"));
+  });
+
+  test("an oversized block absorbs its own lead-in instead of stranding it in a chunk", async () => {
+    const body = Array.from({ length: 260 },
+      (_, i) => `      stepA_${i}(alpha, beta, gamma, delta, epsilon);`).join("\n");
+    const src = [
+      "export function processUsers() {",
+      "  validateInput();",
+      "  if (shouldProcess(batch)) {", body, "  }",
+      "  saveResults();",
+      "}",
+    ].join("\n");
+    const chunks = await astChunker.chunkFile("proc.ts", src);
+
+    assert.ok(
+      !chunks.some((c) => sourcePayload(c.content).trim() === "if (shouldProcess(batch))"),
+      "the condition must never be a chunk of its own — it is mostly header and unretrievable alone",
+    );
+    const opener = chunks.find((c) => sourcePayload(c.content).trimStart().startsWith("if (shouldProcess(batch)) {"));
+    assert.ok(opener, "the lead-in opens the first chunk of the block it introduces");
+    assert.match(opener!.content, /^\/\/ Context: if \(shouldProcess\(batch\)\) > \{$/m);
+    // Statements outside the if keep their own shallower context — packing must
+    // never pull them into the block and mislabel them as being inside it.
+    const outside = chunks.find((c) => sourcePayload(c.content).includes("saveResults()"));
+    assert.ok(outside && !/^\/\/ Context:/m.test(outside.content));
+    assert.ok(chunks.every((c) => c.content.length <= 6000));
   });
 });

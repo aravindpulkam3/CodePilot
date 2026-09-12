@@ -80,11 +80,7 @@ export class RepositorySyncService {
     // Committed to indexing now — reflect that immediately so pollers see real state rather than a stale prior status while GitHub is fetched.
     await pool.query(`UPDATE repositories SET indexing_status = 'SYNCING' WHERE id = $1`, [repositoryId]);
 
-    // From here on, ANY failure (GitHub rate limits, network errors, a bad enqueue, etc.) must not leave the repo stuck at SYNCING/INDEXING forever — SYNC_IN_FLIGHT_STATUSES would then skip every future sync
-    // attempt as "already in flight" (see the guard above), with no way to
-    // retry short of a manual UPDATE. Mirrors the try/catch ->
-    // indexing_status = 'FAILED' pattern repositoryIndex.service.ts already
-    // has for the indexing stage — this was the sync stage's missing half.
+    // From here on, ANY failure (GitHub rate limits, network errors, a bad enqueue, etc.) must not leave the repo stuck at SYNCING/INDEXING forever — SYNC_IN_FLIGHT_STATUSES would then skip every future sync attempt as "already in flight" (see the guard above), with no way to retry short of a manual UPDATE. 
     try {
       // 4. Fetch the actual file contents that need to be indexed
       let filesToIndex: FileChange[] = [];

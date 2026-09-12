@@ -90,7 +90,7 @@ export const TRUNCATION_MARKER = "\n...[truncated]";
 // content (astChunking.service.ts#buildHeader, documentationChunking's
 // buildChunk). Useful to the embedder, noise to a reader — and its facts are
 // restated in each entry's heading.
-const HEADER_LINE = /^\/\/ (File|Language|Type|Name|Exported|Class|Part|Signature|Context|Section): /;
+const HEADER_LINE = /^\/\/ (File|Language|Type|Name|Exported|Class|Members|Part|Signature|Context|Section): /;
 
 /**
  * Removes the leading synthetic header block. Only fires when line 1 is a
@@ -220,8 +220,15 @@ export function githubBlobUrl(
   return url;
 }
 
+// Chunk types whose body is assembled rather than copied from one contiguous
+// span: a skeleton is reconstructed signature lines, and a member group
+// concatenates members while omitting the fields and comments between them. In
+// both cases the stored line range spans more of the file than the text shown,
+// so it cannot anchor an excerpt to real line numbers.
+const ASSEMBLED_CODE_CHUNKS = new Set(["class_skeleton", "class_member_group"]);
+
 function isFileAligned(kind: ContextKind, symbolType: string | undefined): boolean {
-  return kind === "code" && symbolType !== "class_skeleton";
+  return kind === "code" && !ASSEMBLED_CODE_CHUNKS.has(symbolType ?? "");
 }
 
 /** The one conversion boundary from authoritative prompt context to display sources. */
@@ -286,7 +293,7 @@ function legacyToSourceRef(raw: any, index: number): SourceRef {
     if (section) ref.section = String(section);
   } else {
     if (raw?.symbolName) ref.symbol = String(raw.symbolName);
-    if (lineStart && raw?.symbolType !== "class_skeleton") ref.excerptStartLine = lineStart;
+    if (lineStart && !ASSEMBLED_CODE_CHUNKS.has(raw?.symbolType ?? "")) ref.excerptStartLine = lineStart;
   }
   return ref;
 }

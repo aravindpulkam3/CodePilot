@@ -44,7 +44,11 @@ interface LangConfig {
 const LANGUAGE_REGISTRY: Record<string, LangConfig> = {
   ".ts": {
     name: "TypeScript",
-    wasmPath: path.join(process.cwd(), "parsers", "tree-sitter-typescript.wasm"),
+    wasmPath: path.join(
+      process.cwd(),
+      "parsers",
+      "tree-sitter-typescript.wasm",
+    ),
     query: `
       (function_declaration) @function
       (method_definition) @method
@@ -76,7 +80,11 @@ const LANGUAGE_REGISTRY: Record<string, LangConfig> = {
   },
   ".js": {
     name: "JavaScript",
-    wasmPath: path.join(process.cwd(), "parsers", "tree-sitter-javascript.wasm"),
+    wasmPath: path.join(
+      process.cwd(),
+      "parsers",
+      "tree-sitter-javascript.wasm",
+    ),
     query: `
       (function_declaration) @function
       (method_definition) @method
@@ -89,7 +97,11 @@ const LANGUAGE_REGISTRY: Record<string, LangConfig> = {
   },
   ".jsx": {
     name: "JavaScript (React)",
-    wasmPath: path.join(process.cwd(), "parsers", "tree-sitter-javascript.wasm"), // JS parser handles JSX
+    wasmPath: path.join(
+      process.cwd(),
+      "parsers",
+      "tree-sitter-javascript.wasm",
+    ), // JS parser handles JSX
     query: `
       (function_declaration) @function
       (method_definition) @method
@@ -171,7 +183,10 @@ export class AstChunkingService {
       this.isInitialized = true;
       console.log("[AST Chunker] Web-Tree-Sitter initialized successfully.");
     } catch (error) {
-      console.error("[AST Chunker] Failed to initialize Web-Tree-Sitter:", error);
+      console.error(
+        "[AST Chunker] Failed to initialize Web-Tree-Sitter:",
+        error,
+      );
       throw error;
     }
   }
@@ -184,7 +199,8 @@ export class AstChunkingService {
     if (this.loadedLanguages.has(wasmPath)) {
       return this.loadedLanguages.get(wasmPath)!;
     }
-    if (!fs.existsSync(wasmPath)) {//This checks the filesystem.
+    if (!fs.existsSync(wasmPath)) {
+      //This checks the filesystem.
       console.warn(`[AST Chunker] Missing parser at: ${wasmPath}.`);
       return null;
     }
@@ -215,15 +231,28 @@ export class AstChunkingService {
     if (!ancestors.length) return "";
     // Compact each ancestor separately: truncating the joined path would erase
     // entire intermediate conditions. Fail safely for unrepresentable depth.
-    const perAncestor = Math.floor((1000 - (ancestors.length - 1) * 3) / ancestors.length);
-    if (perAncestor < 24) throw new Error("Control-flow nesting exceeds the context budget");
-    return ancestors.map((ancestor) => this.compact(ancestor, perAncestor)).join(" > ");
+    const perAncestor = Math.floor(
+      (1000 - (ancestors.length - 1) * 3) / ancestors.length,
+    );
+    if (perAncestor < 24)
+      throw new Error("Control-flow nesting exceeds the context budget");
+    return ancestors
+      .map((ancestor) => this.compact(ancestor, perAncestor))
+      .join(" > ");
   }
 
   private resolveCppDeclarator(node: any): string | null {
     if (!node) return null;
     if (node.type === "operator_cast") return node.text.split("(")[0].trim();
-    if (["identifier", "field_identifier", "qualified_identifier", "destructor_name", "operator_name"].includes(node.type)) {
+    if (
+      [
+        "identifier",
+        "field_identifier",
+        "qualified_identifier",
+        "destructor_name",
+        "operator_name",
+      ].includes(node.type)
+    ) {
       return node.text;
     }
     const declarator = node.childForFieldName?.("declarator");
@@ -247,7 +276,9 @@ export class AstChunkingService {
     const direct = node.childForFieldName?.("name");
     if (direct?.text) return direct.text;
 
-    const cppName = this.resolveCppDeclarator(node.childForFieldName?.("declarator"));
+    const cppName = this.resolveCppDeclarator(
+      node.childForFieldName?.("declarator"),
+    );
     if (cppName) return cppName;
 
     if (node.type === "type_declaration") {
@@ -278,7 +309,8 @@ export class AstChunkingService {
   // interview-mode context and for disambiguating same-named methods.
   private resolveParentSymbol(node: any): string | null {
     const receiver = node.childForFieldName?.("receiver");
-    const receiverType = receiver?.namedChildren?.[0]?.childForFieldName?.("type");
+    const receiverType =
+      receiver?.namedChildren?.[0]?.childForFieldName?.("type");
     if (receiverType) return receiverType.text.replace(/^\*\s*/, "");
     let current = node.parent;
     let depth = 0;
@@ -307,7 +339,8 @@ export class AstChunkingService {
     let current = node.parent;
     let depth = 0;
     while (current && depth < 3) {
-      if (typeof current.type === "string" && current.type.includes("export")) return true;
+      if (typeof current.type === "string" && current.type.includes("export"))
+        return true;
       current = current.parent;
       depth++;
     }
@@ -317,7 +350,10 @@ export class AstChunkingService {
   // Pulls in immediately preceding comments/decorators (JSDoc, Python
   // docstrings-via-decorator, TS decorators) so a chunk carries the intent
   // behind the code, not just the code itself.
-  private resolveLeadingContext(node: any): { boundaryNode: any; docstring: string | null } {
+  private resolveLeadingContext(node: any): {
+    boundaryNode: any;
+    docstring: string | null;
+  } {
     let boundaryNode = node;
     const docstringParts: string[] = [];
 
@@ -327,7 +363,10 @@ export class AstChunkingService {
     }
 
     let sibling = boundaryNode.previousNamedSibling;
-    while (sibling && (sibling.type === "comment" || sibling.type === "decorator")) {
+    while (
+      sibling &&
+      (sibling.type === "comment" || sibling.type === "decorator")
+    ) {
       docstringParts.unshift(sibling.text);
       boundaryNode = sibling;
       sibling = sibling.previousNamedSibling;
@@ -352,10 +391,17 @@ export class AstChunkingService {
     if (body) return body;
     if (node.type === "type_spec") {
       const type = node.childForFieldName?.("type");
-      return type?.namedChildren?.find((child: any) => child.type === "field_declaration_list") ?? null;
+      return (
+        type?.namedChildren?.find(
+          (child: any) => child.type === "field_declaration_list",
+        ) ?? null
+      );
     }
     const value = node.childForFieldName?.("value");
-    if (value && ["arrow_function", "function_expression"].includes(value.type)) {
+    if (
+      value &&
+      ["arrow_function", "function_expression"].includes(value.type)
+    ) {
       return value.childForFieldName?.("body") ?? null;
     }
     if (node.type === "type_declaration") {
@@ -372,11 +418,17 @@ export class AstChunkingService {
 
   private signature(node: any, sourceCode: string): string {
     const body = this.findBodyField(node);
-    return this.compact(sourceCode.slice(node.startIndex, body?.startIndex ?? node.endIndex));
+    return this.compact(
+      sourceCode.slice(node.startIndex, body?.startIndex ?? node.endIndex),
+    );
   }
 
   private isContained(inner: any, outer: any): boolean {
-    return inner !== outer && inner.startIndex >= outer.startIndex && inner.endIndex <= outer.endIndex;
+    return (
+      inner !== outer &&
+      inner.startIndex >= outer.startIndex &&
+      inner.endIndex <= outer.endIndex
+    );
   }
 
   // Runs the language's tree-sitter query and returns every captured node,
@@ -385,7 +437,10 @@ export class AstChunkingService {
   // HOW to chunk them, based on size/containment) and
   // extractFileAstMetadata() (which just wants to know what's declared,
   // independent of any chunking decision).
-  private captureSymbols(rootNode: any, query: Query): Array<{ node: any; symbolType: string }> {
+  private captureSymbols(
+    rootNode: any,
+    query: Query,
+  ): Array<{ node: any; symbolType: string }> {
     const matches = query.matches(rootNode);
     const seenRanges = new Set<string>();
     const out: Array<{ node: any; symbolType: string }> = [];
@@ -411,6 +466,7 @@ export class AstChunkingService {
     partInfo?: PartInfo;
     signature?: string;
     context?: string;
+    members?: string;
   }): string {
     return [
       `// File: ${this.compact(opts.filePath, 400)}`,
@@ -418,9 +474,16 @@ export class AstChunkingService {
       `// Type: ${opts.symbolType}`,
       `// Name: ${this.compact(opts.qualifiedName, 400)}`,
       opts.isExported ? `// Exported: true` : null,
-      opts.parentSymbol ? `// Class: ${this.compact(opts.parentSymbol, 400)}` : null,
-      opts.partInfo ? `// Part: ${opts.partInfo.index} of ${opts.partInfo.total}` : null,
-      opts.partInfo && opts.signature ? `// Signature: ${opts.signature}` : null,
+      opts.parentSymbol
+        ? `// Class: ${this.compact(opts.parentSymbol, 400)}`
+        : null,
+      opts.members ? `// Members: ${this.compact(opts.members, 400)}` : null,
+      opts.partInfo
+        ? `// Part: ${opts.partInfo.index} of ${opts.partInfo.total}`
+        : null,
+      opts.partInfo && opts.signature
+        ? `// Signature: ${opts.signature}`
+        : null,
       opts.context ? `// Context: ${opts.context}` : null,
     ]
       .filter(Boolean)
@@ -445,7 +508,9 @@ export class AstChunkingService {
     partInfo?: PartInfo,
     context?: string,
   ): ChunkMetadata {
-    const symbolName = partInfo ? `${meta.symbolName} (part ${partInfo.index}/${partInfo.total})` : meta.symbolName;
+    const symbolName = partInfo
+      ? `${meta.symbolName} (part ${partInfo.index}/${partInfo.total})`
+      : meta.symbolName;
     const header = this.buildHeader({
       filePath,
       languageName: config.name,
@@ -457,7 +522,8 @@ export class AstChunkingService {
       signature: meta.signature,
       context,
     });
-    const content = `${header}\n${sourceCode.slice(rangeStart, rangeEnd)}`.trim();
+    const content =
+      `${header}\n${sourceCode.slice(rangeStart, rangeEnd)}`.trim();
     return {
       file_path: filePath,
       language: config.name,
@@ -479,7 +545,10 @@ export class AstChunkingService {
   // Preserve all source intervals, preferring whole AST children. Textual cuts
   // are reserved for leaves that cannot be reduced further by the grammar.
   private buildAstAwareParts(
-    node: any, sourceCode: string, wholeStart: number, wholeEnd: number,
+    node: any,
+    sourceCode: string,
+    wholeStart: number,
+    wholeEnd: number,
     capacity: (context: string) => number,
   ): Range[] {
     const lineStarts = [0];
@@ -500,12 +569,22 @@ export class AstChunkingService {
     const emit = (start: number, end: number, context: string) => {
       if (end <= start) return;
       const previous = parts[parts.length - 1];
-      if (previous && previous.context === context && previous.endIndex === start &&
-          end - previous.startIndex <= capacity(context)) {
+      if (
+        previous &&
+        previous.context === context &&
+        previous.endIndex === start &&
+        end - previous.startIndex <= capacity(context)
+      ) {
         previous.endIndex = end;
         previous.endRow = row(end - 1);
       } else {
-        parts.push({ startIndex: start, endIndex: end, startRow: row(start), endRow: row(end - 1), context });
+        parts.push({
+          startIndex: start,
+          endIndex: end,
+          startRow: row(start),
+          endRow: row(end - 1),
+          context,
+        });
       }
     };
     const textual = (start: number, end: number, context: string) => {
@@ -516,24 +595,38 @@ export class AstChunkingService {
         if (cut < end) {
           const newline = sourceCode.lastIndexOf("\n", cut - 1);
           if (newline >= start) cut = newline + 1;
-          if (cut > start && /[\uD800-\uDBFF]/.test(sourceCode[cut - 1]) &&
-              /[\uDC00-\uDFFF]/.test(sourceCode[cut])) cut--;
+          if (
+            cut > start &&
+            /[\uD800-\uDBFF]/.test(sourceCode[cut - 1]) &&
+            /[\uDC00-\uDFFF]/.test(sourceCode[cut])
+          )
+            cut--;
         }
         emit(start, cut, context);
         start = cut;
       }
     };
-    const walk = (current: any, start: number, end: number, ancestors: string[]) => {
+    const walk = (
+      current: any,
+      start: number,
+      end: number,
+      ancestors: string[],
+    ) => {
       const context = this.contextHeader(ancestors);
       if (end - start <= capacity(context)) {
         emit(start, end, context);
         return;
       }
       const body = this.findBodyField(current);
-      const isControl = /(?:statement|clause|case|block|default)$/.test(current?.type ?? "");
-      const container = !isControl && body?.namedChildren?.length ? body : current;
+      const isControl = /(?:statement|clause|case|block|default)$/.test(
+        current?.type ?? "",
+      );
+      const container =
+        !isControl && body?.namedChildren?.length ? body : current;
       const children: any[] = (container?.namedChildren ?? []).filter(
-        (child: any) => child.startIndex >= start && child.endIndex <= end &&
+        (child: any) =>
+          child.startIndex >= start &&
+          child.endIndex <= end &&
           child.endIndex > child.startIndex,
       );
       if (!children.length) {
@@ -541,15 +634,36 @@ export class AstChunkingService {
         return;
       }
       let nested = ancestors;
-      if (current && isControl &&
-          !["expression_statement", "return_statement", "lexical_declaration"].includes(current.type)) {
-        const contextBody = body ?? children.find((child) => /block|body/.test(child.type));
-        const firstStatement = children.find((child) => child.type.endsWith("statement"));
-        const prefixEnd = contextBody?.startIndex ?? firstStatement?.startIndex ?? children[0].startIndex;
-        let prefix = this.compact(sourceCode.slice(current.startIndex, prefixEnd), 240);
+      // End of the construct's own lead-in text ("if (cond)", "for (...;...;...)").
+      // Stays at `start` for everything that has no lead-in.
+      let leadInEnd = start;
+      if (
+        current &&
+        isControl &&
+        ![
+          "expression_statement",
+          "return_statement",
+          "lexical_declaration",
+        ].includes(current.type)
+      ) {
+        const contextBody =
+          body ?? children.find((child) => /block|body/.test(child.type));
+        const firstStatement = children.find((child) =>
+          child.type.endsWith("statement"),
+        );
+        const prefixEnd =
+          contextBody?.startIndex ??
+          firstStatement?.startIndex ??
+          children[0].startIndex;
+        leadInEnd = prefixEnd;
+        let prefix = this.compact(
+          sourceCode.slice(current.startIndex, prefixEnd),
+          240,
+        );
         if (current.type === "do_statement") {
           const condition = current.childForFieldName?.("condition");
-          if (condition) prefix += ` while ${this.compact(condition.text, 240)}`;
+          if (condition)
+            prefix += ` while ${this.compact(condition.text, 240)}`;
         }
         nested = [...ancestors, prefix || current.type];
       } else if (body && current !== node) {
@@ -561,9 +675,21 @@ export class AstChunkingService {
       for (let i = 0; i < children.length; i++) {
         const child = children[i];
         const childEnd = i === children.length - 1 ? end : child.endIndex;
+        // A condition/loop-header child holds no body of its own, and it walks
+        // one level shallower than the block it introduces — so emitting it
+        // separately strands the construct's opening line in its own chunk that
+        // emit() can merge neither backward nor forward. Leave the cursor put so
+        // that text is absorbed by the first child carrying the actual body.
+        // Never skip the last child: it is the one walked out to `end`, so
+        // skipped source always lands in a later part rather than being lost.
+        if (child.endIndex <= leadInEnd && i < children.length - 1) continue;
         const alternative = current?.childForFieldName?.("alternative");
-        const childContext = alternative && alternative.id === child.id && child.type !== "else_clause"
-          ? [...nested, "else"] : nested;
+        const childContext =
+          alternative &&
+          alternative.id === child.id &&
+          child.type !== "else_clause"
+            ? [...nested, "else"]
+            : nested;
         walk(child, cursor, childEnd, childContext);
         cursor = childEnd;
       }
@@ -573,32 +699,72 @@ export class AstChunkingService {
   }
 
   private boundedChunks(
-    node: any, start: number, end: number, sourceCode: string,
-    filePath: string, config: LangConfig, meta: SymbolMeta,
-    startLine: number, endLine: number,
+    node: any,
+    start: number,
+    end: number,
+    sourceCode: string,
+    filePath: string,
+    config: LangConfig,
+    meta: SymbolMeta,
+    startLine: number,
+    endLine: number,
   ): ChunkMetadata[] {
-    const whole = this.buildChunkFromRange(start, end, sourceCode, filePath, config, meta, startLine, endLine);
+    const whole = this.buildChunkFromRange(
+      start,
+      end,
+      sourceCode,
+      filePath,
+      config,
+      meta,
+      startLine,
+      endLine,
+    );
     if (this.measureSize(whole.content) <= CHUNK_BUDGET_CHARS) return [whole];
     // The number of nonempty parts cannot exceed the source's UTF-16 length.
     // Reserve that digit width so final numbering cannot exceed the budget.
     const maxParts = Math.max(1, sourceCode.length);
-    const capacity = (context: string) => CHUNK_BUDGET_CHARS - 1 - this.buildHeader({
-      filePath, languageName: config.name, symbolType: meta.symbolType,
-      qualifiedName: meta.qualifiedName, parentSymbol: meta.parentSymbol,
-      isExported: meta.isExported, signature: meta.signature, context,
-      partInfo: { index: maxParts, total: maxParts },
-    }).length;
-    const parts = this.buildAstAwareParts(node, sourceCode, start, end, capacity);
-    return parts.map((part, i) => this.buildChunkFromRange(
-      part.startIndex, part.endIndex, sourceCode, filePath, config, meta,
-      part.startRow + 1, part.endRow + 1, { index: i + 1, total: parts.length }, part.context,
-    ));
+    const capacity = (context: string) =>
+      CHUNK_BUDGET_CHARS -
+      1 -
+      this.buildHeader({
+        filePath,
+        languageName: config.name,
+        symbolType: meta.symbolType,
+        qualifiedName: meta.qualifiedName,
+        parentSymbol: meta.parentSymbol,
+        isExported: meta.isExported,
+        signature: meta.signature,
+        context,
+        partInfo: { index: maxParts, total: maxParts },
+      }).length;
+    const parts = this.buildAstAwareParts(
+      node,
+      sourceCode,
+      start,
+      end,
+      capacity,
+    );
+    return parts.map((part, i) =>
+      this.buildChunkFromRange(
+        part.startIndex,
+        part.endIndex,
+        sourceCode,
+        filePath,
+        config,
+        meta,
+        part.startRow + 1,
+        part.endRow + 1,
+        { index: i + 1, total: parts.length },
+        part.context,
+      ),
+    );
   }
 
   // Retain declarations that capture queries omit, stripping executable bodies.
   private structuralDeclaration(node: any, sourceCode: string): string {
     const body = this.findBodyField(node);
-    if (body) return `${sourceCode.slice(node.startIndex, body.startIndex).trimEnd()} { ... }`;
+    if (body)
+      return `${sourceCode.slice(node.startIndex, body.startIndex).trimEnd()} { ... }`;
     let result = "";
     let cursor = node.startIndex;
     for (const child of node.namedChildren ?? []) {
@@ -609,28 +775,124 @@ export class AstChunkingService {
     return result + sourceCode.slice(cursor, node.endIndex);
   }
 
+  // Adjacent small members of a large class share one chunk. A class with a
+  // dozen one-line accessors otherwise produces a dozen rows that are mostly
+  // header, which wastes both the index and the retrieval budget.
+  //
+  // Members are sliced INDIVIDUALLY rather than as one span from the first to
+  // the last: field declarations and stray comments sitting between them are
+  // represented only in the skeleton, and a contiguous slice would duplicate
+  // them. Each slice starts at the member's own boundaryNode, exactly the span
+  // processNode would have chunked, so coverage is identical to
+  // one-chunk-per-member — only the packing changes.
+  private memberGroupContent(
+    members: Array<{ node: any; symbolType: string }>,
+    sourceCode: string,
+    filePath: string,
+    config: LangConfig,
+    classMeta: SymbolMeta,
+  ): string {
+    const header = this.buildHeader({
+      filePath,
+      languageName: config.name,
+      symbolType: "class_member_group",
+      qualifiedName: classMeta.qualifiedName,
+      isExported: classMeta.isExported,
+      parentSymbol: classMeta.symbolName,
+      members: members.map((m) => this.resolveSymbolName(m.node)).join(", "),
+    });
+    const bodies = members.map((m) =>
+      sourceCode
+        .slice(
+          this.resolveLeadingContext(m.node).boundaryNode.startIndex,
+          m.node.endIndex,
+        )
+        .trim(),
+    );
+    return `${header}\n${bodies.join("\n\n")}`.trim();
+  }
+
+  private buildMemberGroupChunk(
+    members: Array<{ node: any; symbolType: string }>,
+    sourceCode: string,
+    filePath: string,
+    config: LangConfig,
+    classMeta: SymbolMeta,
+  ): ChunkMetadata {
+    const content = this.memberGroupContent(
+      members,
+      sourceCode,
+      filePath,
+      config,
+      classMeta,
+    );
+    const first = this.resolveLeadingContext(members[0].node).boundaryNode;
+    const last = members[members.length - 1].node;
+    return {
+      file_path: filePath,
+      language: config.name,
+      symbol_type: "class_member_group",
+      symbol_name: classMeta.symbolName,
+      qualified_name: classMeta.qualifiedName,
+      parent_symbol: classMeta.symbolName,
+      is_exported: classMeta.isExported,
+      docstring: null,
+      start_line: first.startPosition.row + 1,
+      end_line: last.endPosition.row + 1,
+      content,
+      content_hash: this.generateHash(content),
+    };
+  }
+
   private buildClassSkeletonAndMembers(
-    classNode: any, meta: SymbolMeta, boundaryNode: any,
-    captured: Array<{ node: any; symbolType: string }>, sourceCode: string,
-    filePath: string, config: LangConfig,
+    classNode: any,
+    meta: SymbolMeta,
+    boundaryNode: any,
+    captured: Array<{ node: any; symbolType: string }>,
+    sourceCode: string,
+    filePath: string,
+    config: LangConfig,
   ): ChunkMetadata[] | null {
     const body = this.findBodyField(classNode);
     if (!body) return null;
-    const directMembers = captured.filter((c) => this.isContained(c.node, classNode) &&
-      !captured.some((mid) => this.isContained(mid.node, classNode) && this.isContained(c.node, mid.node)));
+    const directMembers = captured.filter(
+      (c) =>
+        this.isContained(c.node, classNode) &&
+        !captured.some(
+          (mid) =>
+            this.isContained(mid.node, classNode) &&
+            this.isContained(c.node, mid.node),
+        ),
+    );
     for (const declaration of body.namedChildren) {
-      if (this.findBodyField(declaration) && !directMembers.some((member) =>
-        (member.node.startIndex === declaration.startIndex && member.node.endIndex === declaration.endIndex) ||
-        this.isContained(member.node, declaration))) {
-        directMembers.push({ node: declaration, symbolType: declaration.type === "class_static_block" ? "block" : "method" });
+      if (
+        this.findBodyField(declaration) &&
+        !directMembers.some(
+          (member) =>
+            (member.node.startIndex === declaration.startIndex &&
+              member.node.endIndex === declaration.endIndex) ||
+            this.isContained(member.node, declaration),
+        )
+      ) {
+        directMembers.push({
+          node: declaration,
+          symbolType:
+            declaration.type === "class_static_block" ? "block" : "method",
+        });
       }
     }
     directMembers.sort((a, b) => a.node.startIndex - b.node.startIndex);
     if (!directMembers.length) return null;
-    const declarations = body.namedChildren.map((child: any) => this.structuralDeclaration(child, sourceCode));
+    const declarations = body.namedChildren.map((child: any) =>
+      this.structuralDeclaration(child, sourceCode),
+    );
     const opening = sourceCode.slice(boundaryNode.startIndex, body.startIndex);
     const braces = body.text.startsWith("{");
-    const lines = [opening + (braces ? "{" : ""), ...declarations.map((s: string) => `  ${s}`), ...(braces ? ["}"] : [])];
+    const lines = [
+      opening + (braces ? "{" : ""),
+      ...declarations.map((s: string) => `  ${s}`),
+      ...(braces ? ["}"] : []),
+    ];
     const skeletonSource = lines.join("\n");
     let cursor = 0;
     const skeletonNodes = lines.map((line: string) => {
@@ -638,37 +900,143 @@ export class AstChunkingService {
       cursor += line.length + 1;
       return { startIndex, endIndex: cursor - 1, namedChildren: [] };
     });
-    const skeleton = this.boundedChunks({ namedChildren: skeletonNodes }, 0, skeletonSource.length,
-      skeletonSource, filePath, config, { ...meta, symbolType: "class_skeleton" },
-      boundaryNode.startPosition.row + 1, classNode.endPosition.row + 1);
+    const skeleton = this.boundedChunks(
+      { namedChildren: skeletonNodes },
+      0,
+      skeletonSource.length,
+      skeletonSource,
+      filePath,
+      config,
+      { ...meta, symbolType: "class_skeleton" },
+      boundaryNode.startPosition.row + 1,
+      classNode.endPosition.row + 1,
+    );
     // Synthetic skeleton ranges cite the original class, not generated lines.
     for (const chunk of skeleton) {
       chunk.start_line = boundaryNode.startPosition.row + 1;
       chunk.end_line = classNode.endPosition.row + 1;
     }
-    return [...skeleton, ...directMembers.flatMap((member) =>
-      this.processNode(member.node, member.symbolType, captured, sourceCode, filePath, config))];
+    // Pack adjacent small members, in source order, into as few chunks as the
+    // budget allows. A member that needs splitting flushes the pending group
+    // and keeps its own AST-aware parts untouched; grouping resumes after it,
+    // so non-adjacent members are never pulled together to fill space.
+    type Pending = {
+      member: { node: any; symbolType: string };
+      own: ChunkMetadata[];
+    };
+    const memberChunks: ChunkMetadata[] = [];
+    let group: Pending[] = [];
+    const flush = () => {
+      if (!group.length) return;
+      // A lone member keeps its own identity — qualified_name, signature and
+      // docstring — instead of being wrapped in a one-member group.
+      if (group.length === 1) memberChunks.push(...group[0].own);
+      else
+        memberChunks.push(
+          this.buildMemberGroupChunk(
+            group.map((pending) => pending.member),
+            sourceCode,
+            filePath,
+            config,
+            meta,
+          ),
+        );
+      group = [];
+    };
+
+    for (const member of directMembers) {
+      const own = this.processNode(
+        member.node,
+        member.symbolType,
+        captured,
+        sourceCode,
+        filePath,
+        config,
+      );
+      if (own.length > 1) {
+        flush();
+        memberChunks.push(...own);
+        continue;
+      }
+      // Measure the real payload this member would produce, header included:
+      // the "// Members:" line grows with every addition, so only building the
+      // exact candidate content can decide whether it still fits.
+      if (
+        group.length &&
+        this.memberGroupContent(
+          [...group.map((pending) => pending.member), member],
+          sourceCode,
+          filePath,
+          config,
+          meta,
+        ).length > CHUNK_BUDGET_CHARS
+      ) {
+        flush();
+      }
+      group.push({ member, own });
+    }
+    flush();
+
+    return [...skeleton, ...memberChunks];
   }
 
   private processNode(
-    node: any, symbolType: string, captured: Array<{ node: any; symbolType: string }>,
-    sourceCode: string, filePath: string, config: LangConfig,
+    node: any,
+    symbolType: string,
+    captured: Array<{ node: any; symbolType: string }>,
+    sourceCode: string,
+    filePath: string,
+    config: LangConfig,
   ): ChunkMetadata[] {
     const symbolName = this.resolveSymbolName(node);
     const parentSymbol = this.resolveParentSymbol(node);
-    const qualifiedName = parentSymbol ? `${parentSymbol}.${symbolName}` : symbolName;
+    const qualifiedName = parentSymbol
+      ? `${parentSymbol}.${symbolName}`
+      : symbolName;
     const { boundaryNode, docstring } = this.resolveLeadingContext(node);
-    const meta: SymbolMeta = { symbolType, symbolName, qualifiedName, parentSymbol,
-      isExported: this.resolveIsExported(node), docstring, signature: this.signature(node, sourceCode) };
-    const whole = this.buildChunkFromRange(boundaryNode.startIndex, node.endIndex, sourceCode,
-      filePath, config, meta, boundaryNode.startPosition.row + 1, node.endPosition.row + 1);
+    const meta: SymbolMeta = {
+      symbolType,
+      symbolName,
+      qualifiedName,
+      parentSymbol,
+      isExported: this.resolveIsExported(node),
+      docstring,
+      signature: this.signature(node, sourceCode),
+    };
+    const whole = this.buildChunkFromRange(
+      boundaryNode.startIndex,
+      node.endIndex,
+      sourceCode,
+      filePath,
+      config,
+      meta,
+      boundaryNode.startPosition.row + 1,
+      node.endPosition.row + 1,
+    );
     if (this.measureSize(whole.content) <= CHUNK_BUDGET_CHARS) return [whole];
     if (symbolType === "class") {
-      const skeleton = this.buildClassSkeletonAndMembers(node, meta, boundaryNode, captured, sourceCode, filePath, config);
+      const skeleton = this.buildClassSkeletonAndMembers(
+        node,
+        meta,
+        boundaryNode,
+        captured,
+        sourceCode,
+        filePath,
+        config,
+      );
       if (skeleton) return skeleton;
     }
-    return this.boundedChunks(node, boundaryNode.startIndex, node.endIndex, sourceCode,
-      filePath, config, meta, boundaryNode.startPosition.row + 1, node.endPosition.row + 1);
+    return this.boundedChunks(
+      node,
+      boundaryNode.startIndex,
+      node.endIndex,
+      sourceCode,
+      filePath,
+      config,
+      meta,
+      boundaryNode.startPosition.row + 1,
+      node.endPosition.row + 1,
+    );
   }
 
   // Everything at file scope that no captured symbol covers: imports,
@@ -691,7 +1059,8 @@ export class AstChunkingService {
     const merged: { start: number; end: number }[] = [];
     for (const range of [...consumed].sort((a, b) => a.start - b.start)) {
       const last = merged[merged.length - 1];
-      if (last && range.start <= last.end) last.end = Math.max(last.end, range.end);
+      if (last && range.start <= last.end)
+        last.end = Math.max(last.end, range.end);
       else merged.push({ ...range });
     }
 
@@ -702,7 +1071,8 @@ export class AstChunkingService {
       if (range.start > cursor) gaps.push({ start: cursor, end: range.start });
       cursor = Math.max(cursor, range.end);
     }
-    if (cursor < sourceCode.length) gaps.push({ start: cursor, end: sourceCode.length });
+    if (cursor < sourceCode.length)
+      gaps.push({ start: cursor, end: sourceCode.length });
 
     const lineStarts = [0];
     for (let i = 0; i < sourceCode.length; i++) {
@@ -721,8 +1091,12 @@ export class AstChunkingService {
 
     const name = `${path.basename(filePath)} (top-level)`;
     const meta: SymbolMeta = {
-      symbolType: "module_top_level", symbolName: name, qualifiedName: name,
-      parentSymbol: null, isExported: false, docstring: null,
+      symbolType: "module_top_level",
+      symbolName: name,
+      qualifiedName: name,
+      parentSymbol: null,
+      isExported: false,
+      docstring: null,
     };
 
     const chunks: ChunkMetadata[] = [];
@@ -734,29 +1108,65 @@ export class AstChunkingService {
       while (start < end && /\s/.test(sourceCode[start])) start++;
       while (end > start && /\s/.test(sourceCode[end - 1])) end--;
       if (end <= start) continue;
-      if (sourceCode.slice(start, end).replace(/\s+/g, "").length < MIN_TOP_LEVEL_GAP_CHARS) continue;
+      if (
+        sourceCode.slice(start, end).replace(/\s+/g, "").length <
+        MIN_TOP_LEVEL_GAP_CHARS
+      )
+        continue;
 
-      chunks.push(...this.boundedChunks(rootNode, start, end, sourceCode, filePath, config, meta,
-        lineAt(start), lineAt(end - 1)));
+      chunks.push(
+        ...this.boundedChunks(
+          rootNode,
+          start,
+          end,
+          sourceCode,
+          filePath,
+          config,
+          meta,
+          lineAt(start),
+          lineAt(end - 1),
+        ),
+      );
     }
     return chunks;
   }
 
   // Only successful parses without captured symbols use whole-file fallback.
-  private buildWholeFileFallback(sourceCode: string, filePath: string, config: LangConfig, rootNode: any): ChunkMetadata[] {
+  private buildWholeFileFallback(
+    sourceCode: string,
+    filePath: string,
+    config: LangConfig,
+    rootNode: any,
+  ): ChunkMetadata[] {
     const meta: SymbolMeta = {
-      symbolType: "file", symbolName: path.basename(filePath), qualifiedName: path.basename(filePath),
-      parentSymbol: null, isExported: false, docstring: null,
+      symbolType: "file",
+      symbolName: path.basename(filePath),
+      qualifiedName: path.basename(filePath),
+      parentSymbol: null,
+      isExported: false,
+      docstring: null,
     };
-    return this.boundedChunks(rootNode, 0, sourceCode.length, sourceCode, filePath, config, meta,
-      1, sourceCode.split("\n").length);
+    return this.boundedChunks(
+      rootNode,
+      0,
+      sourceCode.length,
+      sourceCode,
+      filePath,
+      config,
+      meta,
+      1,
+      sourceCode.split("\n").length,
+    );
   }
   // Guards the UNIQUE(repository_id, file_path, content_hash) constraint —
   // the INSERT in repositoryIndex.service.ts has no ON CONFLICT clause, so
   // any collision within a file throws and rolls back the whole indexing
   // transaction. Mirrors documentationChunking.service.ts's existing,
   // already-proven pre-insert dedup for the same constraint.
-  private dedupeByContentHash(chunks: ChunkMetadata[], filePath: string): ChunkMetadata[] {
+  private dedupeByContentHash(
+    chunks: ChunkMetadata[],
+    filePath: string,
+  ): ChunkMetadata[] {
     const seen = new Set<string>();
     const out: ChunkMetadata[] = [];
     for (const c of chunks) {
@@ -772,7 +1182,10 @@ export class AstChunkingService {
     return out;
   }
 
-  public async chunkFile(filePath: string, sourceCode: string): Promise<ChunkMetadata[]> {
+  public async chunkFile(
+    filePath: string,
+    sourceCode: string,
+  ): Promise<ChunkMetadata[]> {
     const ext = path.extname(filePath).toLowerCase();
     const config = LANGUAGE_REGISTRY[ext as keyof typeof LANGUAGE_REGISTRY];
 
@@ -805,7 +1218,10 @@ export class AstChunkingService {
       // is the fix for the duplication bug: today, class + every method
       // inside it are both independently captured and both independently
       // chunked, unconditionally.
-      const roots = captured.filter((c) => !captured.some((o) => o !== c && this.isContained(c.node, o.node)));
+      const roots = captured.filter(
+        (c) =>
+          !captured.some((o) => o !== c && this.isContained(c.node, o.node)),
+      );
 
       let chunks: ChunkMetadata[] = [];
       // Each root's consumed span, recorded so the leftover top-level material
@@ -816,28 +1232,61 @@ export class AstChunkingService {
       const consumedRanges: { start: number; end: number }[] = [];
       for (const root of roots) {
         const { boundaryNode } = this.resolveLeadingContext(root.node);
-        consumedRanges.push({ start: boundaryNode.startIndex, end: root.node.endIndex });
-        const symbolChunks = this.processNode(root.node, root.symbolType, captured, sourceCode, filePath, config);
-        if (!symbolChunks.length) throw new Error(`No chunks produced for ${this.resolveSymbolName(root.node)}`);
+        consumedRanges.push({
+          start: boundaryNode.startIndex,
+          end: root.node.endIndex,
+        });
+        const symbolChunks = this.processNode(
+          root.node,
+          root.symbolType,
+          captured,
+          sourceCode,
+          filePath,
+          config,
+        );
+        if (!symbolChunks.length)
+          throw new Error(
+            `No chunks produced for ${this.resolveSymbolName(root.node)}`,
+          );
         chunks.push(...symbolChunks);
       }
 
       if (captured.length > 0) {
         chunks.push(
-          ...this.buildTopLevelGapChunks(consumedRanges, sourceCode, filePath, config, tree.rootNode),
+          ...this.buildTopLevelGapChunks(
+            consumedRanges,
+            sourceCode,
+            filePath,
+            config,
+            tree.rootNode,
+          ),
         );
       }
 
       if (captured.length === 0) {
-        chunks = this.buildWholeFileFallback(sourceCode, filePath, config, tree.rootNode);
+        chunks = this.buildWholeFileFallback(
+          sourceCode,
+          filePath,
+          config,
+          tree.rootNode,
+        );
       }
 
-      if (!chunks.length || chunks.some((chunk) => this.measureSize(chunk.content) > CHUNK_BUDGET_CHARS)) {
-        throw new Error("Invalid chunk output: empty file representation or exceeded payload budget");
+      if (
+        !chunks.length ||
+        chunks.some(
+          (chunk) => this.measureSize(chunk.content) > CHUNK_BUDGET_CHARS,
+        )
+      ) {
+        throw new Error(
+          "Invalid chunk output: empty file representation or exceeded payload budget",
+        );
       }
       chunks = this.dedupeByContentHash(chunks, filePath);
 
-      console.log(`[AST Chunker] Extracted ${chunks.length} chunk(s) from ${filePath}`);
+      console.log(
+        `[AST Chunker] Extracted ${chunks.length} chunk(s) from ${filePath}`,
+      );
       return chunks;
     } catch (error) {
       throw new Error(`AST chunking failed for ${filePath}`, { cause: error });
@@ -882,7 +1331,11 @@ export class AstChunkingService {
           case "import_statement":
           case "import_from_statement": {
             const src = node.childForFieldName?.("source");
-            imports.add(src?.text ? src.text.replace(/['"]/g, "") : node.text.split("\n")[0].trim());
+            imports.add(
+              src?.text
+                ? src.text.replace(/['"]/g, "")
+                : node.text.split("\n")[0].trim(),
+            );
             break;
           }
           case "export_statement":
@@ -894,7 +1347,9 @@ export class AstChunkingService {
           case "class_declaration":
           case "class_specifier": {
             const nameNode = node.childForFieldName?.("name");
-            const heritage = node.childForFieldName?.("superclass") ?? node.childForFieldName?.("heritage");
+            const heritage =
+              node.childForFieldName?.("superclass") ??
+              node.childForFieldName?.("heritage");
             if (nameNode?.text && heritage?.text) {
               inheritance.push({
                 child: nameNode.text,
@@ -936,11 +1391,16 @@ export class AstChunkingService {
             interfaces.push(symbolName);
           } else if (symbolType === "function" || symbolType === "method") {
             const parentSymbol = this.resolveParentSymbol(node);
-            functions.push(parentSymbol ? `${parentSymbol}.${symbolName}` : symbolName);
+            functions.push(
+              parentSymbol ? `${parentSymbol}.${symbolName}` : symbolName,
+            );
           }
         }
       } catch (queryError) {
-        console.error(`[AST Chunker] Invalid Tree-Sitter Query for ${ext} files:`, queryError);
+        console.error(
+          `[AST Chunker] Invalid Tree-Sitter Query for ${ext} files:`,
+          queryError,
+        );
       }
 
       return {
@@ -958,7 +1418,10 @@ export class AstChunkingService {
         sourceHash: this.generateHash(sourceCode),
       };
     } catch (error) {
-      console.error(`[AST Chunker] Failed to extract file metadata for ${filePath}:`, error);
+      console.error(
+        `[AST Chunker] Failed to extract file metadata for ${filePath}:`,
+        error,
+      );
       return null;
     } finally {
       if (tree) tree.delete();
@@ -966,7 +1429,6 @@ export class AstChunkingService {
       if (parser) parser.delete();
     }
   }
-
 }
 
 export const astChunker = new AstChunkingService();

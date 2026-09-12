@@ -346,7 +346,7 @@ export class RepositoryIndexingService {
       // Doc rows are committed by this SAME transaction, at this SAME
       // commitSha, as the code rows around them — that shared stamp is what
       // guarantees retrieval can never mix README content from one revision
-      // with code from another.
+      // with code from another. 
       const persistedDocChunks = chunksToInsert.filter(
         (c) => c.symbol_type === "documentation",
       );

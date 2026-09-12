@@ -145,7 +145,7 @@ export function discoverModulesHeuristically(files: FileASTMetadata[]): ModuleAs
   for (const file of files) initial.set(file.filePath, initialModuleFor(file.filePath));
 
   const refined = mergeByImportDensity(initial, importGraph);
-
+console.log(refined);
   return files.map((f) => ({ filePath: f.filePath, module: refined.get(f.filePath)! }));
 }
 

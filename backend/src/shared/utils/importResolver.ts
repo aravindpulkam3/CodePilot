@@ -5,7 +5,12 @@ import path from "path";
  * file path, so the import graph only contains edges between files that
  * actually exist in this repo (external packages are dropped).
  */
-export function resolveLocalImport(fromFile: string, specifier: string, knownPaths: Set<string>): string | null {
+//It translates "../utils/auth.js" written inside src/controllers/userController.ts into the exact real file path on disk: "src/utils/auth.ts".
+export function resolveLocalImport(
+  fromFile: string,
+  specifier: string,
+  knownPaths: Set<string>,
+): string | null {
   if (!specifier.startsWith(".")) return null; // not a relative import -> external package
 
   // Drop a trailing .js/.jsx BEFORE building the base path. Under ESM/NodeNext
@@ -19,7 +24,9 @@ export function resolveLocalImport(fromFile: string, specifier: string, knownPat
   const strippedSpecifier = specifier.replace(/\.(jsx|js)$/, "");
 
   // Normalizing paths (using posix to maintain forward slashes for repo-relative paths)
-  const base = path.posix.normalize(path.posix.join(path.posix.dirname(fromFile), strippedSpecifier));
+  const base = path.posix.normalize(
+    path.posix.join(path.posix.dirname(fromFile), strippedSpecifier),
+  );
 
   const candidates = [
     base,
@@ -32,7 +39,7 @@ export function resolveLocalImport(fromFile: string, specifier: string, knownPat
     `${base}.py`,
     `${base}.go`,
   ];
-  
+
   return candidates.find((c) => knownPaths.has(c)) ?? null;
 }
 
@@ -43,7 +50,7 @@ export function resolveLocalImport(fromFile: string, specifier: string, knownPat
 export function extractLocalImports(
   fromFile: string,
   rawImports: string[],
-  knownPaths: Set<string>
+  knownPaths: Set<string>,
 ): { resolvedPath: string; specifier: string }[] {
   const edges = new Map<string, string>();
   for (const imp of rawImports) {
@@ -54,6 +61,6 @@ export function extractLocalImports(
   }
   return Array.from(edges.entries()).map(([resolvedPath, specifier]) => ({
     resolvedPath,
-    specifier
+    specifier,
   }));
 }
