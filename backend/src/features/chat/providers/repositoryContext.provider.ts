@@ -16,12 +16,11 @@ import { docRetrievalLog } from "../../../shared/utils/readmeDebugLog.js";
 const BASE_THRESHOLD = 0.6;
 /** "Not merely threshold-scraping" — code's own bar for getting full budget regardless of other types. */
 const SOLID_MARGIN = 0.05;
-/** "Unambiguously strong in its own right" — lets a doc/summary section win full budget even alongside solid code. */
+/** "Unambiguously strong in its own right" — lets a doc section win full budget even alongside solid code. */
 const STRONG_MARGIN = 0.15;
 
 /**
- * Decides how much prompt budget a repository/architecture/component/doc
- * section earns THIS turn — not "non-empty," a relative judgment against
+ * Decides how much prompt budget the documentation section earns THIS turn — not "non-empty," a relative judgment against
  * how solid code's own match is. Code is never compared against these
  * types by raw similarity (see the module-level comment above); its own
  * tier is decided separately, self-referentially, in buildContext below.
@@ -34,7 +33,7 @@ const STRONG_MARGIN = 0.15;
  *   its own terms -> full anyway. Some questions are genuinely hybrid.
  * - Code is solid and this section is merely present, not standout -> reduced.
  */
-function summaryTierGivenCode(ownSimilarity: number | null, codeMargin: number): BudgetTier {
+function docTierGivenCode(ownSimilarity: number | null, codeMargin: number): BudgetTier {
   if (ownSimilarity === null) return "omit";
   const ownMargin = ownSimilarity - BASE_THRESHOLD;
   const codeIsSolid = codeMargin >= SOLID_MARGIN;
@@ -44,8 +43,8 @@ function summaryTierGivenCode(ownSimilarity: number | null, codeMargin: number):
 }
 
 /**
- * Code's own tier never depends on comparing its raw score against docs or
- * summaries — its role (authoritative for current behaviour) means it gets
+ * Code's own tier never depends on comparing its raw score against docs —
+ * its role (authoritative for current behaviour) means it gets
  * full budget whenever ITS OWN match is solid, independent of what else
  * matched. Only drops to reduced/omit when code itself is weak or absent.
  */
@@ -85,27 +84,21 @@ export class RepositoryContextProvider implements ChatContextProvider {
       findRepositoryById(session.repository_id).catch(() => null),
     ]);
 
-    const sim = retrieved.metadata.evidenceSimilarities ?? {
-      repository: null,
-      architecture: null,
-      component: null,
-      doc: null,
-      code: null,
-    };
+    const sim = retrieved.metadata.evidenceSimilarities ?? { doc: null, code: null };
 
     // Relevance-and-role weighting: which sections get full budget, reduced
-    // budget, or are omitted this turn. codeMargin drives every other
-    // type's tier (asymmetric — code's role as "authoritative for current
-    // behaviour" means it isn't crowded out by a docs/summary section that
-    // merely scored a marginally higher raw number); code's own tier never
-    // looks at the others. See the module-level comments on
-    // summaryTierGivenCode/codeTier for the exact rule.
+    // budget, or are omitted this turn. codeMargin drives the other sections'
+    // tiers (asymmetric — code's role as "authoritative for current
+    // behaviour" means it isn't crowded out by a docs section that merely
+    // scored a marginally higher raw number); code's own tier never looks at
+    // the others. See docTierGivenCode/codeTier for the exact rule.
     const codeMargin = (sim.code ?? -Infinity) - BASE_THRESHOLD;
-    const repositoryTier = summaryTierGivenCode(sim.repository, codeMargin);
-    const architectureTier = summaryTierGivenCode(sim.architecture, codeMargin);
-    const componentTier = summaryTierGivenCode(sim.component, codeMargin);
-    const docTier = summaryTierGivenCode(sim.doc, codeMargin);
+    const docTier = docTierGivenCode(sim.doc, codeMargin);
     const codeSectionTier = codeTier(sim.code);
+    // The repository profile is not retrieved by similarity, so it has no
+    // score of its own: full budget for broad questions (code not a solid
+    // match), reduced alongside a solid code answer.
+    const repositoryTier: BudgetTier = codeMargin >= SOLID_MARGIN ? "reduced" : "full";
 
     // One numbered [n] list across every evidence type, rendered and
     // recorded in the same pass — the snapshot below is exactly what the
@@ -113,12 +106,8 @@ export class RepositoryContextProvider implements ChatContextProvider {
     // and which were truncated. Docs and code keep distinct kind labels,
     // which is what carries source authority now that they share numbering.
     const { promptText, items } = buildQAPromptContext({
-      repository: retrieved.repository,
+      repositoryProfile: retrieved.repositoryProfile,
       repositoryTier,
-      architecture: retrieved.architecture,
-      architectureTier,
-      components: retrieved.components,
-      componentTier,
       docChunks: retrieved.docChunks || [],
       docTier,
       codeChunks: retrieved.codeChunks || [],
@@ -172,7 +161,6 @@ export class RepositoryContextProvider implements ChatContextProvider {
     docRetrievalLog(
       `Q&A prompt assembled: ${displayable.length} numbered entr(y/ies) ` +
         `[code=${countOf("code")} (tier=${codeSectionTier}), doc=${countOf("documentation")} (tier=${docTier}), ` +
-        `summary=${countOf("summary")} (arch tier=${architectureTier}, component tier=${componentTier}), ` +
         `imports=${countOf("imports")}], overview=${items.some((i) => !i.displayable) ? "yes" : "no"} ` +
         `(tier=${repositoryTier}), systemPrompt=${systemPrompt.length} chars total.` +
         (hasAnyContext ? "" : " NO CONTEXT — model instructed to say nothing matched."),

@@ -45,9 +45,6 @@ export function RepositoryWorkspaceBar({ repo, repositoryId, mode }: RepositoryW
       case "SYNCING":
       case "INDEXING":
         return { dot: null, label: "Indexing…", spinning: true };
-      case "SEARCHABLE":
-      case "SUMMARIZING":
-        return { dot: "bg-amber-400", label: "Summarizing…" };
       case "FAILED":
         return { dot: "bg-rose-500", label: "Failed" };
       default:

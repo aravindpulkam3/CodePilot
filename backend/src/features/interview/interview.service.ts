@@ -14,7 +14,7 @@ import {
 import { interviewPromptBuilder } from "./interviewPromptBuilder.js";
 import { activityLogService } from "../dashboard/activityLog.service.js";
 import { semanticRetrievalService } from "../../infrastructure/retrieval/semanticRetrieval.service.js";
-import { initialModuleFor } from "../../infrastructure/summarization/moduleDiscovery.service.js";
+import { initialModuleFor } from "../../infrastructure/retrieval/moduleDiscovery.service.js";
 import {
   resolvePathAgainstList,
   resolveModuleAgainstList,
@@ -271,7 +271,6 @@ export class InterviewService {
     const seedContext = await retrievalService.retrieveInterviewStartContext(
       clerkUserId,
       config.repositoryId,
-      { maxComponents: 5 },
     );
 
     // 2. Generate the first question.
@@ -365,7 +364,7 @@ export class InterviewService {
 
     console.log(
       `[Interview] session=${sessionId} started. focus=${resolvedFocus.filePath ?? resolvedFocus.module ?? "(repository)"} ` +
-        `modules=${seedContext.moduleInventory.length} repoSummary=${!!seedContext.repository}.`,
+        `modules=${seedContext.moduleInventory.length} profile=${!!seedContext.repositoryProfile}.`,
     );
 
     // `firstQuestion` is a legacy API field name kept for backwards

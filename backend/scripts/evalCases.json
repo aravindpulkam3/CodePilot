@@ -1,0 +1,87 @@
+{
+  "repositoryId": "3716a3ab-3586-4ced-b4c2-137c4da6fe1e",
+  "repositoryName": "aravindpulkam3/url-shortener",
+  "cases": [
+    { "id": "symbol-exact", "mode": "qa",
+      "question": "What does connectDB do?",
+      "expectedEvidence": ["config/db.js"] },
+
+    { "id": "symbol-class", "mode": "qa",
+      "question": "Explain the UrlController class.",
+      "expectedEvidence": ["controllers/urlController.js"] },
+
+    { "id": "feature-flow", "mode": "qa",
+      "question": "How does shortening a URL work end to end?",
+      "expectedEvidence": ["controllers/urlController.js", "routes/urlRoutes.js", "models/Url.js"] },
+
+    { "id": "arch-overall", "mode": "qa", "manual": true,
+      "question": "Explain the overall architecture of this project.",
+      "expectedEvidence": ["server.js", "routes/urlRoutes.js", "controllers/urlController.js"] },
+
+    { "id": "tech-database", "mode": "qa",
+      "question": "Why is MongoDB used here and how does the app talk to it?",
+      "expectedEvidence": ["config/db.js", "models/Url.js"] },
+
+    { "id": "tech-rate-limit", "mode": "qa",
+      "question": "How is rate limiting implemented and which routes does it protect?",
+      "expectedEvidence": ["middleware/rateLimiter.js", "routes/urlRoutes.js"] },
+
+    { "id": "setup-run", "mode": "qa",
+      "question": "How do I run this repository locally?",
+      "expectedEvidence": ["README.md", "package.json"] },
+
+    { "id": "setup-env", "mode": "qa",
+      "question": "What environment variables are required?",
+      "expectedEvidence": [".env.example", "config/db.js", "server.js"] },
+
+    { "id": "repo-overview", "mode": "qa", "manual": true,
+      "question": "What is this project and what are its important modules?",
+      "expectedEvidence": ["README.md"] },
+
+    { "id": "cross-component", "mode": "qa", "manual": true,
+      "question": "How does data flow from the frontend form to the database?",
+      "expectedEvidence": ["public/index.js", "routes/urlRoutes.js", "controllers/urlController.js", "models/Url.js"] },
+
+    { "id": "review-modified", "mode": "review",
+      "title": "feat: timepass",
+      "headSha": "708fcdbfadcb207bf0a7825c5c0c6e2b12eb044c",
+      "files": [
+        { "filename": "config/db.js", "status": "modified", "patchFile": "708fcdbf-db.js.patch" }
+      ],
+      "expectedEnclosing": { "config/db.js": ["connectDB"] },
+      "expectedCoverage": { "config/db.js": "guaranteed" },
+      "expectedEvidence": ["server.js"],
+      "note": "head == indexed revision here; server.js imports config/db.js, so it must appear as a dependent" },
+
+    { "id": "review-added-and-shifted", "mode": "review", "manual": true,
+      "title": "feat : second change in first pull request added errpr validation",
+      "headSha": "edb748abc9a9c3dfcc2917c85813b49aed50704a",
+      "files": [
+        { "filename": "controllers/ErrorMessage.js", "status": "added", "patchFile": "edb748ab-ErrorMessage.js.patch" },
+        { "filename": "server.js", "status": "modified", "patchFile": "edb748ab-server.js.patch" }
+      ],
+      "expectedEnclosing": { "controllers/ErrorMessage.js": ["ErrorMessage.js (top-level)", "errorMessage"], "server.js": ["server.js"] },
+      "expectedCoverage": { "controllers/ErrorMessage.js": "guaranteed", "server.js": "guaranteed" },
+      "expectedEvidence": [],
+      "note": "head is OLDER than the index, so line numbers differ from indexed server.js. The AST chunker stores `export const` as its own top-level chunk beside the arrow function, and both contain the changed line 1. Manual check: server.js calls app.use(errorMessage) without importing it — the attached whole-file chunk must make that visible" },
+
+    { "id": "review-split-symbol", "mode": "review", "headOnly": true,
+      "githubRepo": "aravindpulkam3/CodePilot",
+      "title": "fix: gate Q&A repository summaries on READY",
+      "headSha": "dea0f548a5b57958a3ec5519805732d4fc92ad81",
+      "files": [
+        { "filename": "backend/src/infrastructure/retrieval/retreival.service.ts", "status": "modified", "patchFile": "dea0f548-retreival.service.ts.patch" }
+      ],
+      "expectedEnclosing": { "backend/src/infrastructure/retrieval/retreival.service.ts": ["RepositoryRetrievalService.retrieveQAContext"] },
+      "expectedCoverage": { "backend/src/infrastructure/retrieval/retreival.service.ts": "guaranteed" },
+      "note": "CodePilot is not indexed locally, so only PR-head mapping is checked. All three hunks (head lines 279, 334, 349) sit inside retrieveQAContext, which is large enough to split into parts" },
+
+    { "id": "interview-start", "mode": "interview-start", "manual": true,
+      "note": "module inventory non-empty; orientation material present (profile after the change, summaries before)" },
+
+    { "id": "interview-followup-file", "mode": "interview-followup",
+      "question": "In UrlController, walk me through what happens when a short link is visited. What happens to the click count if two requests arrive at the same time?",
+      "focus": { "filePath": "controllers/urlController.js", "symbolName": null, "module": "UrlController" },
+      "expectedEvidence": ["controllers/urlController.js", "models/Url.js"] }
+  ]
+}

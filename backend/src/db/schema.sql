@@ -300,18 +300,17 @@ CREATE TABLE IF NOT EXISTS repository_relationships (
 CREATE INDEX IF NOT EXISTS idx_repo_rels_src ON repository_relationships (repository_id, source_node_key);
 CREATE INDEX IF NOT EXISTS idx_repo_rels_tgt ON repository_relationships (repository_id, target_node_key);
 
--- Phased indexing (SEARCHABLE -> READY) + "Currently Working On" workspace
+-- Indexing progress markers + "Currently Working On" workspace
 -- membership. All additive and idempotent, unlike the two bare ADD COLUMN
 -- statements above (last_indexed_sha / indexing_status) — those predate
 -- this convention and are left as-is since re-running them is harmless once
 -- already applied, but new columns from here on always use IF NOT EXISTS
 -- so this file stays safe to re-run in full, matching db/migrate.ts's model.
 
--- searchable_at: Phase 1 (sync/parse/embed/import-graph) completion marker.
--- last_summarized_sha: how far Phase 2 (LLM summarization) has caught up.
--- READY means indexing_status = 'READY', written only when last_indexed_sha
--- and last_summarized_sha are both non-null and equal, and searchable_at is
--- set — see retreival.service.ts / repositorySummarize.service.ts.
+-- searchable_at: set once the first full index completes, and stays set
+-- during later syncs (retrieval gates on it — see retreival.service.ts).
+-- last_summarized_sha: unused since LLM summarization was removed; kept as
+-- schema residue, never read or written.
 ALTER TABLE repositories ADD COLUMN IF NOT EXISTS searchable_at        TIMESTAMPTZ NULL;
 ALTER TABLE repositories ADD COLUMN IF NOT EXISTS last_summarized_sha  VARCHAR(255) NULL;
 
@@ -321,8 +320,9 @@ ALTER TABLE repositories ADD COLUMN IF NOT EXISTS last_summarized_sha  VARCHAR(2
 -- indexing_status — see CLAUDE.md's workspace-vs-indexing-status note.
 ALTER TABLE repositories ADD COLUMN IF NOT EXISTS workspace_started_at TIMESTAMPTZ NULL;
 
--- Phase 1 progress (chunk/file counts), Phase 2 progress (summary task
--- count) — informational only, never used to gate readiness.
+-- Indexing progress (chunk/file counts) — informational only, except
+-- index_chunks_done/total, which decide when a sync finalizes to READY.
+-- summary_tasks_total/done are unused residue from the removed summarizer.
 ALTER TABLE repositories ADD COLUMN IF NOT EXISTS index_chunks_total   INTEGER;
 ALTER TABLE repositories ADD COLUMN IF NOT EXISTS index_chunks_done    INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE repositories ADD COLUMN IF NOT EXISTS index_files_total    INTEGER;
@@ -330,16 +330,12 @@ ALTER TABLE repositories ADD COLUMN IF NOT EXISTS index_files_done     INTEGER N
 ALTER TABLE repositories ADD COLUMN IF NOT EXISTS summary_tasks_total  INTEGER;
 ALTER TABLE repositories ADD COLUMN IF NOT EXISTS summary_tasks_done   INTEGER NOT NULL DEFAULT 0;
 
--- Non-blocking summary-failure signal. Set only when a summarize job
--- exhausts its retries; cleared at the start of the next attempt. Never
--- affects indexing_status/searchable_at — a repo stays fully usable for
--- Q&A/Review even while this is set.
+-- Unused residue from the removed summarizer; never read or written.
 ALTER TABLE repositories ADD COLUMN IF NOT EXISTS last_summary_error   TEXT NULL;
 
 -- One-time backfill for the old three-value indexing_status vocabulary
--- ('unindexed' | 'INDEXING' | 'INDEXED' | 'FAILED') into the new one
--- (NOT_STARTED | SYNCING | INDEXING | SEARCHABLE | SUMMARIZING | READY |
--- FAILED). Each UPDATE is naturally idempotent (a second run finds no rows
+-- ('unindexed' | 'INDEXING' | 'INDEXED' | 'FAILED') into the current one
+-- (NOT_STARTED | SYNCING | INDEXING | READY | FAILED). Each UPDATE is naturally idempotent (a second run finds no rows
 -- still in the old state to touch), consistent with this file's
 -- re-run-safe model.
 UPDATE repositories SET indexing_status = 'NOT_STARTED'
@@ -352,6 +348,12 @@ UPDATE repositories SET indexing_status = 'SYNCING'
   WHERE indexing_status = 'INDEXING' AND searchable_at IS NULL;
 -- Rows already 'FAILED' are left as-is — see CLAUDE.md for the one-time
 -- backfill imprecision this implies (harmless, resolves on next sync).
+
+-- SEARCHABLE / SUMMARIZING no longer exist: indexing is one phase ending in
+-- READY. Rows left in either state by the removed summarizer map to READY.
+-- Idempotent — a second run finds nothing left to update.
+UPDATE repositories SET indexing_status = 'READY'
+  WHERE indexing_status IN ('SEARCHABLE', 'SUMMARIZING') AND searchable_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_repo_rels_type ON repository_relationships (repository_id, relationship_type);
 
 -- Size-adaptive AST chunking rework: astChunking.service.ts's ChunkMetadata

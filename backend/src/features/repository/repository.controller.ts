@@ -23,10 +23,9 @@ export const getSyncStatus = async (req: Request, res: Response) => {
     const repositoryId = req.params.repositoryId as string;
 
     const { rows } = await pool.query(
-      `SELECT indexing_status, searchable_at, last_summary_error,
+      `SELECT indexing_status, searchable_at,
               index_files_done, index_files_total,
-              index_chunks_done, index_chunks_total,
-              summary_tasks_done, summary_tasks_total
+              index_chunks_done, index_chunks_total
        FROM repositories WHERE id = $1`,
       [repositoryId],
     );
@@ -48,10 +47,6 @@ export const getSyncStatus = async (req: Request, res: Response) => {
             chunksTotal: repo.index_chunks_total,
           }
         : null,
-      summaryProgress: repo.summary_tasks_total != null
-        ? { tasksDone: repo.summary_tasks_done, tasksTotal: repo.summary_tasks_total }
-        : null,
-      lastSummaryError: repo.last_summary_error,
     });
   } catch (error) {
     console.error("Error fetching sync status:", error);
@@ -109,7 +104,7 @@ export const stopWorking = async (req: Request, res: Response) => {
     console.log(`[Workspace] User ${appUserId} stopping work on repo ${repositoryId} (${repo.name}).`);
 
     // Only clears workspace membership — never touches the GitHub repo or
-    // any cached index/summary data, so re-starting later is instant.
+    // any indexed data, so re-starting later is instant.
     await pool.query(
       `UPDATE repositories SET workspace_started_at = NULL WHERE id = $1`,
       [repositoryId],

@@ -21,13 +21,12 @@ export type RepositorySyncStatusValue =
   | "NOT_STARTED"
   | "SYNCING"
   | "INDEXING"
-  | "SEARCHABLE"
-  | "SUMMARIZING"
   | "READY"
   | "FAILED";
 
 export interface RepositorySyncStatus {
   status: RepositorySyncStatusValue;
+  /** Set once the first full index completes; stays set during later syncs. */
   searchableAt: string | null;
   indexProgress: {
     filesDone: number;
@@ -35,11 +34,6 @@ export interface RepositorySyncStatus {
     chunksDone: number;
     chunksTotal: number | null;
   } | null;
-  summaryProgress: {
-    tasksDone: number;
-    tasksTotal: number | null;
-  } | null;
-  lastSummaryError: string | null;
 }
 
 export interface PullRequestItem {

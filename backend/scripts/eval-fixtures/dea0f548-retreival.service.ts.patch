@@ -1,0 +1,61 @@
+@@ -279,13 +279,30 @@ export class RepositoryRetrievalService {
+       },
+     };
+ 
+-    const summaryResults = await semanticRetrievalService.searchSummaries(
+-      repositoryId,
+-      queryVectorStr,
+-      undefined,
+-      10,
+-      options.similarityThreshold,
+-    );
++    // The status read rides along with the summary search — same reason
++    // retrieveInterviewFollowUpContext batches its own status query: it's a
++    // single indexed lookup and costs no extra wall-clock here.
++    const [summaryResults, statusRes] = await Promise.all([
++      semanticRetrievalService.searchSummaries(
++        repositoryId,
++        queryVectorStr,
++        undefined,
++        10,
++        options.similarityThreshold,
++      ),
++      pool.query(`SELECT indexing_status FROM repositories WHERE id = $1`, [repositoryId]),
++    ]);
++
++    // repository/architecture/component summaries are Phase-2 output: while a
++    // repo is SEARCHABLE-but-not-READY they sit at last_summarized_sha while
++    // the code chunks beside them sit at last_indexed_sha. Attaching one then
++    // presents prose about an older revision as if it described the code in
++    // the same prompt. Review (retrieveReviewContext) and Interview
++    // (retrieveInterviewStartContext / ...FollowUpContext) already gate on
++    // this; Q&A was the one path that didn't. File-summary hits stay ungated
++    // below — they're only used to scope which files' code gets searched, and
++    // are never rendered as prompt content.
++    const isReady = statusRes.rows[0]?.indexing_status === "READY";
+ 
+     let relevantFilePaths = new Set<string>();
+ 
+@@ -317,12 +334,12 @@ export class RepositoryRetrievalService {
+       // silently dropped, because only the file/component branches existed.
+       // Those are exactly the rows that answer "what does this project do",
+       // so capture them instead of discarding them.
+-      if (res.nodeType === "repository") {
++      if (isReady && res.nodeType === "repository") {
+         if (!context.repository) {
+           context.repository = res.summary as RepositorySummary;
+           repositorySimilarity = res.similarity;
+         }
+-      } else if (res.nodeType === "architecture") {
++      } else if (isReady && res.nodeType === "architecture") {
+         if (!context.architecture) {
+           context.architecture = res.summary as ArchitectureSummary;
+           architectureSimilarity = res.similarity;
+@@ -332,6 +349,7 @@ export class RepositoryRetrievalService {
+         relevantFilePaths.add(res.nodeKey);
+         relevantFilePathsInOrder.push(res.nodeKey);
+       } else if (
++        isReady &&
+         res.nodeType === "component" &&
+         context.components.length < (options.maxComponents || 3)
+       ) {

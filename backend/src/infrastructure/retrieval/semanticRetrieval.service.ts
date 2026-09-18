@@ -1,7 +1,7 @@
 import { pool } from "../../config/db.js";
 import { embedder } from "../embedding/embedding.service.js";
 import { withCache } from "../../shared/utils/cache.js";
-import type { CodeChunkSearchResult, DocChunkSearchResult, RetrievalOptions, SummarySearchResult } from "./retrievalTypes.js";
+import type { CodeChunkSearchResult, DocChunkSearchResult, RetrievalOptions } from "./retrievalTypes.js";
 // TEMPORARY verification logging — see utils/readmeDebugLog.ts for removal.
 import { docRetrievalLog, isReadmeDebugEnabled } from "../../shared/utils/readmeDebugLog.js";
 
@@ -22,60 +22,11 @@ export class SemanticRetrievalService {
   }
 
   /**
-   * Search summaries using pgvector.
-   */
-  public async searchSummaries(
-    repositoryId: string,
-    queryVectorStr: string,
-    nodeType?: "repository" | "architecture" | "component" | "file",
-    limit: number = 5,
-    threshold: number = 0.6,
-  ): Promise<SummarySearchResult[]> {
-    const client = await pool.connect();
-    try {
-      let query = `
-        SELECT 
-          node_type, 
-          node_key, 
-          parent_key, 
-          summary_json,
-          1 - (embedding <=> $1::vector) AS similarity
-        FROM repository_summaries
-        WHERE repository_id = $2
-          AND (1 - (embedding <=> $1::vector)) >= $3
-      `;
-      const params: any[] = [queryVectorStr, repositoryId, threshold];
-
-      if (nodeType) {
-        query += ` AND node_type = $4`;
-        params.push(nodeType);
-      }
-
-      query += ` ORDER BY embedding <=> $1::vector LIMIT $${params.length + 1}`;
-      params.push(limit);
-
-      const { rows } = await client.query(query, params);
-      return rows.map((r) => ({
-        nodeType: r.node_type,
-        nodeKey: r.node_key,
-        parentKey: r.parent_key,
-        summary: r.summary_json,
-        similarity: r.similarity,
-      }));
-    } finally {
-      client.release();
-    }
-  }
-
-  /**
-   * Search DOCUMENTATION chunks (README sections).
+   * Search DOCUMENTATION rows: README/ARCHITECTURE/CONTRIBUTING sections and
+   * whole-file manifest/config rows (see utils/documentationPaths.ts).
    *
-   * Deliberately NOT restricted by file path, unlike searchCodeChunks. The
-   * QA path scopes code chunks to files whose *summaries* matched, and
-   * documentation files never get a file summary (extractFileAstMetadata
-   * returns null for Markdown, so the summarization pipeline skips them).
-   * A path-restricted documentation search would therefore be permanently
-   * unreachable — embedding the README would do nothing.
+   * Deliberately NOT restricted by file path, unlike searchCodeChunksInFiles:
+   * which documentation answers a question is decided by similarity alone.
    *
    * Threshold is an explicit parameter rather than read from the shared
    * constant, so documentation can be retuned independently later without
@@ -154,10 +105,7 @@ export class SemanticRetrievalService {
    *
    * This is the primitive that makes structural (graph/test/changed-file)
    * retrieval useful for PR review. The graph tells you WHICH files matter;
-   * this fetches their actual CODE. Previously those stages called
-   * getFileSummaries(), which returns LLM prose from repository_summaries —
-   * a table that (a) doesn't exist until Phase 2 finishes and (b) whose
-   * output the review prompt never read.
+   * this fetches their actual CODE.
    *
    * THRESHOLD DEFAULTS TO 0, DELIBERATELY. The whole point of graph expansion
    * is "show me the caller whether or not it happens to embed near the PR
@@ -249,8 +197,9 @@ export class SemanticRetrievalService {
     restrictedFilePaths?: string[],
     excludedFilePaths?: string[],
   ): Promise<CodeChunkSearchResult[]> {
-    const limit = options.maxCodeChunks || DEFAULT_OPTIONS.maxCodeChunks;
-    const threshold = options.similarityThreshold || DEFAULT_OPTIONS.similarityThreshold;
+    // ?? not ||: an explicit 0 (threshold 0, or a 0 limit) must be honoured.
+    const limit = options.maxCodeChunks ?? DEFAULT_OPTIONS.maxCodeChunks;
+    const threshold = options.similarityThreshold ?? DEFAULT_OPTIONS.similarityThreshold;
 
     const client = await pool.connect();
     try {
@@ -306,11 +255,9 @@ export class SemanticRetrievalService {
 
   /**
    * Every distinct file path with at least one indexed CODE chunk (excludes
-   * documentation rows). This is the Interview module's coverage denominator
-   * — available at SEARCHABLE (Phase 1), unlike repository_summaries'
-   * component list, which is Phase-2-only. Also backs the nextFocus
-   * validation ladder (exact-match and unique-basename resolution) in
-   * interview.service.ts#resolveFocus.
+   * documentation rows). The module inventory's source (repositoryMap.service.ts)
+   * and the nextFocus validation ladder (exact-match and unique-basename
+   * resolution) in interview.service.ts#resolveFocus.
    */
   public async listIndexedFilePaths(repositoryId: string): Promise<string[]> {
     return withCache(`repo:${repositoryId}:indexed-paths`, 600, async () => {
@@ -321,129 +268,6 @@ export class SemanticRetrievalService {
       );
       return rows.map((r) => r.file_path);
     });
-  }
-
-  /**
-   * Direct fetch of specific file summaries
-   */
-  public async getFileSummaries(
-    repositoryId: string,
-    filePaths: string[],
-  ): Promise<SummarySearchResult[]> {
-    if (!filePaths.length) return [];
-
-    const client = await pool.connect();
-    try {
-      const { rows } = await client.query(
-        `SELECT node_type, node_key, parent_key, summary_json
-         FROM repository_summaries
-         WHERE repository_id = $1 AND node_type = 'file' AND node_key = ANY($2)`,
-        [repositoryId, filePaths],
-      );
-
-      return rows.map((r) => ({
-        nodeType: r.node_type,
-        nodeKey: r.node_key,
-        parentKey: r.parent_key,
-        summary: r.summary_json,
-        similarity: 1.0, 
-      }));
-    } finally {
-      client.release();
-    }
-  }
-
-  /**
-   * Fetches specific component summaries by name
-   */
-  public async getComponentSummaries(
-    repositoryId: string,
-    componentNames: string[],
-  ): Promise<SummarySearchResult[]> {
-    if (!componentNames.length) return [];
-
-    const client = await pool.connect();
-    try {
-      const { rows } = await client.query(
-        `SELECT node_type, node_key, parent_key, summary_json
-         FROM repository_summaries
-         WHERE repository_id = $1 AND node_type = 'component' AND node_key = ANY($2)`,
-        [repositoryId, componentNames],
-      );
-
-      return rows.map((r) => ({
-        nodeType: r.node_type,
-        nodeKey: r.node_key,
-        parentKey: r.parent_key,
-        summary: r.summary_json,
-        similarity: 1.0,
-      }));
-    } finally {
-      client.release();
-    }
-  }
-
-  /**
-   * Direct fetch by node_type, no vector search — for callers that don't
-   * have a real query to embed (e.g. "the" singleton repository/architecture
-   * summary, or "give me up to N components" with no specific query). Doing
-   * a similarity ORDER BY against a fabricated placeholder vector here would
-   * either be meaningless or, since the embedding column is VECTOR(3072),
-   * throw a dimension-mismatch error the moment the placeholder isn't also
-   * 3072-dimensional.
-   */
-  public async listSummariesByType(
-    repositoryId: string,
-    nodeType: "repository" | "architecture" | "component" | "file",
-    limit: number = 10,
-  ): Promise<SummarySearchResult[]> {
-    return withCache(`repo:${repositoryId}:summary:${nodeType}:${limit}`, 600, async () => {
-      const client = await pool.connect();
-      try {
-        const { rows } = await client.query(
-          `SELECT node_type, node_key, parent_key, summary_json
-           FROM repository_summaries
-           WHERE repository_id = $1 AND node_type = $2
-           LIMIT $3`,
-          [repositoryId, nodeType, limit],
-        );
-
-        return rows.map((r) => ({
-          nodeType: r.node_type,
-          nodeKey: r.node_key,
-          parentKey: r.parent_key,
-          summary: r.summary_json,
-          similarity: 1.0,
-        }));
-      } finally {
-        client.release();
-      }
-    });
-  }
-
-  public async resolveComponentFiles(
-    repositoryId: string,
-    componentName: string,
-  ): Promise<SummarySearchResult[]> {
-    const client = await pool.connect();
-    try {
-      const { rows } = await client.query(
-        `SELECT node_type, node_key, parent_key, summary_json
-         FROM repository_summaries
-         WHERE repository_id = $1 AND node_type = 'file' AND parent_key = $2`,
-        [repositoryId, componentName],
-      );
-
-      return rows.map((r) => ({
-        nodeType: r.node_type,
-        nodeKey: r.node_key,
-        parentKey: r.parent_key,
-        summary: r.summary_json,
-        similarity: 1.0, 
-      }));
-    } finally {
-      client.release();
-    }
   }
 }
 

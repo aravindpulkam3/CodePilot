@@ -1,25 +1,7 @@
-import { repositoryGraphService } from "../../features/repository/repositoryGraph.service.js";
-
 export class RelatedTestDiscoveryService {
   /**
-   * Discovers and ranks test files that import or are likely related to the given file.
-   */
-  public async discoverTestsForFile(repositoryId: string, filePath: string): Promise<string[]> {
-    // 1. Get all files that import this file (dependents)
-    const dependents = await repositoryGraphService.getDirectDependents(repositoryId, filePath);
-
-    // 2. Filter for files that look like tests
-    const testFiles = dependents.filter((dep) => this.isTestFile(dep));
-
-    // Optional: Sort or rank tests if needed
-    // Currently returns all test dependents
-    return testFiles;
-  }
-
-  /**
-   * Public so callers that already hold a dependents list can partition it
-   * locally instead of re-running getDirectDependents through
-   * discoverTestsForFile (which would double the graph queries per file).
+   * Path heuristic for test files. Review partitions the dependents it already
+   * fetched from the import graph with this, so no extra graph query is needed.
    */
   public isTestFile(filePath: string): boolean {
     const lowerPath = filePath.toLowerCase();

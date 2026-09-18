@@ -385,47 +385,67 @@ export class DocumentationChunkingService {
       // Whole-file fallback: sectioning produced nothing usable but the file
       // has content. Better a coarse chunk than a silent index deletion.
       if (chunks.length === 0) {
-        const allLines = source.split("\n");
-        const wholeFile: Block = {
-          kind: "paragraph",
-          lines: allLines,
-          startLine: 1,
-          endLine: allLines.length,
-        };
-        const parts = this.fits([wholeFile]) ? [[wholeFile]] : this.splitBlockByLines(wholeFile).map((b) => [b]);
-        parts.forEach((partBlocks, idx) => {
-          chunks.push(
-            this.buildChunk(filePath, path.basename(filePath), partBlocks, idx + 1, parts.length),
-          );
-        });
+        chunks.push(...this.wholeFileParts(filePath, source));
       }
 
-      // De-duplicate by content_hash. repository_embeddings has
-      // UNIQUE(repository_id, file_path, content_hash) but the INSERT has no
-      // ON CONFLICT clause, so two identical sections in one document (a
-      // repeated "### Example" block, say) would raise a unique violation,
-      // roll back the whole chunk transaction, and flip the repo to FAILED.
-      const seen = new Set<string>();
-      const deduped = chunks.filter((c) => {
-        if (seen.has(c.content_hash)) return false;
-        seen.add(c.content_hash);
-        return true;
-      });
-
-      if (deduped.length > MAX_CHUNKS_PER_DOCUMENT) {
-        console.warn(
-          `[Doc Chunker] ${filePath} produced ${deduped.length} chunks; keeping the first ${MAX_CHUNKS_PER_DOCUMENT}.`,
-        );
-        return deduped.slice(0, MAX_CHUNKS_PER_DOCUMENT);
-      }
-
-      return deduped;
+      return this.dedupeAndCap(filePath, chunks);
     } catch (error) {
       console.error(`[Doc Chunker] Failed to chunk ${filePath}:`, error);
       // Deliberately NOT returning [] — see the contract note above. A parse
       // failure must not be indistinguishable from "this file is now empty".
       throw error;
     }
+  }
+
+  /**
+   * Chunks a structured config file (package.json, docker-compose, .env.example,
+   * …) WITHOUT markdown sectioning: one row holding the file's exact lines
+   * when it fits DOC_CHUNK_LIMITS, otherwise line-split parts with overlap.
+   *
+   * A single-part result leaves chunk_index/chunk_total unset, which is how
+   * readers identify a byte-exact whole-file row (chunk_total IS NULL).
+   * Same never-return-[]-for-nonempty-input contract as chunkDocument.
+   */
+  public async chunkWholeFile(filePath: string, source: string): Promise<ChunkMetadata[]> {
+    if (!source || source.trim().length === 0) return [];
+    return this.dedupeAndCap(filePath, this.wholeFileParts(filePath, source));
+  }
+
+  private wholeFileParts(filePath: string, source: string): ChunkMetadata[] {
+    const allLines = source.split("\n");
+    const wholeFile: Block = {
+      kind: "paragraph",
+      lines: allLines,
+      startLine: 1,
+      endLine: allLines.length,
+    };
+    const parts = this.fits([wholeFile]) ? [[wholeFile]] : this.splitBlockByLines(wholeFile).map((b) => [b]);
+    return parts.map((partBlocks, idx) =>
+      this.buildChunk(filePath, path.basename(filePath), partBlocks, idx + 1, parts.length),
+    );
+  }
+
+  private dedupeAndCap(filePath: string, chunks: ChunkMetadata[]): ChunkMetadata[] {
+    // De-duplicate by content_hash. repository_embeddings has
+    // UNIQUE(repository_id, file_path, content_hash) but the INSERT has no
+    // ON CONFLICT clause, so two identical sections in one document (a
+    // repeated "### Example" block, say) would raise a unique violation,
+    // roll back the whole chunk transaction, and flip the repo to FAILED.
+    const seen = new Set<string>();
+    const deduped = chunks.filter((c) => {
+      if (seen.has(c.content_hash)) return false;
+      seen.add(c.content_hash);
+      return true;
+    });
+
+    if (deduped.length > MAX_CHUNKS_PER_DOCUMENT) {
+      console.warn(
+        `[Doc Chunker] ${filePath} produced ${deduped.length} chunks; keeping the first ${MAX_CHUNKS_PER_DOCUMENT}.`,
+      );
+      return deduped.slice(0, MAX_CHUNKS_PER_DOCUMENT);
+    }
+
+    return deduped;
   }
 }
 

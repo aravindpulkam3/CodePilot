@@ -53,14 +53,6 @@ export function RepositoryCard({ repo }: { repo: GitHubRepository }) {
           <span className="shrink-0 inline-flex items-center rounded-full bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700 ring-1 ring-inset ring-amber-600/20 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20">
             Indexing
           </span>
-        ) : repo.indexing_status === "SUMMARIZING" ? (
-          <span className="shrink-0 inline-flex items-center rounded-full bg-sky-50 px-2 py-1 text-xs font-medium text-sky-700 ring-1 ring-inset ring-sky-600/20 dark:bg-sky-500/10 dark:text-sky-400 dark:ring-sky-500/20">
-            Searchable
-          </span>
-        ) : repo.indexing_status === "SEARCHABLE" ? (
-          <span className="shrink-0 inline-flex items-center rounded-full bg-sky-50 px-2 py-1 text-xs font-medium text-sky-700 ring-1 ring-inset ring-sky-600/20 dark:bg-sky-500/10 dark:text-sky-400 dark:ring-sky-500/20">
-            Searchable
-          </span>
         ) : repo.indexing_status === "READY" ? (
           <span className="shrink-0 inline-flex items-center rounded-full bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20 dark:bg-emerald-500/10 dark:text-emerald-400 dark:ring-emerald-500/20">
             Ready

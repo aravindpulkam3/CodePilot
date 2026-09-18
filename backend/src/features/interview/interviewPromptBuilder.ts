@@ -1,7 +1,11 @@
 import { LLMMessage } from "../../infrastructure/llm/llm.service.js";
 import { InterviewConfig, InterviewState, MAX_TURNS_ON_FOCUS, MAX_TURNS_ON_MODULE } from "./interviewTypes.js";
 import { InterviewStartContext, InterviewFollowUpContext, ModuleInventoryEntry } from "../../infrastructure/retrieval/retrievalTypes.js";
-import { truncate, renderCapped, renderSummaryBlock } from "../../shared/prompts/promptRendering.js";
+import { truncate, renderCapped } from "../../shared/prompts/promptRendering.js";
+
+/** Cap for a deterministic profile block, matching the old summary block cap. */
+const PROFILE_BLOCK_CHARS = 1000;
+const profileBlock = (text: string | null) => (text ? truncate(text, PROFILE_BLOCK_CHARS) : "");
 import { renderDocCitation, renderCodeCitation } from "../../shared/prompts/sharedCitations.js";
 
 /**
@@ -75,21 +79,20 @@ export class InterviewPromptBuilder {
     // a Mongoose schema field and an entry-point handler are structurally
     // indistinguishable. The fix is that no code is offered at all: turn 1
     // is a REPOSITORY-scope orientation question, grounded only in the
-    // module inventory, documentation, and (READY-gated) summaries below.
+    // module inventory, documentation, and the deterministic repository
+    // profile below.
     const docBlock = renderCapped(
       context.docChunks,
       (d, i) => renderDocCitation(d, i, 1200),
       2500,
     );
 
-    // READY-gated — see retreival.service.ts. Absent while
-    // SEARCHABLE-but-not-READY rather than presenting a summary that may
-    // describe an older revision than the code retrieved alongside it.
-    const overviewBlock = renderSummaryBlock(context.repository);
-    const architectureBlock = renderSummaryBlock(context.architecture);
+    // Deterministic facts (purpose, modules, runtime services, dependencies),
+    // keyed to the indexed revision — see repositoryMap.service.ts.
+    const overviewBlock = profileBlock(context.repositoryProfile);
     const moduleBlock = renderCapped(context.moduleInventory, (m) => `- ${m.module} (${m.fileCount} file${m.fileCount === 1 ? "" : "s"})`, 2000);
 
-    const hasAnyContext = Boolean(overviewBlock || architectureBlock || docBlock || moduleBlock);
+    const hasAnyContext = Boolean(overviewBlock || docBlock || moduleBlock);
 
     const sections: string[] = [
       `You are a senior engineer conducting a technical interview about THIS SPECIFIC repository.`,
@@ -108,8 +111,7 @@ export class InterviewPromptBuilder {
         `state plainly that indexing hasn't produced content yet and to try again shortly.`,
       );
     } else {
-      if (overviewBlock) sections.push(``, `## Repository Overview (fully indexed)`, overviewBlock);
-      if (architectureBlock) sections.push(``, `## Architecture (fully indexed)`, architectureBlock);
+      if (overviewBlock) sections.push(``, `## Repository profile (derived from paths, imports and manifests)`, overviewBlock);
       if (docBlock) sections.push(``, `## Documentation`, docBlock);
       if (moduleBlock) sections.push(``, `## Repository areas`, moduleBlock);
       sections.push(
@@ -168,7 +170,8 @@ export class InterviewPromptBuilder {
       (d, i) => renderDocCitation(d, i, 1000),
       2000,
     );
-    const groundingSummaryBlock = renderSummaryBlock(context.groundingSummary);
+    // Module profile at MODULE scope, repository profile at REPOSITORY scope.
+    const groundingProfileBlock = profileBlock(context.groundingProfile);
 
     // STAY — deeper material at the SAME granularity as the question just asked.
     const stayCode = renderCapped(
@@ -181,7 +184,6 @@ export class InterviewPromptBuilder {
       (d, i) => renderDocCitation(d, i, 1000, "Deeper Doc"),
       2000,
     );
-    const staySummaryBlock = renderSummaryBlock(context.staySummary);
 
     // NARROW — offered ALONGSIDE stay, one level finer. Names only.
     const narrowModulesBlock = renderModuleList(context.narrowModules);
@@ -287,19 +289,18 @@ export class InterviewPromptBuilder {
         ` nextFocus, or retrieval/coverage details inside interviewerMessage.`,
     ];
 
-    if (groundingCode || groundingDocs || groundingSummaryBlock) {
+    if (groundingCode || groundingDocs || groundingProfileBlock) {
       sections.push(``, `## Evidence for evaluating the answer (do not leak verbatim — use it to judge accuracy)`);
-      if (groundingSummaryBlock) sections.push(groundingSummaryBlock);
+      if (groundingProfileBlock) sections.push(groundingProfileBlock);
       if (groundingDocs) sections.push(groundingDocs);
       if (groundingCode) sections.push(groundingCode);
     }
 
-    if (stayCode || stayDocs || staySummaryBlock) {
+    if (stayCode || stayDocs) {
       sections.push(
         ``,
         `## Material to go deeper WITHOUT changing scope (for FOLLOW_UP / DEEP_DIVE / SIMPLIFY that stay at ${granularity})`,
       );
-      if (staySummaryBlock) sections.push(staySummaryBlock);
       if (stayDocs) sections.push(stayDocs);
       if (stayCode) sections.push(stayCode);
     }
@@ -318,8 +319,8 @@ export class InterviewPromptBuilder {
     }
 
     if (
-      !groundingCode && !groundingDocs && !groundingSummaryBlock &&
-      !stayCode && !stayDocs && !staySummaryBlock &&
+      !groundingCode && !groundingDocs && !groundingProfileBlock &&
+      !stayCode && !stayDocs &&
       !narrowModulesBlock && !narrowFilesBlock && !frontierBlock
     ) {
       sections.push(

@@ -207,7 +207,12 @@ export const getPullRequestDetails = async (
   };
 };
 
-async function fetchRawFileContent(token: string | undefined, owner: string, repo: string, path: string, ref: string): Promise<string | null> {
+/**
+ * Raw file content at an arbitrary ref (commit SHA or branch), cached 900 s.
+ * Returns null on 404. Also used by PR review to read a changed file at the
+ * PR head — the same revision the patch's + line numbers describe.
+ */
+export async function fetchRawFileContent(token: string | undefined, owner: string, repo: string, path: string, ref: string): Promise<string | null> {
     const cacheKey = `github:repo:${owner}:${repo}:file:${ref}:${path}`;
     
     return await withCache(cacheKey, 900, async () => {
@@ -226,62 +231,6 @@ async function fetchRawFileContent(token: string | undefined, owner: string, rep
         if (!response.ok) {
             if (response.status === 404) return null;
             throw new Error(`Failed to fetch file content for ${path}: ${response.statusText}`);
-        }
-        return response.text();
-    });
-}
-
-/**
- * Fetches the repository's canonical README at a SPECIFIC revision.
- *
- * Uses GitHub's /readme endpoint rather than guessing a path: it resolves any
- * name, case and extension GitHub itself recognises (README.md, readme.rst,
- * README, ...) in one request.
- *
- * ONE CALLER ONLY: repositorySummarize.service.ts (Phase 2). No retrieval
- * path may call this. README reaches retrieval exclusively through the index
- * (repository_embeddings rows written by the same transaction, at the same
- * commit_sha, as that revision's code chunks). Live-fetching a README during
- * a Q&A/Review request would mix HEAD prose with code from an older
- * last_indexed_sha, with the model given no way to tell — the exact
- * cross-revision skew the two-path design exists to prevent. Keeping the
- * caller count at one is how that invariant is enforced.
- *
- * Returns null ONLY when the repository genuinely has no README (404).
- * Any other failure THROWS — see the note at the call site: silently
- * returning null on a transient error would generate a repository summary
- * that wrongly reports "no README" AND poison the summary's content hash
- * with hash(""), so the next run would consider that wrong summary current
- * and skip regenerating it.
- */
-export async function fetchCanonicalReadme(
-    token: string | undefined,
-    owner: string,
-    repo: string,
-    ref: string,
-): Promise<string | null> {
-    const cacheKey = `github:repo:${owner}:${repo}:readme:${ref}`;
-
-    return await withCache(cacheKey, 900, async () => {
-        const url = `https://api.github.com/repos/${owner}/${repo}/readme?ref=${ref}`;
-
-        const headers: Record<string, string> = {
-            'Accept': 'application/vnd.github.v3.raw',
-        };
-        if (token) {
-            headers['Authorization'] = `Bearer ${token}`;
-        }
-
-        const response = await fetch(url, { headers });
-
-        if (response.status === 404) {
-            // Genuinely absent — a legitimate, expected state.
-            return null;
-        }
-        if (!response.ok) {
-            throw new Error(
-                `Failed to fetch README for ${owner}/${repo}@${ref}: ${response.status} ${response.statusText}`,
-            );
         }
         return response.text();
     });
@@ -426,9 +375,15 @@ export async function fetchAllRepositoryFiles(
     // Note: If the repository is massive, this loop should be chunked/paginated
     // to avoid hitting GitHub API rate limits.
     for (const blob of blobs) {
-        // Skip common binary or massive files that we don't want to parse
-        if (blob.path.includes('package-lock.json') || blob.path.startsWith('dist/')) {
-            continue; 
+        // Skip lockfiles, build output, vendored deps and binary assets: they
+        // produce no index rows, so downloading them is pure wasted requests.
+        if (
+            blob.path.includes('package-lock.json') ||
+            blob.path.startsWith('dist/') ||
+            /(^|\/)node_modules\//.test(blob.path) ||
+            /\.(wasm|png|jpe?g|gif|webp|ico|svg|pdf|zip|gz|tgz|jar|woff2?|ttf|eot|mp[34]|webm|wav|lock)$/i.test(blob.path)
+        ) {
+            continue;
         }
 
         const content = await fetchRawFileContent(token, owner, repo, blob.path, sha);

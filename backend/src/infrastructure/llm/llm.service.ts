@@ -9,6 +9,8 @@ export interface LLMMessage {
 }
 
 export interface LLMService {
+  /** The model this service calls — persisted as review audit metadata. */
+  readonly modelName: string;
   generate(messages: LLMMessage[]): Promise<string>;
   generateStructured<T>(messages: LLMMessage[], schema: Schema): Promise<T>;
   stream(
@@ -18,7 +20,7 @@ export interface LLMService {
 
 export class GeminiLLMService implements LLMService {
   private ai: GoogleGenAI;
-  private modelName = "gemini-3.6-flash";
+  public readonly modelName = "gemini-3.6-flash";
 
   constructor() {
     this.ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -108,7 +110,7 @@ export class GeminiLLMService implements LLMService {
 }
 
 export class OllamaLLMService implements LLMService {
-  private modelName = "qwen2.5-coder:7b";
+  public readonly modelName = "qwen2.5-coder:7b";
 
   private convertToStandardJsonSchema(googleSchema: any): any {
     if (!googleSchema || typeof googleSchema !== "object") return googleSchema;

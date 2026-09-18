@@ -7,8 +7,8 @@ export const appEvents = new AppEventEmitter();
 
 // Define Event Types
 export const EVENT_TYPES = {
+  // Fired when indexing for a revision fully completes (repo is READY).
   REPOSITORY_SYNCED: "repository.synced",
-  REPOSITORY_INDEXED: "repository.indexed",
   REPOSITORY_ADDED: "repository.added",
   REPOSITORY_REMOVED: "repository.removed",
   PR_REVIEW_COMPLETED: "pr_review.completed",
@@ -34,13 +34,6 @@ appEvents.on(EVENT_TYPES.REPOSITORY_SYNCED, async ({ userId, repositoryId }) => 
   await invalidatePattern(`repo:${repositoryId}:details*`);
   await invalidatePattern(`repo:${repositoryId}:indexed-paths`);
   await invalidatePattern(`repo:${repositoryId}:import-fan-in`);
-  await invalidatePattern(`user:${userId}:dashboard*`);
-});
-
-appEvents.on(EVENT_TYPES.REPOSITORY_INDEXED, async ({ userId, repositoryId }) => {
-  await invalidatePattern(`user:${userId}:repos*`);
-  await invalidatePattern(`repo:${repositoryId}:details*`);
-  await invalidatePattern(`repo:${repositoryId}:summary:*`);
   await invalidatePattern(`user:${userId}:dashboard*`);
 });
 

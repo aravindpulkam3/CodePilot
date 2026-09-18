@@ -1,14 +1,8 @@
 import type {
-  ArchitectureSummary,
-  ComponentSummary,
-  RepositorySummary,
-} from "../../../infrastructure/summarization/summaryTypes.js";
-import type {
   CodeChunkSearchResult,
   DocChunkSearchResult,
   QAGraphNeighbors,
 } from "../../../infrastructure/retrieval/retrievalTypes.js";
-import { summaryBlockText } from "../../../shared/prompts/promptRendering.js";
 import {
   ContextEntryDraft,
   PromptContextItem,
@@ -20,26 +14,20 @@ import {
 export type BudgetTier = "full" | "reduced" | "omit";
 
 /**
- * Per-entry caps and per-section body budgets (characters). Same numbers the
- * provider used with renderCapped before numbered provenance; budgets now
- * count entry bodies only — see renderNumberedSection.
+ * Per-entry caps and per-section body budgets (characters). Budgets count
+ * entry bodies only — see renderNumberedSection.
  */
 const LIMITS = {
   overview: { full: 1200, reduced: 500 },
-  architecture: { full: 1200, reduced: 500 },
-  component: { each: 400, full: 1500, reduced: 600 },
   documentation: { each: 1200, full: 3000, reduced: 1200 },
   code: { each: 1500, full: 6000, reduced: 2500 },
   imports: { each: 3000 },
 };
 
 export interface QAPromptContextInput {
-  repository: RepositorySummary | null;
+  /** Deterministic repository profile text (repositoryMap.service.ts). */
+  repositoryProfile: string | null;
   repositoryTier: BudgetTier;
-  architecture: ArchitectureSummary | null;
-  architectureTier: BudgetTier;
-  components: ComponentSummary[];
-  componentTier: BudgetTier;
   docChunks: DocChunkSearchResult[];
   docTier: BudgetTier;
   codeChunks: CodeChunkSearchResult[];
@@ -70,15 +58,14 @@ function importRelationsText(gn: QAGraphNeighbors): string {
  * Renders Q&A's retrieved context into numbered prompt entries and returns
  * the provenance for exactly what was rendered.
  *
- * Numbering is one continuous [1]..[k] sequence in PROMPT order, which is
- * chosen for answer quality (orientation first, then intent, then current
- * behaviour, then structure) and is independent of how the UI groups
+ * Numbering is one continuous [1]..[k] sequence in PROMPT order (intent, then
+ * current behaviour, then structure), independent of how the UI groups
  * sources. Each entry's heading carries its kind label, which is what carries
  * source authority to the model now that docs and code share one numbering.
  *
- * The repository overview is rendered unnumbered: it frames every question
- * the same way, so it's tracked in the snapshot but never offered as a
- * citable source.
+ * The repository profile is rendered unnumbered: it frames every question the
+ * same way, so it's tracked in the snapshot but never offered as a citable
+ * source.
  */
 export function buildQAPromptContext(input: QAPromptContextInput): QAPromptContext {
   const sections: string[] = [];
@@ -86,56 +73,16 @@ export function buildQAPromptContext(input: QAPromptContextInput): QAPromptConte
   let n = 1;
 
   const overviewBudget = budgetFor(input.repositoryTier, LIMITS.overview);
-  if (input.repository && overviewBudget !== null) {
+  if (input.repositoryProfile && overviewBudget !== null) {
     const background = renderBackgroundEntry({
-      meta: { kind: "summary", title: "Repository overview", summaryLevel: "repository" },
-      heading: "Repository Overview (AI summary, background)",
-      text: summaryBlockText(input.repository),
+      meta: { kind: "summary", title: "Repository profile", summaryLevel: "repository" },
+      heading: "Repository Overview (derived from paths, imports and manifests; background)",
+      text: input.repositoryProfile,
       maxChars: overviewBudget,
     });
     if (background) {
       sections.push(`## Repository Overview (background — not numbered, do not cite)\n${background.text}`);
       items.push(background.item);
-    }
-  }
-
-  const archBudget = budgetFor(input.architectureTier, LIMITS.architecture);
-  if (input.architecture && archBudget !== null) {
-    const rendered = renderNumberedSection(
-      [
-        {
-          meta: { kind: "summary", title: "Architecture", summaryLevel: "architecture" },
-          heading: "AI SUMMARY · Architecture",
-          text: summaryBlockText(input.architecture),
-          maxChars: archBudget,
-        },
-      ],
-      archBudget,
-      n,
-    );
-    if (rendered.items.length > 0) {
-      sections.push(`## Architecture\n${rendered.text}`);
-      items.push(...rendered.items);
-      n = rendered.nextN;
-    }
-  }
-
-  const componentBudget = budgetFor(input.componentTier, LIMITS.component);
-  if (input.components.length > 0 && componentBudget !== null) {
-    const drafts: ContextEntryDraft[] = input.components.map((c) => {
-      const title = c.name || "Component";
-      return {
-        meta: { kind: "summary", title, summaryLevel: "component" },
-        heading: `AI SUMMARY · ${title} (component)`,
-        text: summaryBlockText(c),
-        maxChars: LIMITS.component.each,
-      };
-    });
-    const rendered = renderNumberedSection(drafts, componentBudget, n);
-    if (rendered.items.length > 0) {
-      sections.push(`## Related Components\n${rendered.text}`);
-      items.push(...rendered.items);
-      n = rendered.nextN;
     }
   }
 

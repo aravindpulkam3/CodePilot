@@ -1,0 +1,6 @@
+@@ -0,0 +1,4 @@
++export const errorMessage =async (req,res)=>{
++  console.log("error error!!")
++  return res.status(404).json("unexpected error occured");
++}
+\ No newline at end of file

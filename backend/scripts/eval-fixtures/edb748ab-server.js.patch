@@ -1,0 +1,8 @@
+@@ -18,6 +18,7 @@ app.use(express.static(path.join(__dirname, "public")));
+ 
+ app.use("/api", urlRoutes);
+ app.get("/:code", redirectUrl);
++app.use(errorMessage)
+ 
+ app.listen(process.env.PORT, () => {
+   console.log(`hello guys, the Server is running on port ${process.env.PORT}`);

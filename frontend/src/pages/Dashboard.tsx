@@ -60,14 +60,7 @@ export default function Dashboard() {
     user?.name?.split(" ")[0] || githubUser?.name?.split(" ")[0] || "Engineer";
 
   // Assumes repo objects carry an `indexing_status` field from the backend.
-  // "Indexed" here means usable, not fully summarized — SEARCHABLE/
-  // SUMMARIZING/READY are all searchable states for Q&A/Review/Interview.
-  const indexedRepos = repositories.filter(
-    (r) =>
-      r.indexing_status === "SEARCHABLE" ||
-      r.indexing_status === "SUMMARIZING" ||
-      r.indexing_status === "READY",
-  );
+  const indexedRepos = repositories.filter((r) => r.indexing_status === "READY");
   const needsIndexingRepos = repositories.filter(
     (r) => r.indexing_status === "SYNCING" || r.indexing_status === "INDEXING",
   );

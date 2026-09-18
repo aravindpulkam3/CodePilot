@@ -1,5 +1,6 @@
 import { Type, Schema } from "@google/genai";
 import { LLMMessage } from "../../infrastructure/llm/llm.service.js"; // Adjust path if needed
+import type { ChangedCodeContext, EnclosingChunk } from "./changedCodeContext.js";
 
 interface PRFile {
   filename: string;
@@ -20,6 +21,11 @@ export class CodeReviewPromptBuilder {
     /\.min\.(js|css)$/,
     /\.(jpg|jpeg|png|gif|svg|webp|ico|mp4|webm|wav|mp3|eot|ttf|woff|woff2)$/i,
   ];
+
+  /** Lockfiles, build output, minified and binary assets are never reviewed. */
+  public static isReviewableFile(filename: string): boolean {
+    return !this.IGNORED_PATTERNS.some((pattern) => pattern.test(filename));
+  }
 
   private static readonly MAX_TOTAL_PATCH_LENGTH = 80000;
 
@@ -42,11 +48,15 @@ export class CodeReviewPromptBuilder {
     documentationContext: string = "",
     provenance?: { branch?: string; sha?: string },
     repositoryOverview: string = "",
+    // Post-change enclosing code per changed file, from the PR head. See
+    // changedCodeContext.ts — already capped, rendered in full here.
+    changedCode: ChangedCodeContext | null = null,
   ): LLMMessage[] {
+    const hasEnclosingCode = Boolean(changedCode?.files.some((f) => f.chunks.length > 0));
     return [
       {
         role: "system",
-        content: this.buildSystemPrompt(repoName, Boolean(documentationContext)),
+        content: this.buildSystemPrompt(repoName, Boolean(documentationContext), hasEnclosingCode),
       },
       {
         role: "user",
@@ -58,12 +68,20 @@ export class CodeReviewPromptBuilder {
           documentationContext,
           provenance,
           repositoryOverview,
+          changedCode,
         ),
       },
     ];
   }
 
-  private static buildSystemPrompt(repoName: string, hasDocumentation: boolean): string {
+  private static readonly ENCLOSING_CODE_RULE = `
+- Code under "ENCLOSING CODE AT PR HEAD" inside <PullRequestDiff> is the post-change version of the functions, methods or classes that contain the changed lines, from the same revision as the patch. Use it to understand each change in its enclosing scope. <RepositoryContext> is pre-change default-branch code and may show older versions of the same files.`;
+
+  private static renderEnclosingChunk(chunk: EnclosingChunk): string {
+    return `// Symbol: ${chunk.qualifiedName} (${chunk.symbolType}, lines ${chunk.startLine}-${chunk.endLine})\n${chunk.content}`;
+  }
+
+  private static buildSystemPrompt(repoName: string, hasDocumentation: boolean, hasEnclosingCode: boolean = false): string {
     return `
 You are a Senior Software Engineer performing a pull request review.
 
@@ -121,7 +139,7 @@ Important Rules
 - Prefer fewer high-quality findings over many weak observations.
 - Every issue should include a concrete recommendation.
 - Whenever possible, include an exact replacement code snippet.
-- If no issue exists, do not fabricate one.
+- If no issue exists, do not fabricate one.${hasEnclosingCode ? this.ENCLOSING_CODE_RULE : ""}
 
 Scoring
 
@@ -183,19 +201,19 @@ are relevant to this pull request.
     documentationContext: string = "",
     provenance?: { branch?: string; sha?: string },
     repositoryOverview: string = "",
+    changedCode: ChangedCodeContext | null = null,
   ): string {
-    const validFiles = files.filter(
-      (file) =>
-        file.patch &&
-        !this.IGNORED_PATTERNS.some((pattern) => pattern.test(file.filename)),
+    const enclosingByFile = new Map(
+      (changedCode?.files ?? []).filter((f) => f.chunks.length > 0).map((f) => [f.filename, f.chunks]),
     );
+    const enclosingHeader = `ENCLOSING CODE AT PR HEAD (${(changedCode?.headSha ?? "").slice(0, 7)}) — same revision as this patch's + lines`;
+
+    const validFiles = files.filter((file) => file.patch && this.isReviewableFile(file.filename));
 
     let prompt = "";
 
-    // Only present when the repository is fully indexed AND summarized. While
-    // summarization is still running, saying nothing is correct — a summary
-    // generated against an older revision, presented as current, is worse than
-    // no architectural framing at all.
+    // Deterministic repository profile (purpose, modules, runtime services,
+    // dependencies) — capped, and keyed to the indexed revision.
     if (repositoryOverview) {
       prompt += `
 <RepositoryOverview>
@@ -220,7 +238,7 @@ The following code chunks are pulled from the existing repository to give you ar
 PROVENANCE: this context is indexed from ${origin} and does NOT include this pull request's changes. Do NOT report a finding whose only basis is that this context has not been updated to match the diff — that is expected.
 
 Each chunk is labelled with how it was retrieved:
-- changed_file: a chunk of a file this PR modifies, shown in full (the diff shows only changed lines)
+- changed_file: pre-change code from the default branch, for a modified file whose post-change enclosing code could not be fully attached; up to 3 chunks, chosen by similarity
 - graph_dependent: a CALLER of a changed file — check whether this change breaks it
 - graph_dependency: something a changed file imports
 - related_test: a test covering a changed file
@@ -289,6 +307,34 @@ Deletions: ${file.deletions ?? 0}
 PATCH
 
 ${patch}
+
+`;
+
+      // Not charged against remainingBudget: the enclosing code was already
+      // capped before retrieval ran, and retrieval may have skipped this
+      // file's default-branch chunks on the strength of it being present.
+      const enclosing = enclosingByFile.get(file.filename);
+      if (enclosing) {
+        prompt += `${enclosingHeader}
+
+${enclosing.map((c) => this.renderEnclosingChunk(c)).join("\n\n")}
+
+`;
+        enclosingByFile.delete(file.filename);
+      }
+    }
+
+    // Enclosing code for files whose patch the size budget cut above. Still
+    // rendered, for the same reason as above — as context only.
+    if (enclosingByFile.size > 0) {
+      prompt += `
+==================================================
+${enclosingHeader}
+For files whose patches were omitted above for size. Context only — do not report findings on these files.
+
+${Array.from(enclosingByFile.entries())
+  .map(([filename, chunks]) => `FILE: ${filename}\n\n${chunks.map((c) => this.renderEnclosingChunk(c)).join("\n\n")}`)
+  .join("\n\n")}
 
 `;
     }

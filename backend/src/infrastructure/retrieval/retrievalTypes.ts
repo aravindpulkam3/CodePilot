@@ -1,19 +1,4 @@
-import {
-  ArchitectureSummary,
-  ComponentSummary,
-  FileSummary,
-  RepositorySummary,
-} from "../summarization/summaryTypes.js";
-
 export type RetrievalMode = "qa" | "interview" | "review";
-
-export interface SummarySearchResult {
-  nodeType: "repository" | "architecture" | "component" | "file";
-  nodeKey: string;
-  parentKey: string | null;
-  summary: RepositorySummary | ArchitectureSummary | ComponentSummary | FileSummary;
-  similarity: number;
-}
 
 export interface CodeChunkSearchResult {
   filePath: string;
@@ -47,10 +32,11 @@ export interface DocChunkSearchResult extends CodeChunkSearchResult {
 }
 
 export interface RetrievedContext {
-  repository: RepositorySummary | null;
-  architecture: ArchitectureSummary | null;
-  components: ComponentSummary[];
-  files: FileSummary[];
+  /**
+   * Deterministic repository profile text (repositoryMap.service.ts) —
+   * orientation background, never citable evidence. Null when empty.
+   */
+  repositoryProfile: string | null;
   codeChunks: CodeChunkSearchResult[];
   /** Documentation sections. Always present; empty when none matched. */
   docChunks: DocChunkSearchResult[];
@@ -75,9 +61,6 @@ export interface RetrievedContext {
      * shared scale).
      */
     evidenceSimilarities?: {
-      repository: number | null;
-      architecture: number | null;
-      component: number | null;
       doc: number | null;
       code: number | null;
     };
@@ -126,13 +109,11 @@ export type InterviewGranularity = "REPOSITORY" | "MODULE" | "FILE";
  * fix: code is fetched only once the interview's focus actually narrows to
  * FILE granularity (see InterviewFollowUpContext) — turn 1 always opens at
  * REPOSITORY scope, using only `moduleInventory` (real, Phase-1-only) plus
- * whatever of {repository, architecture, docChunks} happens to be available.
- * `repository`/`architecture` are enrichment, populated ONLY when
- * indexing_status === 'READY' (see retreival.service.ts).
+ * the deterministic repository profile and any matching docChunks.
  */
 export interface InterviewStartContext {
-  repository: RepositorySummary | null;
-  architecture: ArchitectureSummary | null;
+  /** Deterministic repository profile text (repositoryMap.service.ts), or null when empty. */
+  repositoryProfile: string | null;
   moduleInventory: ModuleInventoryEntry[];
   docChunks: DocChunkSearchResult[];
   /** Every indexed file path — the closed list a (discouraged but not forbidden) turn-1 filePath declaration must resolve against. */
@@ -149,12 +130,14 @@ export interface InterviewStartContext {
  * model's own `nextFocus` declaration (validated in interview.service.ts)
  * decides what actually happens next, retrieval only offers the menu:
  *
- * - grounding{Code,Docs,Summary}: keyed on the QUESTION vector, restricted to
+ * - grounding{Code,Docs,Profile}: keyed on the QUESTION vector, restricted to
  *   the CURRENT granularity's real material — code only at FILE, since a
  *   MODULE/REPOSITORY-scope question wasn't about specific code and there's
  *   nothing to check the answer against. Never keyed on the answer itself,
- *   since a wrong or "I don't know" answer would poison retrieval.
- * - stay{Code,Docs,Summary}: deeper material at the SAME granularity —
+ *   since a wrong or "I don't know" answer would poison retrieval. The
+ *   profile is the module profile at MODULE, the repository profile at
+ *   REPOSITORY, none at FILE.
+ * - stay{Code,Docs}: deeper material at the SAME granularity —
  *   feeds FOLLOW_UP/DEEP_DIVE/SIMPLIFY when they don't narrow.
  * - narrow{Modules,Files}: one level finer, offered ALONGSIDE stay (never
  *   instead of it) — feeds the same three actions when they DO narrow. Empty
@@ -169,11 +152,11 @@ export interface InterviewFollowUpContext {
 
   groundingCode: CodeChunkSearchResult[];
   groundingDocs: DocChunkSearchResult[];
-  groundingSummary: RepositorySummary | ArchitectureSummary | ComponentSummary | null;
+  /** Module profile at MODULE, repository profile at REPOSITORY, null at FILE. */
+  groundingProfile: string | null;
 
   stayCode: CodeChunkSearchResult[];
   stayDocs: DocChunkSearchResult[];
-  staySummary: ArchitectureSummary | ComponentSummary | null;
 
   narrowModules: ModuleInventoryEntry[];
   narrowFiles: string[];

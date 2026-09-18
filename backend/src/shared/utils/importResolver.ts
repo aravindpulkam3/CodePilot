@@ -44,23 +44,41 @@ export function resolveLocalImport(
 }
 
 /**
- * Extract distinct local imports from a file's AST metadata.
- * Optionally return them with their full specifier.
+ * One import of a file. `resolvedPath: null` means PENDING: a relative
+ * specifier that matched no known path yet. That happens legitimately on an
+ * initial index, where knownPaths only covers files committed so far plus
+ * the current 50-file chunk; the target may be in a later chunk.
+ * RelationshipIndexingService#resolvePendingImports re-resolves these once
+ * every chunk has committed.
+ */
+export interface LocalImport {
+  resolvedPath: string | null;
+  specifier: string;
+}
+
+/**
+ * Extract distinct local imports from a file's AST metadata: resolved edges
+ * (deduped by target path, first specifier wins) plus unresolved RELATIVE
+ * specifiers (deduped by specifier). Non-relative specifiers — packages and
+ * path aliases like "@/lib/x" — are dropped, since they can never resolve.
  */
 export function extractLocalImports(
   fromFile: string,
   rawImports: string[],
   knownPaths: Set<string>,
-): { resolvedPath: string; specifier: string }[] {
+): LocalImport[] {
   const edges = new Map<string, string>();
+  const pending = new Set<string>();
   for (const imp of rawImports) {
     const resolved = resolveLocalImport(fromFile, imp, knownPaths);
-    if (resolved && !edges.has(resolved)) {
-      edges.set(resolved, imp);
+    if (resolved) {
+      if (!edges.has(resolved)) edges.set(resolved, imp);
+    } else if (imp.startsWith(".")) {
+      pending.add(imp);
     }
   }
-  return Array.from(edges.entries()).map(([resolvedPath, specifier]) => ({
-    resolvedPath,
-    specifier,
-  }));
+  return [
+    ...Array.from(edges.entries()).map(([resolvedPath, specifier]) => ({ resolvedPath, specifier })),
+    ...Array.from(pending).map((specifier) => ({ resolvedPath: null, specifier })),
+  ];
 }

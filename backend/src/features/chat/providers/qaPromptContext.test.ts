@@ -28,14 +28,8 @@ const doc = (section: string, body: string): DocChunkSearchResult => ({
 });
 
 const base = (overrides: Partial<QAPromptContextInput> = {}): QAPromptContextInput => ({
-  repository: { nodeType: "repository", summary: "A URL shortener", purpose: "Shorten links", features: [], techStack: ["Node"], interestingDesignDecisions: [], keywords: [] },
+  repositoryProfile: "Purpose: A URL shortener\nFeature modules (by file count): Auth (3), Api (2)\nDependencies (package.json): express",
   repositoryTier: "full",
-  architecture: { nodeType: "architecture", summary: "Express API + worker", architectureStyle: "layered", majorLayers: [], requestFlows: [], dataFlows: [], majorComponents: ["API"], crossCuttingConcerns: [], technologies: [], keywords: [] },
-  architectureTier: "full",
-  components: [
-    { nodeType: "component", name: "Auth", summary: "Handles login", purpose: "Auth", responsibilities: [], technologies: [], keywords: [], entryPoints: [], importantFiles: [], publicInterfaces: [], relatedComponents: [] },
-  ],
-  componentTier: "full",
   docChunks: [doc("Setup", "Run docker compose up.")],
   docTier: "full",
   codeChunks: [code("requireAuth", "export function requireAuth() {}"), code("login", "export function login() {}")],
@@ -52,16 +46,15 @@ describe("buildQAPromptContext", () => {
     assert.deepEqual(
       numbered.map((i) => [i.n, i.kind]),
       [
-        [1, "summary"],
-        [2, "summary"],
-        [3, "documentation"],
-        [4, "code"],
-        [5, "code"],
-        [6, "imports"],
+        [1, "documentation"],
+        [2, "code"],
+        [3, "code"],
+        [4, "imports"],
       ],
     );
     const labels = [...promptText.matchAll(/^\[(\d+)\] /gm)].map((m) => Number(m[1]));
-    assert.deepEqual(labels, [1, 2, 3, 4, 5, 6]);
+    assert.deepEqual(labels, [1, 2, 3, 4]);
+    assert.ok(!/AI SUMMARY/.test(promptText), "no AI summary sections remain");
   });
 
   test("keeps the repository overview as unnumbered, non-displayable background", () => {
@@ -77,7 +70,7 @@ describe("buildQAPromptContext", () => {
 
   test("omitted tiers produce no items and no prompt text", () => {
     const { items, promptText } = buildQAPromptContext(
-      base({ repositoryTier: "omit", architectureTier: "omit", componentTier: "omit", docTier: "omit", codeTier: "omit", graphNeighbors: null }),
+      base({ repositoryTier: "omit", docTier: "omit", codeTier: "omit", graphNeighbors: null }),
     );
     assert.equal(items.length, 0);
     assert.equal(promptText, "");
@@ -91,17 +84,17 @@ describe("buildQAPromptContext", () => {
     }
   });
 
-  test("a single-entry section always fits its own budget", () => {
+  test("the repository profile is capped to its tier budget", () => {
     const long = "word ".repeat(400);
-    const { items } = buildQAPromptContext(
-      base({
-        architecture: { nodeType: "architecture", summary: long, architectureStyle: "", majorLayers: [], requestFlows: [], dataFlows: [], majorComponents: [], crossCuttingConcerns: [], technologies: [], keywords: [] },
-        architectureTier: "reduced",
-      }),
-    );
-    const arch = items.find((i) => i.summaryLevel === "architecture")!;
-    assert.equal(arch.truncated, true);
-    assert.equal(arch.body.length <= 500, true);
+    const { items } = buildQAPromptContext(base({ repositoryProfile: long, repositoryTier: "reduced" }));
+    const overview = items.find((i) => i.summaryLevel === "repository")!;
+    assert.equal(overview.truncated, true);
+    assert.equal(overview.body.length <= 500, true);
+  });
+
+  test("no profile text means no overview entry", () => {
+    const { items } = buildQAPromptContext(base({ repositoryProfile: null }));
+    assert.equal(items.some((i) => i.summaryLevel === "repository"), false);
   });
 
   test("reduced code budget drops what doesn't fit rather than listing it", () => {

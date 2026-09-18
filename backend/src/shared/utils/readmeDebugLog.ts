@@ -10,7 +10,7 @@
  * REMOVING THIS LATER:
  *   1. Set README_DEBUG=false to silence every call site at once, or
  *   2. delete this file and the `readmeLog` / `docRetrievalLog` /
- *      `docSummaryLog` / `docPreview` call sites (grep those four names —
+ *      `docPreview` call sites (grep those three names —
  *      they are used nowhere else and import only from here).
  *
  * Deliberately ON by default so verification works without extra setup.
@@ -38,11 +38,6 @@ export function readmeLog(message: string, ...rest: unknown[]): void {
 /** Retrieval: what documentation came back for a Q&A or Review query. */
 export function docRetrievalLog(message: string, ...rest: unknown[]): void {
   if (README_DEBUG) console.log(`[DOC-RETRIEVAL] ${message}`, ...rest);
-}
-
-/** Phase 2: whether README context reached the summarization pipeline. */
-export function docSummaryLog(message: string, ...rest: unknown[]): void {
-  if (README_DEBUG) console.log(`[DOC-SUMMARY] ${message}`, ...rest);
 }
 
 export const isReadmeDebugEnabled = README_DEBUG;

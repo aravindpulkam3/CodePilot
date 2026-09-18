@@ -2,7 +2,6 @@ import { Worker } from "bullmq";
 import { createQueueConnection } from "./config/redis.js";
 import { repositorySyncService } from "./features/repository/repositorySync.service.js";
 import { repositoryIndexer } from "./features/repository/repositoryIndex.service.js";
-import { repositorySummarizeService } from "./features/repository/repositorySummarize.service.js";
 
 /**
  * BullMQ Worker Entry Point
@@ -81,7 +80,7 @@ const indexWorker = new Worker(
   },
   {
     connection: createQueueConnection(),
-    concurrency: 4, // Parsing ASTs / LLMs can be parallelized safely
+    concurrency: 4, // AST parsing + embedding batches parallelize safely; no LLM calls in indexing
   },
 );
 
@@ -101,78 +100,11 @@ indexWorker.on("ready", () => {
   console.log("[IndexWorker] Connected to Redis and ready for jobs.");
 });
 
-// 3. Summarize Worker: Pulls from RepositorySummarize queue.
-// concurrency: 1 is a hard requirement, not a tuning choice — there is
-// exactly one local Ollama instance and summarization must stay strictly
-// sequential across ALL repos, never just per-repo. Never raise this.
-const summarizeWorker = new Worker(
-  "RepositorySummarize",
-  async (job) => {
-    if (isTooStale(job)) return { status: "skipped_stale" };
-
-    const { repositoryId, targetSha } = job.data;
-    console.log(
-      `[SummarizeWorker] Processing Job ${job.id} for Repo ${repositoryId} (target ${targetSha})`,
-    );
-    return await repositorySummarizeService.processSummarizeJob(
-      repositoryId,
-      targetSha,
-    );
-  },
-  {
-    connection: createQueueConnection(),
-    concurrency: 1,
-  },
-);
-
-// The convergence re-check (plan §2 step 6) runs here, AFTER the job has
-// settled — not inside processSummarizeJob itself, since a self-triggered
-// enqueue while the job's own record is still "active" under the same
-// deterministic jobId would just hit the dedup guard and no-op.
-summarizeWorker.on("completed", async (job) => {
-  console.log(`[SummarizeWorker] Completed Job ${job.id}`);
-  const { repositoryId } = job.data;
-  if (repositoryId) {
-    try {
-      await repositorySummarizeService.reconverge(repositoryId);
-    } catch (err) {
-      console.error(
-        `[SummarizeWorker] Reconverge check failed for ${repositoryId}:`,
-        err,
-      );
-    }
-  }
-});
-
-summarizeWorker.on("failed", async (job, err) => {
-  console.error(`[SummarizeWorker] Failed Job ${job?.id}:`, err);
-  const repositoryId = job?.data?.repositoryId;
-  if (repositoryId) {
-    try {
-      await repositorySummarizeService.reconverge(repositoryId);
-    } catch (e) {
-      console.error(
-        `[SummarizeWorker] Reconverge check failed for ${repositoryId}:`,
-        e,
-      );
-    }
-  }
-});
-
-summarizeWorker.on("error", (err) => {
-  console.error("[SummarizeWorker] Worker-level error:", err);
-});
-
-summarizeWorker.on("ready", () => {
-  console.log("[SummarizeWorker] Connected to Redis and ready for jobs.");
-});
-
 // Graceful Shutdown
 const gracefulShutdown = async () => {
   console.log("Shutting down workers gracefully...");
   await syncWorker.close();
   await indexWorker.close();
-  await summarizeWorker.close();
   process.exit(0);
 };
 

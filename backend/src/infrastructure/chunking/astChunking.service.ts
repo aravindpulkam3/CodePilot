@@ -1182,6 +1182,15 @@ export class AstChunkingService {
     return out;
   }
 
+  /** True when a parser is registered for this file's extension — cheap, no parsing. */
+  public supportsFile(filePath: string): boolean {
+    return Boolean(
+      LANGUAGE_REGISTRY[
+        path.extname(filePath).toLowerCase() as keyof typeof LANGUAGE_REGISTRY
+      ],
+    );
+  }
+
   public async chunkFile(
     filePath: string,
     sourceCode: string,
@@ -1369,10 +1378,8 @@ export class AstChunkingService {
       // same capture query chunkFile() uses — NOT from chunkFile()'s
       // output, which reflects chunking decisions (skeleton-vs-whole,
       // member-or-not) that have nothing to do with "what symbols does this
-      // file declare." This keeps Phase 2 summarization's ground-truth
-      // inventory (summarizer.service.ts feeds these lists straight into
-      // the file-summary LLM prompt) complete regardless of how large any
-      // given class/function is — a large class that becomes a
+      // file declare." This keeps the symbol inventory complete regardless
+      // of how large any given class/function is — a large class that becomes a
       // class_skeleton chunk, or a small class's methods that never get
       // their own chunk row, must still show up here. Also removes the
       // previous double-parse (this used to call chunkFile() a second time

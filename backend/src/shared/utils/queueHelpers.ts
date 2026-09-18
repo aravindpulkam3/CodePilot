@@ -8,7 +8,7 @@ import type { Queue } from "bullmq";
  * keep it around for a while). Queue.add() with a jobId that already exists
  * just returns the existing (possibly long-since-terminal) job instead of
  * creating new work — silently, no error. Left unhandled, that means a
- * repo could be synced/summarized exactly once: every later call looks
+ * repo could be synced exactly once: every later call looks
  * like it succeeded but never actually queues anything new.
  *
  * This removes a stale *terminal* job before re-adding, and skips
@@ -16,9 +16,8 @@ import type { Queue } from "bullmq";
  * (active/waiting/delayed) — which is the real anti-duplicate-concurrent-
  * work guard the deterministic id was meant to provide in the first place.
  *
- * Used by both repositorySync.service.ts#enqueueSync and
- * repositorySummarize.service.ts#enqueueSummarize so this fix lives in one
- * place instead of being hand-copied per queue.
+ * Used by repositorySync.service.ts#enqueueSync; kept as a shared helper so
+ * any future deterministic-jobId queue reuses the same fix.
  */
 export async function enqueueWithDedup<T extends Record<string, unknown>>(
   queue: Queue,

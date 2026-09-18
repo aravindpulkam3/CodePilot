@@ -95,4 +95,35 @@ describe("extractLocalImports", () => {
       "../services/auth.service.js",
     );
   });
+
+  test("returns an unresolved RELATIVE specifier as pending (resolvedPath null)", () => {
+    // Initial indexing: the target lives in a later 50-file chunk, so it is not
+    // a known path yet. It must be recorded, not silently dropped, so the
+    // finalize pass can resolve it once every chunk has committed.
+    const known = new Set(["src/config/env.ts"]);
+    const edges = extractLocalImports(
+      "src/app.ts",
+      ["./config/env.js", "./features/sync/repositorySync.service.js"],
+      known,
+    );
+
+    assert.deepEqual(edges, [
+      { resolvedPath: "src/config/env.ts", specifier: "./config/env.js" },
+      { resolvedPath: null, specifier: "./features/sync/repositorySync.service.js" },
+    ]);
+  });
+
+  test("still drops non-relative specifiers: packages and path aliases never resolve", () => {
+    const edges = extractLocalImports("src/app.ts", ["express", "@/lib/x", "node:path"], new Set());
+    assert.deepEqual(edges, []);
+  });
+
+  test("dedupes pending specifiers by exact specifier", () => {
+    const edges = extractLocalImports("src/app.ts", ["./missing.js", "./missing.js", "../other"], new Set());
+    assert.deepEqual(
+      edges.map((e) => e.specifier),
+      ["./missing.js", "../other"],
+    );
+    assert.ok(edges.every((e) => e.resolvedPath === null));
+  });
 });

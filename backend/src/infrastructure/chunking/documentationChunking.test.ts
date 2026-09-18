@@ -1,19 +1,86 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { documentationChunker } from "./documentationChunking.service.js";
-import { isDocumentationFile } from "../../shared/utils/documentationPaths.js";
+import { isConfigFile, isDocumentationFile } from "../../shared/utils/documentationPaths.js";
+import { stripChunkHeader } from "../../shared/prompts/sourceRefs.js";
 
 describe("isDocumentationFile", () => {
-  test("matches README at the repo root, any case/extension", () => {
-    for (const p of ["README.md", "readme.md", "Readme.MD", "README", "readme.rst", "README.txt"]) {
+  test("matches README / ARCHITECTURE / CONTRIBUTING at any depth, any case/extension", () => {
+    for (const p of [
+      "README.md", "readme.md", "Readme.MD", "README", "readme.rst", "README.txt",
+      "docs/README.md", "frontend/README.md", "ARCHITECTURE.md", "docs/architecture.md", "CONTRIBUTING.md",
+    ]) {
       assert.equal(isDocumentationFile(p), true, p);
     }
   });
 
-  test("rejects nested docs and non-README files", () => {
-    for (const p of ["docs/README.md", "src/readme.md", "CONTRIBUTING.md", "index.ts", "readme.ts"]) {
+  test("rejects other markdown, code, and anything under node_modules/dist", () => {
+    for (const p of ["CLAUDE.md", "docs/guide.md", "index.ts", "readme.ts", "node_modules/pkg/README.md", "dist/README.md"]) {
       assert.equal(isDocumentationFile(p), false, p);
     }
+  });
+});
+
+describe("isConfigFile", () => {
+  test("matches the bounded setup/runtime allowlist at any depth", () => {
+    for (const p of [
+      "package.json", "backend/package.json", "docker-compose.yml", "backend/docker-compose.yaml",
+      "docker-compose.prod.yml", "Dockerfile", "backend/Dockerfile.dev", ".env.example", "frontend/.env.example",
+      "tsconfig.json", "frontend/tsconfig.app.json", "backend/src/db/schema.sql", ".github/workflows/ci.yml",
+    ]) {
+      assert.equal(isConfigFile(p), true, p);
+    }
+  });
+
+  test("rejects lockfiles, binaries, vendored/built paths and non-allowlisted files", () => {
+    for (const p of [
+      "package-lock.json", "frontend/package-lock.json", "yarn.lock", "backend/parsers/tree-sitter-go.wasm",
+      "node_modules/x/package.json", "dist/package.json", ".env", "README.md", "vite.config.ts", "src/config/env.ts",
+      "docs/workflows/ci.yml",
+    ]) {
+      assert.equal(isConfigFile(p), false, p);
+    }
+  });
+
+  test("the two allowlists never overlap", () => {
+    for (const p of ["README.md", "package.json", "docker-compose.yml", "ARCHITECTURE.md", ".env.example"]) {
+      assert.ok(!(isDocumentationFile(p) && isConfigFile(p)), p);
+    }
+  });
+});
+
+describe("documentationChunker.chunkWholeFile", () => {
+  test("stores a small config file as ONE row whose stripped body is the exact source", async () => {
+    const pkg = JSON.stringify({ name: "api", scripts: { dev: "tsx watch src/server.ts" }, dependencies: { express: "^4" } }, null, 2);
+    const rows = await documentationChunker.chunkWholeFile("backend/package.json", pkg);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].symbol_type, "documentation");
+    assert.equal(rows[0].chunk_total, undefined);
+    assert.equal(stripChunkHeader(rows[0].content), pkg);
+    assert.deepEqual(JSON.parse(stripChunkHeader(rows[0].content)), JSON.parse(pkg));
+  });
+
+  test("keeps CRLF docker-compose bytes intact, blank lines included", async () => {
+    const compose = "services:\r\n  db:\r\n    image: postgres:16\r\n\r\n  cache:\r\n    image: redis:7\r\n";
+    const rows = await documentationChunker.chunkWholeFile("docker-compose.yml", compose);
+    assert.equal(rows.length, 1);
+    assert.equal(stripChunkHeader(rows[0].content), compose.trim());
+  });
+
+  test("does NOT split on a column-0 YAML comment, unlike chunkDocument", async () => {
+    const compose = "services:\n# Database\n  db:\n    image: postgres:16\n# Cache\n  cache:\n    image: redis:7\n";
+    const whole = await documentationChunker.chunkWholeFile("docker-compose.yml", compose);
+    const sectioned = await documentationChunker.chunkDocument("docker-compose.yml", compose);
+    assert.equal(whole.length, 1);
+    assert.ok(sectioned.length > 1, "markdown sectioning treats '# Database' as a heading");
+  });
+
+  test("returns [] only for empty input, and splits an oversized file into marked parts", async () => {
+    assert.deepEqual(await documentationChunker.chunkWholeFile(".env.example", "   \n"), []);
+    const big = Array.from({ length: 450 }, (_, i) => `CREATE TABLE t${i} (id int);`).join("\n");
+    const rows = await documentationChunker.chunkWholeFile("schema.sql", big);
+    assert.ok(rows.length > 1);
+    assert.ok(rows.every((r) => r.chunk_total === rows.length));
   });
 });
 

@@ -31,18 +31,14 @@ export interface GitHubUser {
  * visibility, etc.) don't exist on it at all.
  */
 /**
- * Two-phase indexing lifecycle. SEARCHABLE means Phase 1 (sync/parse/embed/
- * import-graph) is done — Q&A/Review/Interview are usable. READY means
- * Phase 2 (background, sequential Ollama summarization) has also caught up.
- * A repo can sit at SEARCHABLE or SUMMARIZING indefinitely while fully
- * usable; only READY/FAILED are terminal for polling purposes.
+ * Indexing lifecycle: one deterministic phase (sync/parse/embed/import-graph).
+ * READY means the index is complete for the latest synced revision. Only
+ * READY/FAILED are terminal for polling purposes.
  */
 export enum IndexingStatus {
   NOT_STARTED = 'NOT_STARTED',
   SYNCING = 'SYNCING',
   INDEXING = 'INDEXING',
-  SEARCHABLE = 'SEARCHABLE',
-  SUMMARIZING = 'SUMMARIZING',
   READY = 'READY',
   FAILED = 'FAILED',
 }

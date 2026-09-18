@@ -92,21 +92,15 @@ export function RepositoryHeader({ repo }: { repo: LocalRepository }) {
             <>
               <span className="flex items-center gap-1.5">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                {syncStatus.status === "SYNCING" || syncStatus.status === "INDEXING"
-                  ? "Indexing…"
-                  : "Searchable — summarizing in background…"}
+                Indexing…
               </span>
               {syncStatus.indexProgress?.filesTotal ? (
                 <span>
                   Files {syncStatus.indexProgress.filesDone}/{syncStatus.indexProgress.filesTotal}
                 </span>
               ) : null}
-              {syncStatus.summaryProgress?.tasksTotal ? (
-                <span>
-                  Summaries {syncStatus.summaryProgress.tasksDone}/{syncStatus.summaryProgress.tasksTotal}
-                </span>
-              ) : null}
-              {syncStatus.status === "SEARCHABLE" || syncStatus.status === "SUMMARIZING" ? (
+              {/* A re-sync of an already-indexed repo keeps the previous index usable. */}
+              {syncStatus.searchableAt ? (
                 <span className="text-emerald-600 dark:text-emerald-400">
                   Q&amp;A/Review/Interview available now
                 </span>

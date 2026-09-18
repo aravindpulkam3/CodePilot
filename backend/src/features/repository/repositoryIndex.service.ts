@@ -1,12 +1,11 @@
 import { pool } from "../../config/db.js";
 import { astChunker } from "../../infrastructure/chunking/astChunking.service.js";
 import { documentationChunker } from "../../infrastructure/chunking/documentationChunking.service.js";
-import { isDocumentationFile } from "../../shared/utils/documentationPaths.js";
+import { isConfigFile, isDocumentationFile } from "../../shared/utils/documentationPaths.js";
 import { embedder } from "../../infrastructure/embedding/embedding.service.js";
 import { extractLocalImports } from "../../shared/utils/importResolver.js";
 import { MemoryRelationshipIndexer } from "../../shared/utils/transactionBuffer.js";
 import { RelationshipIndexingService } from "./relationshipIndexing.service.js";
-import { repositorySummarizeService } from "./repositorySummarize.service.js";
 import { appEvents, EVENT_TYPES } from "../../shared/events/eventEmitter.js";
 // TEMPORARY verification logging — see utils/readmeDebugLog.ts for removal.
 import { readmeLog, docPreview } from "../../shared/utils/readmeDebugLog.js";
@@ -26,12 +25,11 @@ export interface FileChange {
 
 export class RepositoryIndexingService {
   /**
-   * Phase 1 — Processes a repository update by selectively syncing only
-   * changed files: AST-chunking, embedding, and the import/relationship
-   * graph (relocated here from the summarization pipeline — Q&A/Review
-   * read the graph too, so it has to exist by SEARCHABLE, not just by
-   * READY). LLM summarization is Phase 2 (repositorySummarize.service.ts),
-   * entirely decoupled and running in the background afterward.
+   * The single indexing phase — processes a repository update by selectively
+   * syncing only changed files: AST chunking (code), whole-file / section
+   * chunking (config and docs), embeddings, and the IMPORTS graph. No LLM
+   * calls. Once every chunk job of a sync has committed, pending imports are
+   * resolved and the repo is stamped READY.
    *
    * Finalization uses a persisted chunk-completion counter, not a boolean
    * flag passed at enqueue time — indexQueue's concurrency:4 means the
@@ -109,7 +107,11 @@ export class RepositoryIndexingService {
       // with this SAME commitSha as the code chunks around it. That is what
       // guarantees retrieval can never serve README content from a different
       // revision than the code it is reasoned about alongside.
-      const isDoc = isDocumentationFile(file.path);
+      // Config files (package.json, docker-compose, .env.example, ...) are stored
+      // as one byte-exact whole-file row; prose docs are split by headings.
+      // Both are symbol_type 'documentation' — see utils/documentationPaths.ts.
+      const isConfig = isConfigFile(file.path);
+      const isDoc = isConfig || isDocumentationFile(file.path);
 
       if (isDoc) {
         readmeLog(
@@ -117,9 +119,11 @@ export class RepositoryIndexingService {
         );
       }
 
-      const newChunks = isDoc
-        ? await documentationChunker.chunkDocument(file.path, file.content)
-        : await astChunker.chunkFile(file.path, file.content);
+      const newChunks = isConfig
+        ? await documentationChunker.chunkWholeFile(file.path, file.content)
+        : isDoc
+          ? await documentationChunker.chunkDocument(file.path, file.content)
+          : await astChunker.chunkFile(file.path, file.content);
       const newHashes = new Set(newChunks.map((c) => c.content_hash));
 
       if (isDoc) {
@@ -182,11 +186,10 @@ export class RepositoryIndexingService {
         });
       }
 
-      // Import/relationship graph — relocated from the summarization
-      // pipeline so it exists by SEARCHABLE, not just by READY (Review's
-      // graph-expansion stage reads repository_relationships directly).
-      // Skipped for documentation: Markdown has no imports to resolve, and
-      // extractFileAstMetadata would return null for it anyway.
+      // Import/relationship graph (Review's graph expansion, Q&A's graph
+      // augmentation and Interview's neighbours read repository_relationships).
+      // Skipped for documentation and config: they have no imports to resolve,
+      // and extractFileAstMetadata would return null for them anyway.
       if (!isDoc) {
         const astMeta = await astChunker.extractFileAstMetadata(
           file.path,
@@ -308,7 +311,7 @@ export class RepositoryIndexingService {
       }
 
       // 4. Advance the chunk-completion counter and, only once every chunk
-      // enqueued for this sync has completed, finalize SEARCHABLE. Using a
+      // enqueued for this sync has completed, finalize READY. Using a
       // counter instead of an "isFinalChunk" flag matters because
       // indexQueue's concurrency:4 means the last-*enqueued* chunk isn't
       // reliably the last to *complete*.
@@ -325,16 +328,25 @@ export class RepositoryIndexingService {
       const isFinalChunk = chunksTotal != null && chunksDone >= chunksTotal;
 
       if (isFinalChunk) {
+        // Every chunk of this sync has committed (counter above), so the
+        // file list is now complete: resolve the relative imports that
+        // pointed into a later chunk and were recorded as pending. Pure SQL
+        // plus in-memory path matching — no network, safe inside the tx.
+        const { pending, resolved } = await realTxRelIndexer.resolvePendingImports(repositoryId);
+        console.log(
+          `[Index] Pending imports for ${repositoryId}: resolved ${resolved} of ${pending}.`,
+        );
+
         await client.query(
           `UPDATE repositories
            SET last_indexed_sha = $1,
                searchable_at = COALESCE(searchable_at, NOW()),
-               indexing_status = 'SEARCHABLE'
+               indexing_status = 'READY'
            WHERE id = $2`,
           [commitSha, repositoryId],
         );
         console.log(
-          `[Index] Repo ${repositoryId} marked SEARCHABLE at ${commitSha}.`,
+          `[Index] Repo ${repositoryId} marked READY at ${commitSha}.`,
         );
       }
 
@@ -359,17 +371,10 @@ export class RepositoryIndexingService {
         );
       }
 
-      // Outside the transaction — kick off Phase 2 only once Phase 1 is
-      // fully done for this revision.
       if (isFinalChunk) {
-        await repositorySummarizeService.enqueueSummarize(
-          repositoryId,
-          commitSha,
-        );
-
         // This is the actual completion point for a chunked sync — the
         // chunk-completion counter above just confirmed every enqueued
-        // chunk committed and the repo is now SEARCHABLE. Emitting here
+        // chunk committed and the repo is now READY. Emitting here
         // (rather than at enqueue time in repositorySync.service.ts) is
         // what stops invalidation from firing before the new data exists.
         appEvents.emit(EVENT_TYPES.REPOSITORY_SYNCED, {
