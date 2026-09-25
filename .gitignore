@@ -84,3 +84,8 @@ CLAUDE.md
 # Graphify output (local knowledge-graph artifacts)
 # ===========================
 graphify-out/
+
+# ===========================
+# Agent instructions (local only)
+# ===========================
+AGENTS.md
