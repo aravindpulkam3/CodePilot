@@ -473,11 +473,9 @@ export class InterviewService {
       throw new Error("No prior question found for this interview session.");
     }
 
-    // Save the user's answer.
-    await pool.query(
-      `INSERT INTO chat_messages (session_id, role, content, metadata) VALUES ($1, 'user', $2, $3)`,
-      [sessionId, answer, JSON.stringify({ type: "answer" })],
-    );
+    // The answer is persisted only in the final transaction below, together
+    // with the next question — a failed retrieval/LLM call must not leave an
+    // orphan answer that a retry would then duplicate.
     recentHistory.push({ role: "user", content: answer });
 
     // Retrieval is keyed on the QUESTION, not the answer — see
@@ -600,8 +598,18 @@ export class InterviewService {
     try {
       await client.query("BEGIN");
 
+      // Explicit clock_timestamp(): the column default is the transaction
+      // start time, which would give both rows the same created_at and make
+      // ORDER BY created_at ambiguous between answer and question.
       await client.query(
-        `INSERT INTO chat_messages (session_id, role, content, metadata) VALUES ($1, 'assistant', $2, $3)`,
+        `INSERT INTO chat_messages (session_id, role, content, metadata, created_at)
+         VALUES ($1, 'user', $2, $3, clock_timestamp())`,
+        [sessionId, answer, JSON.stringify({ type: "answer" })],
+      );
+
+      await client.query(
+        `INSERT INTO chat_messages (session_id, role, content, metadata, created_at)
+         VALUES ($1, 'assistant', $2, $3, clock_timestamp())`,
         [
           sessionId,
           decision.interviewerMessage,
@@ -678,10 +686,15 @@ export class InterviewService {
     userId: string,
   ): Promise<InterviewFinalAssessment> {
     const sessionRes = await pool.query(
-      `SELECT state, repository_id FROM chat_sessions WHERE id = $1 AND user_id = $2 AND type = 'INTERVIEW'`,
+      `SELECT state, repository_id, status FROM chat_sessions WHERE id = $1 AND user_id = $2 AND type = 'INTERVIEW'`,
       [sessionId, userId],
     );
     if (sessionRes.rows.length === 0) throw new Error("Session not found");
+    // Checked before the cached return: an assessment cached mid-interview
+    // would otherwise be served, stale, after the interview ends.
+    if (sessionRes.rows[0].status !== "completed") {
+      throw new Error("INTERVIEW_NOT_COMPLETED");
+    }
     await assertOwnedContext(userId, {
       repositoryId: sessionRes.rows[0].repository_id,
     });
