@@ -201,9 +201,14 @@ CREATE INDEX IF NOT EXISTS idx_chat_sessions_finding ON chat_sessions(finding_id
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_user_recent ON chat_sessions(user_id, last_accessed_at DESC);
 
 -- Enforce EXACTLY ONE Issue Chat session per review finding per user
-CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_sessions_finding_user 
-ON chat_sessions (finding_id, user_id) 
+CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_sessions_finding_user
+ON chat_sessions (finding_id, user_id)
 WHERE type = 'ISSUE_CHAT' AND finding_id IS NOT NULL;
+
+-- Enforce EXACTLY ONE PR-level Review Chat session per review per user
+CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_sessions_review_user
+ON chat_sessions (review_id, user_id)
+WHERE type = 'REVIEW_CHAT' AND review_id IS NOT NULL;
 
 
 CREATE TABLE IF NOT EXISTS chat_messages (

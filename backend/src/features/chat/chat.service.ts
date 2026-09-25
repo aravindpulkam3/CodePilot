@@ -41,7 +41,8 @@ export class ChatService {
 
   /**
    * Finds or creates a chat session.
-   * For ISSUE_CHAT, strictly enforces 1 session per finding per user.
+   * For ISSUE_CHAT, strictly enforces 1 session per finding per user; for
+   * REVIEW_CHAT, 1 session per review per user (both backed by a unique index).
    */
   async getOrCreateSession(params: {
     userId: string;
@@ -61,6 +62,18 @@ export class ChatService {
         `SELECT * FROM chat_sessions 
          WHERE finding_id = $1 AND user_id = $2 AND type = 'ISSUE_CHAT'`,
         [findingId, userId]
+      );
+      if (existing.length > 0) {
+        return existing[0];
+      }
+    }
+
+    // For REVIEW_CHAT, reuse the PR-level chat for this review & user
+    if (normalizedType === "REVIEW_CHAT" && reviewId) {
+      const { rows: existing } = await pool.query(
+        `SELECT * FROM chat_sessions
+         WHERE review_id = $1 AND user_id = $2 AND type = 'REVIEW_CHAT'`,
+        [reviewId, userId]
       );
       if (existing.length > 0) {
         return existing[0];

@@ -84,6 +84,11 @@ export const getOrCreateSession = async (req: Request, res: Response) => {
     res.json(session);
   } catch (error: any) {
     if (error?.message === "RESOURCE_NOT_FOUND") return res.status(404).json({ error: "Resource not found" });
+    // A concurrent first creation won the per-review/per-finding unique
+    // index; a retry reuses that session.
+    if (error?.code === "23505") {
+      return res.status(409).json({ error: "This chat session was just created — please retry." });
+    }
     console.error("Error creating/getting session:", error);
     res.status(500).json({ error: "Failed to initialize session" });
   }
