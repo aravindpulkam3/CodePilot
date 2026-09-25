@@ -96,7 +96,7 @@ export class InterviewPromptBuilder {
 
     const sections: string[] = [
       `You are a senior engineer conducting a technical interview about THIS SPECIFIC repository.`,
-      `Difficulty: ${config.difficulty}${config.domain ? ` | Domain: ${config.domain}` : ""}`,
+      `Difficulty: ${config.difficulty}`,
       ``,
       GROUNDING_BAR,
       ``,

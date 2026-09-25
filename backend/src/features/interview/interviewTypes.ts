@@ -5,7 +5,6 @@
 export interface InterviewConfig {
     mode: 'repository';
     repositoryId: string;
-    domain?: 'dsa' | 'development' | 'core' | 'data' | 'ai';
     language?: string;
     technologies?: string[];
     difficulty: 'easy' | 'medium' | 'hard' | 'adaptive';

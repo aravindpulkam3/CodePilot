@@ -45,13 +45,11 @@ export const startInterview = async (req: Request, res: Response) => {
       !config ||
       !isUuid(config.repositoryId) ||
       !["easy", "medium", "hard", "adaptive"].includes(config.difficulty) ||
-      (config.mode !== undefined && config.mode !== "repository") ||
-      (config.domain !== undefined &&
-        !["dsa", "development", "core", "data", "ai"].includes(config.domain))
+      (config.mode !== undefined && config.mode !== "repository")
     ) {
       return res.status(400).json({
         error:
-          "Invalid interview config: provide a repository UUID, supported difficulty/domain, and repository mode",
+          "Invalid interview config: provide a repository UUID, supported difficulty, and repository mode",
       });
     }
 

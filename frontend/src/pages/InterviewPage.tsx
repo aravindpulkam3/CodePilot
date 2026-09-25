@@ -17,13 +17,11 @@ interface Message {
 
 interface InterviewConfig {
   difficulty: "easy" | "medium" | "hard" | "adaptive";
-  domain: string;
   mode: "repository" | "general";
 }
 
 const DEFAULT_CONFIG: InterviewConfig = {
   difficulty: "medium",
-  domain: "development",
   mode: "repository",
 };
 
@@ -201,40 +199,24 @@ export function InterviewPage() {
                 </h2>
               </CardHeader>
               <CardBody className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm mb-1 text-muted-light dark:text-muted-dark">Difficulty</label>
-                    <select
-                      className="w-full rounded-md border border-border-light dark:border-border-dark bg-surface-light dark:bg-surface-dark px-3 py-2 text-sm text-ink-light dark:text-ink-dark"
-                      value={config.difficulty}
-                      onChange={(e) =>
-                        setConfig({
-                          ...config,
-                          difficulty: e.target
-                            .value as InterviewConfig["difficulty"],
-                        })
-                      }
-                    >
-                      <option value="easy">Easy</option>
-                      <option value="medium">Medium</option>
-                      <option value="hard">Hard</option>
-                      <option value="adaptive">Adaptive</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm mb-1 text-muted-light dark:text-muted-dark">Domain</label>
-                    <select
-                      className="w-full rounded-md border border-border-light dark:border-border-dark bg-surface-light dark:bg-surface-dark px-3 py-2 text-sm text-ink-light dark:text-ink-dark"
-                      value={config.domain}
-                      onChange={(e) =>
-                        setConfig({ ...config, domain: e.target.value })
-                      }
-                    >
-                      <option value="development">Development</option>
-                      <option value="system-design">System Design</option>
-                      <option value="debugging">Debugging</option>
-                    </select>
-                  </div>
+                <div>
+                  <label className="block text-sm mb-1 text-muted-light dark:text-muted-dark">Difficulty</label>
+                  <select
+                    className="w-full rounded-md border border-border-light dark:border-border-dark bg-surface-light dark:bg-surface-dark px-3 py-2 text-sm text-ink-light dark:text-ink-dark"
+                    value={config.difficulty}
+                    onChange={(e) =>
+                      setConfig({
+                        ...config,
+                        difficulty: e.target
+                          .value as InterviewConfig["difficulty"],
+                      })
+                    }
+                  >
+                    <option value="easy">Easy</option>
+                    <option value="medium">Medium</option>
+                    <option value="hard">Hard</option>
+                    <option value="adaptive">Adaptive</option>
+                  </select>
                 </div>
                 {startError && (
                   <p className="text-sm text-red-500">{startError}</p>

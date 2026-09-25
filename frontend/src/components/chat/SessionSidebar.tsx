@@ -50,7 +50,7 @@ export function SessionSidebar({
             >
               <MessageSquare className="h-4 w-4 shrink-0" />
               <span className="truncate">
-                Chat {new Date(session.created_at).toLocaleDateString()}
+                {session.title ?? "Chat"} · {new Date(session.created_at).toLocaleDateString()}
               </span>
             </button>
           ))

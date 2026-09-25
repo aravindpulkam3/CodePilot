@@ -376,6 +376,9 @@ export class InterviewService {
       questionCount: 0,
     };
 
+    // Deterministic, from the validated config — e.g. "Technical Interview · Adaptive".
+    const title = `Technical Interview · ${config.difficulty.charAt(0).toUpperCase()}${config.difficulty.slice(1)}`;
+
     // 4. Persist — session + first question together, atomically, only now
     // that the LLM call has already succeeded.
     const client = await pool.connect();
@@ -384,10 +387,10 @@ export class InterviewService {
       await client.query("BEGIN");
 
       const { rows } = await client.query(
-        `INSERT INTO chat_sessions (user_id, repository_id, type, state)
-         VALUES ($1, $2, 'INTERVIEW', $3)
+        `INSERT INTO chat_sessions (user_id, repository_id, type, state, title)
+         VALUES ($1, $2, 'INTERVIEW', $3, $4)
          RETURNING id`,
-        [userId, config.repositoryId, JSON.stringify(initialState)],
+        [userId, config.repositoryId, JSON.stringify(initialState), title],
       );
       sessionId = rows[0].id;
 
@@ -419,7 +422,7 @@ export class InterviewService {
       userId,
       repositoryId: config.repositoryId,
       activityType: "INTERVIEW_STARTED",
-      metadata: { sessionId, title: "Technical Interview" },
+      metadata: { sessionId, title },
     });
 
     console.log(
