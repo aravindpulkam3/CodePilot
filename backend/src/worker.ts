@@ -41,8 +41,13 @@ syncWorker.on("failed", async (job, err) => {
   if (!job) return;
   try {
     if (await job.getState() !== "failed") return;
+    // Once chunk jobs exist (index_chunks_total set) some may have committed, so the
+    // index no longer matches last_indexed_sha: clear it, which blocks retrieval
+    // until an explicit retry rebuilds from empty.
     await pool.query(
-      "UPDATE repositories SET indexing_status = 'FAILED' WHERE id = $1 AND indexing_run_id = $2 AND indexing_status IN ('SYNCING', 'INDEXING')",
+      `UPDATE repositories SET indexing_status = 'FAILED',
+         last_indexed_sha = CASE WHEN index_chunks_total IS NULL THEN last_indexed_sha ELSE NULL END
+       WHERE id = $1 AND indexing_run_id = $2 AND indexing_status = 'INDEXING'`,
       [job.data.repositoryId, job.id],
     );
   } catch (statusError) {
@@ -66,8 +71,6 @@ const indexWorker = new Worker(
   "RepositoryIndex",
   async (job) => {
     const { repositoryId, latestSha, filesToIndex, runId, chunkIndex } = job.data;
-    // Pre-upgrade jobs have no fence/receipt identity. Migration makes their repos retryable.
-    if (!runId || !Number.isInteger(chunkIndex)) return { status: "skipped_legacy" };
     console.log(
       `[IndexWorker] Processing Chunk Job ${job.id} for Repo ${repositoryId}`,
     );
@@ -98,8 +101,11 @@ indexWorker.on("failed", async (job, err) => {
   try {
     // BullMQ also emits failed when scheduling a retry. Leave those jobs INDEXING.
     if ((await job.getState()) !== "failed") return;
+    // Same invalidation as the sync worker: a chunk job exists, so the index may be mixed.
     await pool.query(
-      "UPDATE repositories SET indexing_status = 'FAILED' WHERE id = $1 AND indexing_run_id = $2 AND indexing_status = 'INDEXING'",
+      `UPDATE repositories SET indexing_status = 'FAILED',
+         last_indexed_sha = CASE WHEN index_chunks_total IS NULL THEN last_indexed_sha ELSE NULL END
+       WHERE id = $1 AND indexing_run_id = $2 AND indexing_status = 'INDEXING'`,
       [job.data.repositoryId, job.data.runId],
     );
   } catch (statusError) {

@@ -85,22 +85,34 @@ export function RepositoryHeader({ repo }: { repo: LocalRepository }) {
       ) : syncStatus && syncStatus.status !== "READY" ? (
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg bg-black/[.03] px-4 py-2.5 text-xs text-muted-light dark:bg-white/[.04] dark:text-muted-dark">
           {syncStatus.status === "FAILED" ? (
-            <span className="text-rose-600 dark:text-rose-400">
-              Indexing failed — try syncing again.
-            </span>
+            <>
+              <span className="text-rose-600 dark:text-rose-400">
+                Indexing failed — try syncing again.
+              </span>
+              <Button
+                size="sm"
+                onClick={() => startWorking.mutate()}
+                isLoading={startWorking.isPending}
+              >
+                Retry
+              </Button>
+            </>
           ) : (
             <>
               <span className="flex items-center gap-1.5">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 Indexing…
               </span>
-              {syncStatus.indexProgress?.filesTotal ? (
+              {syncStatus.indexProgress?.chunksTotal ? (
                 <span>
-                  Files {syncStatus.indexProgress.filesDone}/{syncStatus.indexProgress.filesTotal}
+                  {Math.floor(
+                    (syncStatus.indexProgress.chunksDone / syncStatus.indexProgress.chunksTotal) * 100,
+                  )}
+                  %
                 </span>
               ) : null}
               {/* A re-sync of an already-indexed repo keeps the previous index usable. */}
-              {syncStatus.searchableAt ? (
+              {syncStatus.searchable ? (
                 <span className="text-emerald-600 dark:text-emerald-400">
                   Q&amp;A/Review/Interview available now
                 </span>

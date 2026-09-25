@@ -1,17 +1,13 @@
 /**
- * TEMPORARY — verification logging for the README/documentation pipeline.
+ * TEMPORARY — verification logging for documentation retrieval.
  *
- * Everything here exists to make one flow observable end to end:
- *
- *   README detected -> chunked -> embedded -> persisted
- *                   -> retrieved (Q&A / Review)
- *                   -> handed to the LLM as context
+ * Makes observable which documentation was retrieved (Q&A / Review) and
+ * handed to the LLM as context. (The ingestion-side logging is gone.)
  *
  * REMOVING THIS LATER:
  *   1. Set README_DEBUG=false to silence every call site at once, or
- *   2. delete this file and the `readmeLog` / `docRetrievalLog` /
- *      `docPreview` call sites (grep those three names —
- *      they are used nowhere else and import only from here).
+ *   2. delete this file and the `docRetrievalLog` / `docPreview` call sites
+ *      (grep those two names — they import only from here).
  *
  * Deliberately ON by default so verification works without extra setup.
  * Flip README_DEBUG=false in the environment once you're satisfied.
@@ -28,11 +24,6 @@ export function docPreview(text: string | null | undefined, maxChars = 100): str
   return collapsed.length <= maxChars
     ? collapsed
     : `${collapsed.slice(0, maxChars)}… (+${collapsed.length - maxChars} chars)`;
-}
-
-/** Ingestion: detection, fetch, chunking, embedding, persistence. */
-export function readmeLog(message: string, ...rest: unknown[]): void {
-  if (README_DEBUG) console.log(`[README] ${message}`, ...rest);
 }
 
 /** Retrieval: what documentation came back for a Q&A or Review query. */

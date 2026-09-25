@@ -151,7 +151,7 @@ Potentially slow operations happen before a PostgreSQL transaction begins (AST a
 
 #### Atomic Persistence
 
-After generation completes, the system verifies the repository snapshot is unchanged, deletes stale entries, and inserts new ones within a short-lived transaction. If the repository state changed during generation, the transaction is rolled back.
+After generation completes, a short-lived transaction locks the repository row and confirms the job still belongs to the current indexing run (same run id and target commit, chunk not already committed) before it deletes stale entries, inserts new ones, and records the chunk's completion receipt. A job from a superseded run, or a retried chunk that already committed, rolls back instead.
 
 ---
 
@@ -214,15 +214,12 @@ flowchart TD
 
 ## 🕸️ Structural Repository Graph
 
-The repository graph represents deterministic structural relationships (currently via `IMPORTS` and `RELATED_COMPONENT`).
-
-Hierarchical ownership remains represented separately through a `parent_key` to avoid duplicating hierarchy inside the relationship graph.
+The repository graph is the deterministic file-level import graph. Relative imports whose target isn't indexed yet are stored unresolved and re-resolved once a sync's last chunk commits.
 
 ```text
-repository_relationships
+repository_imports
         │
-        └── IMPORTS
-             File ──────► File
+        └── File ──imports──► File
 ```
 
 The current review pipeline performs bounded one-hop traversal, while the schema can support future bounded multi-hop strategies.

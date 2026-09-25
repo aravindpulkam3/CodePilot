@@ -207,9 +207,8 @@ export interface RetrievalOptions {
  *   symbol in it" IS "a chunk of it", now properly ranked.
  * - `semantic_summary`: fed LLM prose into a block the prompt calls code, and
  *   was sourced from Phase-2-only data.
- * - `graph_parent_component` / `graph_child_file`: never emitted, and would
- *   have to read `repository_summaries.parent_key` (Phase 2 only), which is
- *   exactly the SEARCHABLE-emptiness problem this design removes.
+ * - `graph_parent_component` / `graph_child_file`: never emitted; they needed
+ *   component-level LLM summaries, which no longer exist.
  */
 export type CandidateSourceType =
   | "changed_file"

@@ -18,8 +18,8 @@ export function useRepositoryDetails(repositoryId: string) {
 
 // Two-axis progress polling (no SSE/WebSockets — plain interval polling of
 // the existing sync-status endpoint). Keeps polling while background work
-// could still be running; stops once the repo is fully READY or has FAILED,
-// since neither of those change without a new sync/start-working action.
+// could still be running; stops once the repo is READY and slows down while
+// FAILED, which only changes after a start-working retry.
 export function useRepositorySyncStatus(repositoryId: string, enabled = true) {
   return useQuery({
     queryKey: ["repository", repositoryId, "sync-status"],
@@ -27,7 +27,10 @@ export function useRepositorySyncStatus(repositoryId: string, enabled = true) {
     enabled: !!repositoryId && enabled,
     refetchInterval: (query) => {
       const status = query.state.data?.status;
-      if (status === "READY" || status === "FAILED") return false;
+      if (status === "READY") return false;
+      // Slow poll on FAILED: a Retry's claim (FAILED -> INDEXING) happens in the
+      // worker after start-working responds, so its immediate refetch can miss it.
+      if (status === "FAILED") return 15000;
       return 3000;
     },
   });

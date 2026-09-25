@@ -9,30 +9,25 @@ export interface LocalRepository {
   is_private: boolean;
   default_branch: string;
   html_url: string;
-  clone_url: string;
   last_pushed_at: string | null;
-  last_synced_at: string;
   indexing_status?: string | null;
   workspace_started_at?: string | null;
-  searchable_at?: string | null;
 }
 
 export type RepositorySyncStatusValue =
   | "NOT_STARTED"
-  | "SYNCING"
   | "INDEXING"
   | "READY"
   | "FAILED";
 
 export interface RepositorySyncStatus {
   status: RepositorySyncStatusValue;
-  /** Set once the first full index completes; stays set during later syncs. */
-  searchableAt: string | null;
+  /** True once the first full index completes; stays true during later syncs. */
+  searchable: boolean;
+  /** Present once the current run has enqueued its chunk jobs. */
   indexProgress: {
-    filesDone: number;
-    filesTotal: number | null;
     chunksDone: number;
-    chunksTotal: number | null;
+    chunksTotal: number;
   } | null;
 }
 

@@ -6,7 +6,6 @@ import { FileChange } from '../../features/repository/repositoryIndex.service.js
 import { logActivity } from '../../features/dashboard/dashboard.service.js';
 import { LogActivityType } from '../../features/dashboard/dashboardTypes.js';
 import { withCache } from '../../shared/utils/cache.js';
-import { cacheRedisClient } from '../../config/redis.js';
 
 /**
  * Retrieves the GitHub OAuth access token from Clerk for a given user.
@@ -75,7 +74,6 @@ export const syncAndGetGitHubRepositories = async (clerkUserId: string, appUserI
       isPrivate: repo.private,
       defaultBranch: repo.default_branch,
       htmlUrl: repo.html_url,
-      cloneUrl: repo.clone_url,
       lastPushedAt: repo.pushed_at,
     }));
 
@@ -258,79 +256,68 @@ export async function fetchRawFileContent(token: string | undefined, owner: stri
 }
 
 /**
- * 1. Gets the latest commit SHA for the repository's default branch.
+ * 1. Gets the latest commit SHA on the repository's default branch. The
+ * commits listing starts from the default branch when no `sha` is given, so
+ * one request covers it. An empty repository answers 409 and fails the sync.
  */
 export async function getLatestCommit(token: string | undefined, owner: string, repo: string) {
-    const cacheKey = `github:repo:${owner}:${repo}:latestCommit`;
-    const etagKey = `${cacheKey}:etag`;
-    
     const headers: Record<string, string> = { 'Accept': 'application/vnd.github.v3+json' };
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
-    try {
-        const cachedData = await cacheRedisClient.get(cacheKey);
-        const cachedEtag = await cacheRedisClient.get(etagKey);
-
-        //If an ETag was found, it adds the If-None-Match HTTP header. This tells GitHub: "Only send the data if the resource has changed since this specific ETag was issued."
-        if (cachedEtag) {
-            headers['If-None-Match'] = cachedEtag;
-        }
-
-        // Get repo details to find the default branch
-        // For production we'd also cache this repo fetch, but keeping focused on the commit fetch
-        const repoRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, { 
-            headers: { 'Accept': 'application/vnd.github.v3+json', ...(token ? {'Authorization': `Bearer ${token}`} : {}) } 
-        });
-        if (!repoRes.ok) throw new Error("Failed to fetch repository details");
-        const repoData = await repoRes.json();
-        const defaultBranch = repoData.default_branch;
-
-        // Get the latest commit on the default branch
-        const branchRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/branches/${defaultBranch}`, { headers });
-        
-        //A 304 Not Modified response indicates that the resource has not changed since the last time you requested it.
-        if (branchRes.status === 304 && cachedData) {
-            // ETag match! No rate limit consumed, return cached data
-            return JSON.parse(cachedData);
-        }
-
-        if (!branchRes.ok) throw new Error("Failed to fetch branch details");
-        
-        const branchData = await branchRes.json();
-        const result = { sha: branchData.commit.sha };
-        
-        // Cache the new result and ETag
-        const newEtag = branchRes.headers.get('etag');
-        if (newEtag) {
-            await cacheRedisClient.setex(etagKey, 60, newEtag);
-            await cacheRedisClient.setex(cacheKey, 60, JSON.stringify(result));
-        }
-
-        return result;
-    } catch (error) {
-        console.error("Failed to fetch latest commit with ETag:", error);
-        throw error;
-    }
+    const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/commits?per_page=1`, { headers });
+    if (!response.ok) throw new Error(`Failed to fetch latest commit (${response.status})`);
+    const [latest] = await response.json();
+    return { sha: latest.sha as string };
 }
 
 /**
- * 2. Compares two commits and returns ONLY the files that changed, with their new content.
+ * GitHub's compare lists at most 300 changed files for the entire comparison,
+ * on the first page only: later pages carry no files, and the response has no
+ * total or truncation flag. A list this long may have been cut.
+ */
+const COMPARE_MAX_FILES = 300;
+
+/**
+ * 2. Compares two commits and returns ONLY the files that changed, with their
+ * new content. Changes the index can't contain are dropped; a rename is kept
+ * when either path is indexable, so the old path's rows still get cleaned up.
+ * Returns null when the result is not a complete base→head delta and must not
+ * be applied: the list may be cut, GitHub diffed from a merge base (head is not
+ * a descendant of base, i.e. a force-push), or base no longer resolves.
  */
 export async function getChangedFilesBetweenCommits(
-    token: string | undefined, 
-    owner: string, 
-    repo: string, 
-    baseSha: string, 
-    headSha: string
-): Promise<FileChange[]> {
+    token: string | undefined,
+    owner: string,
+    repo: string,
+    baseSha: string,
+    headSha: string,
+    isIndexable: (path: string) => boolean,
+): Promise<FileChange[] | null> {
     const headers: Record<string, string> = { 'Accept': 'application/vnd.github.v3+json' };
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
     const url = `https://api.github.com/repos/${owner}/${repo}/compare/${baseSha}...${headSha}`;
     const response = await fetch(url, { headers });
 
-    if (!response.ok) throw new Error("Failed to compare commits");
+    if (!response.ok) {
+        // GitHub answers a base it can't resolve (force-pushed away, no shared
+        // history) with a bare 404, the same as a missing repo or lost access. If
+        // the head still resolves with these credentials, the repo is reachable
+        // and the 404 is the base's: the delta is unavailable, not the repository.
+        // Anything else stays a failure.
+        if (response.status === 404) {
+            const head = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/commits/${headSha}`, { headers });
+            if (head.ok) return null;
+        }
+        throw new Error("Failed to compare commits");
+    }
     const data = await response.json();
+
+    // Checked on GitHub's raw list, before the indexable filter: the cap counts
+    // every changed file. behind/diverged mean GitHub diffed from the merge base.
+    if ((data.files ?? []).length >= COMPARE_MAX_FILES || data.status === 'behind' || data.status === 'diverged') {
+        return null;
+    }
 
     const fileChanges: FileChange[] = [];
 
@@ -338,17 +325,21 @@ export async function getChangedFilesBetweenCommits(
     for (const file of data.files || []) {
         // Map GitHub's status to our expected status,This line is doing purely TypeScript type-checking work for the developer; it does zero work at runtime when the JavaScript actually runs.
         const status = file.status as 'added' | 'modified' | 'removed' | 'renamed';
-        
+
+        const indexable = isIndexable(file.filename);
+        const oldPathIndexable = status === 'renamed' && !!file.previous_filename && isIndexable(file.previous_filename);
+        if (!indexable && !oldPathIndexable) continue;
+
         let content: string | null = null;
 
-        // Only fetch content if the file wasn't deleted
-        if (status !== 'removed') {
+        // Only fetch content if the file still exists and will be indexed
+        if (status !== 'removed' && indexable) {
             content = await fetchRawFileContent(token, owner, repo, file.filename, headSha);
         }
 
         // For a rename, GitHub lists the entry under its NEW name only. Without
         // carrying the old one through, the indexer has no way to know the old
-        // path existed, so its chunks/edges/summary would be orphaned in the
+        // path existed, so its chunks and import edges would be orphaned in the
         // index forever (see processRepositoryUpdate's 'renamed' branch).
         if (status === 'renamed' && !file.previous_filename) {
             console.warn(
@@ -370,13 +361,14 @@ export async function getChangedFilesBetweenCommits(
 }
 
 /**
- * 3. Does a deep clone of the entire repository tree for the initial sync.
+ * 3. Fetches every indexable file in the repository tree for the initial sync.
  */
 export async function fetchAllRepositoryFiles(
-    token: string | undefined, 
-    owner: string, 
-    repo: string, 
-    sha: string
+    token: string | undefined,
+    owner: string,
+    repo: string,
+    sha: string,
+    isIndexable: (path: string) => boolean,
 ): Promise<FileChange[]> {
     const headers: Record<string, string> = { 'Accept': 'application/vnd.github.v3+json' };
     if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -387,6 +379,11 @@ export async function fetchAllRepositoryFiles(
 
     if (!response.ok) throw new Error("Failed to fetch repository tree");
     const data = await response.json();
+    // Past 100,000 entries or 7 MB GitHub cuts the recursive listing; an index
+    // built from it would reach READY with files missing, so fail instead.
+    if (data.truncated) {
+        throw new Error(`Refusing to build an incomplete index: GitHub truncated the repository tree of ${owner}/${repo} at ${sha}`);
+    }
 
     const fileChanges: FileChange[] = [];
 
@@ -396,16 +393,9 @@ export async function fetchAllRepositoryFiles(
     // Note: If the repository is massive, this loop should be chunked/paginated
     // to avoid hitting GitHub API rate limits.
     for (const blob of blobs) {
-        // Skip lockfiles, build output, vendored deps and binary assets: they
-        // produce no index rows, so downloading them is pure wasted requests.
-        if (
-            blob.path.includes('package-lock.json') ||
-            blob.path.startsWith('dist/') ||
-            /(^|\/)node_modules\//.test(blob.path) ||
-            /\.(wasm|png|jpe?g|gif|webp|ico|svg|pdf|zip|gz|tgz|jar|woff2?|ttf|eot|mp[34]|webm|wav|lock)$/i.test(blob.path)
-        ) {
-            continue;
-        }
+        // Files the index can't contain would produce no rows, so downloading
+        // them is pure wasted requests.
+        if (!isIndexable(blob.path)) continue;
 
         const content = await fetchRawFileContent(token, owner, repo, blob.path, sha);
         

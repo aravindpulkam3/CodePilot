@@ -156,7 +156,6 @@ export const importPublicRepository = async (req: Request, res: Response) => {
       isPrivate: repoData.private,
       defaultBranch: repoData.default_branch,
       htmlUrl: repoData.html_url,
-      cloneUrl: repoData.clone_url,
       lastPushedAt: repoData.pushed_at,
     });
 

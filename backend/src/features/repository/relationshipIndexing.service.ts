@@ -1,97 +1,81 @@
 import type { PoolClient } from "pg";
-import type { IRelationshipIndexer } from "../../shared/utils/transactionBuffer.js";
 import { resolveLocalImport, type LocalImport } from "../../shared/utils/importResolver.js";
 
-export interface RelationshipMetadata {
-  source: "ast";
-  [key: string]: unknown;
-}
-
-interface EdgeRow {
+interface ImportRow {
   source: string;
-  /** 'file' for a resolved edge, 'pending' for an unresolved relative specifier. */
-  targetType: "file" | "pending";
-  targetKey: string;
-  specifier: string;
+  /** The imported file's path when resolved; the raw relative specifier otherwise. */
+  target: string;
+  resolved: boolean;
 }
 
 /** Rows per multi-VALUES insert — keeps the statement far below Postgres' 65535 bind-parameter limit. */
 const INSERT_BATCH_SIZE = 500;
 
-export class RelationshipIndexingService implements IRelationshipIndexer {
+/** Writes the file-level import graph (repository_imports) inside the indexing transaction. */
+export class RelationshipIndexingService {
   constructor(private db: PoolClient) {}
 
-  private async insertEdges(repositoryId: string, rows: EdgeRow[]): Promise<void> {
+  /** Duplicate rows (two spellings of one import resolving to the same file) are skipped by ON CONFLICT. */
+  private async insertImports(repositoryId: string, rows: ImportRow[]): Promise<void> {
     for (let i = 0; i < rows.length; i += INSERT_BATCH_SIZE) {
       const batch = rows.slice(i, i + INSERT_BATCH_SIZE);
       const values: string[] = [];
       const params: any[] = [];
       let p = 1;
       for (const row of batch) {
-        const metadata: RelationshipMetadata = { source: "ast", specifier: row.specifier };
-        values.push(`($${p++}, 'file', $${p++}, $${p++}, $${p++}, 'IMPORTS', $${p++}::jsonb)`);
-        params.push(repositoryId, row.source, row.targetType, row.targetKey, JSON.stringify(metadata));
+        values.push(`($${p++}, $${p++}, $${p++}, $${p++})`);
+        params.push(repositoryId, row.source, row.target, row.resolved);
       }
       await this.db.query(
-        `INSERT INTO repository_relationships (repository_id, source_node_type, source_node_key, target_node_type, target_node_key, relationship_type, metadata)
+        `INSERT INTO repository_imports (repository_id, source_path, target, resolved)
          VALUES ${values.join(", ")}
-         ON CONFLICT (repository_id, source_node_type, source_node_key, target_node_type, target_node_key, relationship_type)
-         DO UPDATE SET metadata = EXCLUDED.metadata, updated_at = NOW()`,
+         ON CONFLICT DO NOTHING`,
         params,
       );
     }
   }
 
   /**
-   * Replaces all structural relationships for a given file in a single transaction.
-   * This includes outgoing IMPORTS edges, and pending rows for relative
-   * imports that could not be resolved yet (target_node_type = 'pending').
+   * Replaces all imports recorded for a given file: resolved edges, plus
+   * unresolved rows for relative imports whose target isn't known yet.
    */
   public async indexFileRelationships(
     repositoryId: string,
     filePath: string,
     imports: LocalImport[]
   ): Promise<void> {
-    // 1. Delete old IMPORTS for this file. Deliberately no target_node_type
-    // filter: re-indexing a file must also clear its stale pending rows.
+    // 1. Delete the file's old imports — resolved and unresolved alike, so
+    // re-indexing a file also clears its stale unresolved rows.
     await this.db.query(
-      `DELETE FROM repository_relationships
-       WHERE repository_id = $1
-         AND source_node_type = 'file'
-         AND source_node_key = $2
-         AND relationship_type = 'IMPORTS'`,
+      `DELETE FROM repository_imports WHERE repository_id = $1 AND source_path = $2`,
       [repositoryId, filePath]
     );
 
-    // 2. Insert resolved edges and pending specifiers in one batch.
+    // 2. Insert resolved edges and unresolved specifiers in one batch.
     if (imports.length > 0) {
-      await this.insertEdges(
+      await this.insertImports(
         repositoryId,
-        imports.map((imp): EdgeRow =>
+        imports.map((imp): ImportRow =>
           imp.resolvedPath
-            ? { source: filePath, targetType: "file", targetKey: imp.resolvedPath, specifier: imp.specifier }
-            : { source: filePath, targetType: "pending", targetKey: imp.specifier, specifier: imp.specifier },
+            ? { source: filePath, target: imp.resolvedPath, resolved: true }
+            : { source: filePath, target: imp.specifier, resolved: false },
         ),
       );
     }
   }
 
   /**
-   * Re-resolves every pending relative import for the repository against
+   * Re-resolves every unresolved relative import for the repository against
    * its now-complete file list. Called from the finalize transaction once
-   * every index chunk of a sync has committed, so edges lost because their
-   * target sat in a later 50-file chunk are recovered. Resolved pending rows
-   * become 'file' edges; the rest stay pending (a genuinely missing file, or
-   * a specifier shape resolveLocalImport doesn't handle) and are retried on
-   * the next sync's finalize.
+   * every index chunk of a run has committed, so edges lost because their
+   * target sat in a later 50-file chunk are recovered. The rest stay
+   * unresolved (a genuinely missing file, or a specifier shape
+   * resolveLocalImport doesn't handle) and are retried on the next finalize.
    */
   public async resolvePendingImports(repositoryId: string): Promise<{ pending: number; resolved: number }> {
     const { rows: pendingRows } = await this.db.query(
-      `SELECT source_node_key, target_node_key FROM repository_relationships
-       WHERE repository_id = $1
-         AND source_node_type = 'file'
-         AND target_node_type = 'pending'
-         AND relationship_type = 'IMPORTS'`,
+      `SELECT source_path, target FROM repository_imports
+       WHERE repository_id = $1 AND NOT resolved`,
       [repositoryId],
     );
     if (pendingRows.length === 0) return { pending: 0, resolved: 0 };
@@ -103,32 +87,24 @@ export class RelationshipIndexingService implements IRelationshipIndexer {
     );
     const knownPaths = new Set<string>(pathRows.map((r) => r.file_path));
 
+    const resolvedRows: ImportRow[] = [];
     const resolvedPending: { source: string; specifier: string }[] = [];
-    // Two spellings of one import ("./x" and "./x.js") resolve to the same
-    // target; ON CONFLICT DO UPDATE can't touch the same row twice in one
-    // statement, so edges are deduped by (source, target) first.
-    const edgesByKey = new Map<string, EdgeRow>();
     for (const r of pendingRows) {
-      const target = resolveLocalImport(r.source_node_key, r.target_node_key, knownPaths);
+      const target = resolveLocalImport(r.source_path, r.target, knownPaths);
       if (!target) continue;
-      resolvedPending.push({ source: r.source_node_key, specifier: r.target_node_key });
-      const key = `${r.source_node_key}\0${target}`;
-      if (!edgesByKey.has(key)) {
-        edgesByKey.set(key, { source: r.source_node_key, targetType: "file", targetKey: target, specifier: r.target_node_key });
-      }
+      resolvedRows.push({ source: r.source_path, target, resolved: true });
+      resolvedPending.push({ source: r.source_path, specifier: r.target });
     }
-    if (resolvedPending.length === 0) return { pending: pendingRows.length, resolved: 0 };
+    if (resolvedRows.length === 0) return { pending: pendingRows.length, resolved: 0 };
 
-    await this.insertEdges(repositoryId, Array.from(edgesByKey.values()));
+    await this.insertImports(repositoryId, resolvedRows);
     await this.db.query(
-      `DELETE FROM repository_relationships r
+      `DELETE FROM repository_imports i
        USING unnest($2::text[], $3::text[]) AS p(source, specifier)
-       WHERE r.repository_id = $1
-         AND r.source_node_type = 'file'
-         AND r.source_node_key = p.source
-         AND r.target_node_type = 'pending'
-         AND r.target_node_key = p.specifier
-         AND r.relationship_type = 'IMPORTS'`,
+       WHERE i.repository_id = $1
+         AND i.source_path = p.source
+         AND i.target = p.specifier
+         AND NOT i.resolved`,
       [repositoryId, resolvedPending.map((x) => x.source), resolvedPending.map((x) => x.specifier)],
     );
 
@@ -136,10 +112,10 @@ export class RelationshipIndexingService implements IRelationshipIndexer {
   }
 
   /**
-   * Moves a file's relationships from its old path to its new one.
+   * Moves a file's imports from its old path to its new one.
    *
-   * NOT the same as delete-then-reindex. The renamed file's OUTGOING edges are
-   * dropped (the caller re-indexes them from the new content in this same
+   * NOT the same as delete-then-reindex. The renamed file's OUTGOING imports
+   * are dropped (the caller re-indexes them from the new content in this same
    * transaction), but INCOMING edges are RETARGETED rather than deleted:
    * an importer only appears in a sync's changed-file set if its own bytes
    * changed, and several real renames don't require that — a case-only rename,
@@ -153,66 +129,42 @@ export class RelationshipIndexingService implements IRelationshipIndexer {
     oldPath: string,
     newPath: string
   ): Promise<void> {
-    // 1. Outgoing edges of the renamed file — rebuilt from its new content.
-    // Includes its pending rows: their specifiers were relative to the old
+    // 1. Outgoing imports of the renamed file — rebuilt from its new content.
+    // Includes its unresolved rows: their specifiers were relative to the old
     // location and are re-derived when the new path is indexed.
     await this.db.query(
-      `DELETE FROM repository_relationships
-       WHERE repository_id = $1
-         AND source_node_type = 'file'
-         AND source_node_key = $2`,
+      `DELETE FROM repository_imports WHERE repository_id = $1 AND source_path = $2`,
       [repositoryId, oldPath]
     );
 
-    // 2. Incoming edges -> point them at the new path. The NOT EXISTS guard
-    // covers the case where the importer ALREADY has an edge to newPath (a
-    // rename that overwrites a file the importer also imported): without it
-    // this UPDATE would violate the table's UNIQUE constraint. Filtered to
-    // target_node_type = 'file': a pending key is a specifier, never a path,
-    // and must never be retargeted.
+    // 2. Incoming edges -> point them at the new path. ON CONFLICT skips an
+    // importer that already has an edge to newPath (a rename that overwrites a
+    // file the importer also imported). Resolved rows only: an unresolved
+    // row's target is a specifier, never a path, and must not be retargeted.
     await this.db.query(
-      `UPDATE repository_relationships r
-          SET target_node_key = $3, updated_at = NOW()
-        WHERE r.repository_id = $1
-          AND r.target_node_type = 'file'
-          AND r.target_node_key = $2
-          AND NOT EXISTS (
-            SELECT 1 FROM repository_relationships e
-             WHERE e.repository_id = r.repository_id
-               AND e.source_node_type = r.source_node_type
-               AND e.source_node_key = r.source_node_key
-               AND e.target_node_type = 'file'
-               AND e.target_node_key = $3
-               AND e.relationship_type = r.relationship_type
-          )`,
+      `INSERT INTO repository_imports (repository_id, source_path, target, resolved)
+       SELECT repository_id, source_path, $3, TRUE
+       FROM repository_imports
+       WHERE repository_id = $1 AND target = $2 AND resolved
+       ON CONFLICT DO NOTHING`,
       [repositoryId, oldPath, newPath]
     );
-
-    // 3. Whatever step 2 deliberately skipped is now redundant (an equivalent
-    // edge to newPath already exists), so drop it.
     await this.db.query(
-      `DELETE FROM repository_relationships
-       WHERE repository_id = $1
-         AND target_node_type = 'file'
-         AND target_node_key = $2`,
+      `DELETE FROM repository_imports WHERE repository_id = $1 AND target = $2 AND resolved`,
       [repositoryId, oldPath]
     );
   }
 
   /**
-   * Clears all relationships where this file is either the source or target.
-   * Useful when a file is deleted. The source arm also clears the file's
-   * pending rows; the target arm only matches real 'file' edges.
+   * Clears all imports where this file is either the importer or the
+   * imported file. Used when a file is deleted. The importer arm also clears
+   * the file's unresolved rows; the target arm only matches resolved edges.
    */
   public async deleteFileRelationships(repositoryId: string, filePath: string): Promise<void> {
     await this.db.query(
-      `DELETE FROM repository_relationships
+      `DELETE FROM repository_imports
        WHERE repository_id = $1
-         AND (
-           (source_node_type = 'file' AND source_node_key = $2)
-           OR
-           (target_node_type = 'file' AND target_node_key = $2)
-         )`,
+         AND (source_path = $2 OR (resolved AND target = $2))`,
       [repositoryId, filePath]
     );
   }

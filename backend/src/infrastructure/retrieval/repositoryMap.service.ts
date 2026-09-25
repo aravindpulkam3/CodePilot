@@ -33,7 +33,7 @@ const depthOf = (p: string) => p.split("/").length;
  * can never be served for another — no invalidation event has to fire.
  *
  * Profiles are orientation only. Every underlying fact stays fully
- * queryable from repository_embeddings / repository_relationships.
+ * queryable from repository_embeddings / repository_imports.
  */
 export class RepositoryMapService {
   private async indexedSha(repositoryId: string): Promise<string | null> {
@@ -150,7 +150,7 @@ export class RepositoryMapService {
       const files = entry.files;
 
       // Cross-module edges are composed from the existing, audited graph
-      // queries (target_node_type = 'file') — no new relationship SQL.
+      // queries (resolved imports only) — no new import-graph SQL.
       const [symbolRows, depsByFile, dependentsByFile] = await Promise.all([
         pool.query(
           `SELECT file_path, qualified_name, MIN(start_line) AS first_line

@@ -62,7 +62,7 @@ export default function Dashboard() {
   // Assumes repo objects carry an `indexing_status` field from the backend.
   const indexedRepos = repositories.filter((r) => r.indexing_status === "READY");
   const needsIndexingRepos = repositories.filter(
-    (r) => r.indexing_status === "SYNCING" || r.indexing_status === "INDEXING",
+    (r) => r.indexing_status === "INDEXING",
   );
   const failedRepos = repositories.filter(
     (r) => r.indexing_status === "FAILED",

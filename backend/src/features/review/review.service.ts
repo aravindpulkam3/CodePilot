@@ -338,8 +338,8 @@ export class ReviewService {
       const reviewRes = await client.query(
         `
         INSERT INTO reviews
-        (repository_id, pull_number, head_sha, model, status, summary, overall_score, risk_level, raw_response, is_latest)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE)
+        (repository_id, pull_number, head_sha, model, summary, overall_score, risk_level, raw_response, is_latest)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE)
         RETURNING id;
       `,
         [
@@ -347,7 +347,6 @@ export class ReviewService {
           pullNumber,
           headSha,
           this.llm.modelName,
-          "completed",
           aiReview.summary,
           aiReview.overall_score,
           aiReview.risk_level,

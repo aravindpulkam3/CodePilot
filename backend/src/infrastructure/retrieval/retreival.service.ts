@@ -122,7 +122,7 @@ const INTERVIEW_LIMITS = {
 export class RepositoryRetrievalService {
   /**
    * Blocks retrieval until the repository has a searchable index — or throws.
-   * Gated on `searchable_at`, which is set once the first full index
+   * Gated on `last_indexed_sha`, which is set once the first full index
    * (sync/parse/embed/import-graph) completes and never cleared, so a repo
    * stays usable while a later delta sync is still indexing.
    *
@@ -149,8 +149,19 @@ export class RepositoryRetrievalService {
     const startTime = Date.now();
     const deadline = () => Date.now() - startTime < maxWaitMs;
 
+    // 0. No valid index and the last run failed: recovery is an explicit retry
+    // (start-working), not a side effect of a session request — otherwise a
+    // deterministic failure would start a full rebuild on every session.
+    const { rows: current } = await pool.query(
+      "SELECT last_indexed_sha, indexing_status FROM repositories WHERE id = $1",
+      [repositoryId],
+    );
+    if (!current[0]?.last_indexed_sha && current[0]?.indexing_status === "FAILED") {
+      throw new Error("INDEXING_FAILED");
+    }
+
     // 1. Enqueue the sync job, then wait for THIS job to finish (not just any past
-    // state) before looking at searchable_at — the repo can already read
+    // state) before looking at last_indexed_sha — the repo can already read
     // searchable from a previous sync while this job is still sitting in the queue.
     const { jobId } = await repositorySyncService.enqueueSync(clerkUserId, repositoryId);
     const job = jobId ? await syncQueue.getJob(jobId) : undefined;
@@ -164,19 +175,16 @@ export class RepositoryRetrievalService {
     }
 
     // 2. The sync job only enqueues indexing chunks; it doesn't wait for them.
-    // Poll the repo's searchable_at/indexing_status until Phase 1 finishes.
-    const { pool } = await import("../../config/db.js");
-
+    // Poll the repo's last_indexed_sha/indexing_status until indexing finishes.
     while (deadline()) {
       const { rows } = await pool.query(
-        "SELECT searchable_at, indexing_status FROM repositories WHERE id = $1",
+        "SELECT last_indexed_sha, indexing_status FROM repositories WHERE id = $1",
         [repositoryId]
       );
 
-      const searchableAt = rows[0]?.searchable_at;
       const status = rows[0]?.indexing_status;
 
-      if (searchableAt) {
+      if (rows[0]?.last_indexed_sha) {
         console.log(`[RetrievalService] Repository ${repositoryId} is searchable (status: ${status}).`);
         return;
       }
@@ -186,7 +194,7 @@ export class RepositoryRetrievalService {
         throw new Error('INDEXING_FAILED');
       }
 
-      // status is NOT_STARTED / SYNCING / INDEXING — still in progress, keep waiting.
+      // status is NOT_STARTED / INDEXING — still in progress, keep waiting.
       await new Promise(res => setTimeout(res, pollIntervalMs));
     }
 
@@ -209,13 +217,12 @@ export class RepositoryRetrievalService {
    */
   private async assertSearchable(repositoryId: string): Promise<void> {
     const { rows } = await pool.query(
-      "SELECT searchable_at, indexing_status FROM repositories WHERE id = $1",
+      "SELECT last_indexed_sha, indexing_status FROM repositories WHERE id = $1",
       [repositoryId],
     );
-    const searchableAt = rows[0]?.searchable_at;
     const status = rows[0]?.indexing_status ?? "NOT_STARTED";
 
-    if (searchableAt) return;
+    if (rows[0]?.last_indexed_sha) return;
 
     if (status === "FAILED") {
       console.error(`[RetrievalService] Repository ${repositoryId} indexing FAILED — refusing to retrieve on a broken index.`);
@@ -638,11 +645,7 @@ export class RepositoryRetrievalService {
    * Retrieves the "blast radius" of a pull request: the changed code itself,
    * its callers, its callees, its tests, and relevant documentation.
    *
-   * The governing rule: the GRAPH decides WHICH files matter, then pgvector fetches their CODE. Previously the structural stages fetched `getFileSummaries()` — LLM prose from `repository_summaries` — which
-   * (a) is written only by Phase 2, so it was empty during SEARCHABLE, when
-   * review is most likely to run, and (b) landed in `context.files`, which the
-   * review prompt never read. All of that work was computed, charged 60% of
-   * the token budget, allowed to evict real code, and then discarded.
+   * The governing rule: the GRAPH decides WHICH files matter, then pgvector fetches their CODE.
    */
   public async retrieveReviewContext(
     clerkUserId: string,
@@ -977,11 +980,6 @@ export class RepositoryRetrievalService {
       }
     };
   }
-
-  // summaryToCandidate() was removed with the file_summary path: it wrapped
-  // repository_summaries prose as a retrieval candidate, which (a) was empty
-  // during SEARCHABLE, (b) was charged against the code token budget, and
-  // (c) was never read by the review prompt.
 }
 
 export const retrievalService = new RepositoryRetrievalService();

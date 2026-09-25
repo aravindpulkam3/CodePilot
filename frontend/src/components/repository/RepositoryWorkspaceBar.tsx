@@ -42,7 +42,6 @@ export function RepositoryWorkspaceBar({ repo, repositoryId, mode }: RepositoryW
     switch (syncStatus.status) {
       case "READY":
         return { dot: "bg-emerald-500", label: "Indexed" };
-      case "SYNCING":
       case "INDEXING":
         return { dot: null, label: "Indexing…", spinning: true };
       case "FAILED":

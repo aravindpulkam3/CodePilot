@@ -1,6 +1,13 @@
+-- CodePilot database schema: the complete current definition for a fresh database.
+--
+-- Applied as a whole by db/migrate.ts. Every statement is IF NOT EXISTS, so
+-- re-running it is a no-op. This file is not a migration history: to change a
+-- table, edit its CREATE TABLE here and reset the local database.
+
+CREATE EXTENSION IF NOT EXISTS vector;
 
 
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+-- ─── Users ──────────────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS app_users (
     id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -14,66 +21,118 @@ CREATE TABLE IF NOT EXISTS app_users (
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_app_users_clerk_id ON app_users (clerk_id);
 
+-- ─── Repositories and their index ───────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS repositories (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-
     user_id UUID NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
 
-    source_type VARCHAR(50) NOT NULL DEFAULT 'connected',
-
+    -- GitHub identity and metadata, refreshed whenever the repo list syncs.
+    source_type VARCHAR(50) NOT NULL DEFAULT 'connected',  -- 'connected' | 'public_import'
     github_repo_id BIGINT NOT NULL,
-
     owner VARCHAR(255) NOT NULL,
     name VARCHAR(255) NOT NULL,
-
     description TEXT,
     language VARCHAR(100),
-
     is_private BOOLEAN NOT NULL,
-
     default_branch VARCHAR(100) NOT NULL,
-
     html_url TEXT NOT NULL,
-    clone_url TEXT NOT NULL,
-
     last_pushed_at TIMESTAMPTZ,
-    last_synced_at TIMESTAMPTZ NOT NULL,
+
+    -- "Currently Working On" membership: NULL = only listed; set by
+    -- start-working. Independent of indexing_status.
+    workspace_started_at TIMESTAMPTZ,
+
+    -- Index state. last_indexed_sha is the commit the index reflects; NULL
+    -- means never indexed or invalidated (a run failed after enqueuing chunks,
+    -- so rows may be mixed), and retrieval refuses to run until it is set.
+    indexing_status VARCHAR(50) NOT NULL DEFAULT 'NOT_STARTED',  -- NOT_STARTED | INDEXING | READY | FAILED
+    last_indexed_sha VARCHAR(255),
+
+    -- The current (or last) indexing run. indexing_run_id is the owning sync
+    -- job's id and fences out jobs from superseded runs; indexing_target_sha
+    -- pins the commit so a retried sync rebuilds the same chunk list;
+    -- index_chunks_total is NULL until chunk jobs are enqueued; each chunk job
+    -- appends its index to completed_index_chunks in the same transaction as
+    -- its writes, which makes completion idempotent under job retries.
+    indexing_run_id TEXT,
+    indexing_target_sha TEXT,
+    index_chunks_total INTEGER,
+    completed_index_chunks INTEGER[] NOT NULL DEFAULT '{}',
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    CONSTRAINT repositories_user_repo_unique
-        UNIQUE(user_id, github_repo_id)
+    CONSTRAINT repositories_user_repo_unique UNIQUE (user_id, github_repo_id)
 );
 
-CREATE INDEX IF NOT EXISTS repositories_user_idx
-    ON repositories(user_id);
 
-CREATE INDEX IF NOT EXISTS repositories_github_repo_idx
-    ON repositories(github_repo_id);
+-- One row per chunk: an AST symbol of a code file, a section of a prose doc,
+-- or a whole config file (symbol_type = 'documentation' for docs and config).
+-- There is no ANN index: pgvector index types cap at 2000 dimensions, so every
+-- similarity search is a sequential scan over the repository's rows.
+CREATE TABLE IF NOT EXISTS repository_embeddings (
+    repository_id UUID NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+    file_path TEXT NOT NULL,
+    content_hash TEXT NOT NULL,       -- unchanged chunks are kept, not re-embedded
+    commit_sha TEXT NOT NULL,         -- revision this chunk was indexed at
 
+    symbol_type TEXT NOT NULL,        -- 'function' | 'class' | 'method' | 'class_skeleton' | 'documentation' | ...
+    symbol_name TEXT NOT NULL,
+    qualified_name TEXT,              -- e.g. 'UserService.createUser'
+    parent_symbol TEXT,               -- enclosing class/interface, if any
+    is_exported BOOLEAN,
+    start_line INTEGER NOT NULL,
+    end_line INTEGER NOT NULL,
+    -- Set only on the parts of a split symbol or document. chunk_total IS NULL
+    -- marks a whole row, which is how byte-exact config files are recognised.
+    chunk_index INTEGER,
+    chunk_total INTEGER,
+
+    content TEXT NOT NULL,            -- the embedded text: chunk header + source
+    embedding VECTOR(3072) NOT NULL,
+
+    PRIMARY KEY (repository_id, file_path, content_hash)
+);
+
+
+-- File-level import graph. A resolved row's target is the imported file's
+-- path. An unresolved row keeps the raw relative specifier (its target file
+-- may sit in a later index chunk) and is re-resolved when a run finalizes.
+-- Graph reads must filter on `resolved`, or a specifier surfaces as a file.
+CREATE TABLE IF NOT EXISTS repository_imports (
+    repository_id UUID NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+    source_path TEXT NOT NULL,
+    target TEXT NOT NULL,
+    resolved BOOLEAN NOT NULL,
+
+    PRIMARY KEY (repository_id, source_path, target, resolved)
+);
+
+-- Reverse lookups: dependents of a file, import fan-in, rename retargeting.
+CREATE INDEX IF NOT EXISTS idx_repository_imports_target
+    ON repository_imports (repository_id, target) WHERE resolved;
+
+
+-- ─── Pull request reviews ───────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS reviews (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     repository_id UUID NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
     pull_number INTEGER NOT NULL,
     head_sha TEXT NOT NULL,
-    model TEXT NOT NULL,
-    status TEXT NOT NULL,
+    model TEXT NOT NULL,              -- LLM that produced the review
     summary TEXT,
     overall_score INTEGER,
     risk_level TEXT,
-    raw_response JSONB NOT NULL,
+    raw_response JSONB NOT NULL,      -- the model's full structured output
     is_latest BOOLEAN DEFAULT TRUE,
     last_accessed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW()
+    created_at TIMESTAMP DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS reviews_repo_pr_latest_idx ON reviews(repository_id, pull_number) WHERE is_latest = TRUE;
-CREATE INDEX IF NOT EXISTS idx_reviews_last_accessed ON reviews(last_accessed_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_reviews_repo_pr ON reviews (repository_id, pull_number);
 
 
 CREATE TABLE IF NOT EXISTS review_findings (
@@ -86,151 +145,67 @@ CREATE TABLE IF NOT EXISTS review_findings (
     title TEXT NOT NULL,
     description TEXT NOT NULL,
     recommendation TEXT NOT NULL,
-    code_suggestion TEXT,
-    created_at TIMESTAMP DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS review_findings_review_id_idx ON review_findings(review_id);
-
--- 1. Enable the pgvector extension (Crucial first step)
-CREATE EXTENSION IF NOT EXISTS vector;
-
--- 2. Create the unified repository_embeddings table
-CREATE TABLE IF NOT EXISTS repository_embeddings (
-    -- Standard Identifiers
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    repository_id UUID NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
-    commit_sha TEXT NOT NULL, -- Tracks the exact commit this chunk belongs to
-
-    -- AST & Metadata specific fields (Crucial for Contextual Enrichment)
-    file_path TEXT NOT NULL,
-    language TEXT NOT NULL, -- e.g., 'TypeScript', 'Python'
-    symbol_type TEXT NOT NULL, -- e.g., 'function', 'class', 'method', 'interface'
-    symbol_name TEXT NOT NULL, -- e.g., 'AuthService', 'login'
-    start_line INTEGER NOT NULL,
-    end_line INTEGER NOT NULL,
-    
-    -- The core RAG data
-    content_hash TEXT NOT NULL, -- For exact matching during Orphan Cleanup / Delta updates
-    content TEXT NOT NULL, -- The enriched raw string (e.g., File: X, Class: Y, Code...)
-    embedding VECTOR(3072) NOT NULL, -- The standard dimension for current Gemini embedding models
-
-    -- Auditing
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    -- Ensure a chunk isn't duplicated for the exact same hash in the same repo
-    UNIQUE(repository_id, file_path, content_hash)
+    code_suggestion TEXT
 );
 
--- -- 3. Create basic indexes for fast metadata lookups
--- -- (Used heavily during the Orphan Cleanup phase)
-CREATE INDEX IF NOT EXISTS idx_repo_embeddings_repo_file ON repository_embeddings(repository_id, file_path);
-CREATE INDEX IF NOT EXISTS idx_repo_embeddings_commit ON repository_embeddings(repository_id, commit_sha);
-
--- IF NOT EXISTS on both: schema.sql is applied idempotently by db/migrate.ts,
--- so a bare ADD COLUMN aborts the entire file on the second run.
-ALTER TABLE repositories
-ADD COLUMN IF NOT EXISTS last_indexed_sha VARCHAR(255);
-
--- -- Adds UI tracking state (unindexed, indexing, completed, failed)
-ALTER TABLE repositories
-ADD COLUMN IF NOT EXISTS indexing_status VARCHAR(50) DEFAULT 'unindexed';
+CREATE INDEX IF NOT EXISTS review_findings_review_id_idx ON review_findings (review_id);
 
 
-
--- One table for every summary level, per spec. Not flattened — summary_json
--- is stored exactly as the LLM returned it so it can become graph-node
--- properties later without a migration.
-CREATE TABLE IF NOT EXISTS repository_summaries (
-  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  repository_id UUID NOT NULL,
-  node_type     TEXT NOT NULL CHECK (node_type IN ('repository', 'architecture', 'component', 'file')),
-  node_key      TEXT NOT NULL,       -- file path | module name | 'architecture' | 'repository'
-  parent_key    TEXT,                -- NULL only for the repository row
-  summary_json  JSONB NOT NULL,
-  content_hash  TEXT NOT NULL,       -- addition beyond the spec's column list — Merkle-style hash
-                                      -- used to skip regenerating nodes whose inputs haven't changed
-  embedding     VECTOR(3072),        -- gemini-embedding-001 defaults to 3072 dims;
-                                      -- log embedding.length once and confirm before running
-                                      -- this migration, then adjust if you're requesting a
-                                      -- truncated output_dimensionality
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-
-  UNIQUE (repository_id, node_type, node_key)
-);
-
-CREATE INDEX IF NOT EXISTS idx_repository_summaries_repo_type  ON repository_summaries (repository_id, node_type);
-
-CREATE INDEX IF NOT EXISTS idx_repository_summaries_parent ON repository_summaries (repository_id, parent_key);
-
+-- ─── Chat and interview sessions ────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS chat_sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    
-    -- User who owns this chat session
     user_id UUID NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
-    
-    -- Session Type: 'REPO_QA' | 'REVIEW_CHAT' | 'ISSUE_CHAT' | 'INTERVIEW'
-    type VARCHAR(50) NOT NULL DEFAULT 'REPO_QA',
-    
-    -- Scoped Relationships (Nullable depending on session type)
+
+    type VARCHAR(50) NOT NULL DEFAULT 'REPO_QA',  -- 'REPO_QA' | 'REVIEW_CHAT' | 'ISSUE_CHAT' | 'INTERVIEW'
+
+    -- Scope; which of these is set depends on the session type.
     repository_id UUID REFERENCES repositories(id) ON DELETE CASCADE,
     review_id UUID REFERENCES reviews(id) ON DELETE CASCADE,
     finding_id UUID REFERENCES review_findings(id) ON DELETE CASCADE,
-    
-    -- Human-readable label (e.g., "Discussion: O(n^2) loop")
+
     title VARCHAR(255),
-    
-    -- Status: 'active' | 'completed' | 'archived'
-    status VARCHAR(50) NOT NULL DEFAULT 'active',
-    
-    -- Extensible metadata / state payload
+    status VARCHAR(50) NOT NULL DEFAULT 'active',  -- 'active' | 'completed' (interviews)
+
+    -- Interview state (focus, coverage, difficulty, ...); '{}' for other types.
     state JSONB DEFAULT '{}'::jsonb,
-    
+
     last_accessed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Performance Indexes
-CREATE INDEX IF NOT EXISTS idx_chat_sessions_repo_user ON chat_sessions(repository_id, user_id);
-CREATE INDEX IF NOT EXISTS idx_chat_sessions_type ON chat_sessions(type);
-CREATE INDEX IF NOT EXISTS idx_chat_sessions_review ON chat_sessions(review_id);
-CREATE INDEX IF NOT EXISTS idx_chat_sessions_finding ON chat_sessions(finding_id);
-CREATE INDEX IF NOT EXISTS idx_chat_sessions_user_recent ON chat_sessions(user_id, last_accessed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_repo_user ON chat_sessions (repository_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_user_recent ON chat_sessions (user_id, last_accessed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_review ON chat_sessions (review_id);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_finding ON chat_sessions (finding_id);
 
--- Enforce EXACTLY ONE Issue Chat session per review finding per user
+-- Exactly one issue chat per review finding per user.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_sessions_finding_user
-ON chat_sessions (finding_id, user_id)
-WHERE type = 'ISSUE_CHAT' AND finding_id IS NOT NULL;
+    ON chat_sessions (finding_id, user_id)
+    WHERE type = 'ISSUE_CHAT' AND finding_id IS NOT NULL;
 
--- Enforce EXACTLY ONE PR-level Review Chat session per review per user
+-- Exactly one PR-level review chat per review per user.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_sessions_review_user
-ON chat_sessions (review_id, user_id)
-WHERE type = 'REVIEW_CHAT' AND review_id IS NOT NULL;
+    ON chat_sessions (review_id, user_id)
+    WHERE type = 'REVIEW_CHAT' AND review_id IS NOT NULL;
 
 
 CREATE TABLE IF NOT EXISTS chat_messages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    
-    -- Links to parent chat session
     session_id UUID NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-    
-    -- Role: 'user' | 'assistant' | 'system'
-    role VARCHAR(50) NOT NULL,
-    
-    -- Raw message content (Markdown supported)
-    content TEXT NOT NULL,
-    
-    -- Structured metadata (e.g., sources, citations, tokens, latency)
+    role VARCHAR(50) NOT NULL,        -- 'user' | 'assistant'
+    content TEXT NOT NULL,            -- Markdown
+    -- Per-message structured data, e.g. Q&A prompt provenance (promptContext)
+    -- and interview turn evaluations.
     metadata JSONB DEFAULT '{}'::jsonb,
-    
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Chronological index for fast message history retrieval
-CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages (session_id, created_at ASC);
+
+
+-- ─── Activity feed ──────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS activity_logs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -241,108 +216,4 @@ CREATE TABLE IF NOT EXISTS activity_logs (
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_activity_logs_user_recent ON activity_logs(user_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_activity_logs_repository_recent ON activity_logs(repository_id, created_at DESC);
-
-CREATE TABLE IF NOT EXISTS repository_relationships (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    repository_id UUID NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
-
-    source_node_type TEXT NOT NULL,
-    source_node_key TEXT NOT NULL,
-    target_node_type TEXT NOT NULL,
-    target_node_key TEXT NOT NULL,
-
-    relationship_type TEXT NOT NULL,
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-    UNIQUE (repository_id, source_node_type, source_node_key, target_node_type, target_node_key, relationship_type),
-    CONSTRAINT relationship_type_valid CHECK (relationship_type IN ('IMPORTS', 'RELATED_COMPONENT'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_repo_rels_src ON repository_relationships (repository_id, source_node_key);
-CREATE INDEX IF NOT EXISTS idx_repo_rels_tgt ON repository_relationships (repository_id, target_node_key);
-
--- Indexing progress markers + "Currently Working On" workspace
--- membership. All additive and idempotent, unlike the two bare ADD COLUMN
--- statements above (last_indexed_sha / indexing_status) — those predate
--- this convention and are left as-is since re-running them is harmless once
--- already applied, but new columns from here on always use IF NOT EXISTS
--- so this file stays safe to re-run in full, matching db/migrate.ts's model.
-
--- searchable_at: set once the first full index completes, and stays set
--- during later syncs (retrieval gates on it — see retreival.service.ts).
--- last_summarized_sha: unused since LLM summarization was removed; kept as
--- schema residue, never read or written.
-ALTER TABLE repositories ADD COLUMN IF NOT EXISTS searchable_at        TIMESTAMPTZ NULL;
-ALTER TABLE repositories ADD COLUMN IF NOT EXISTS last_summarized_sha  VARCHAR(255) NULL;
-
--- "Currently Working On": NULL = not an active workspace member (just
--- listed from GitHub); non-null = when the user clicked "Start Working",
--- also used as the dashboard section's sort order. Orthogonal to
--- indexing_status — see CLAUDE.md's workspace-vs-indexing-status note.
-ALTER TABLE repositories ADD COLUMN IF NOT EXISTS workspace_started_at TIMESTAMPTZ NULL;
-
--- Indexing progress (chunk/file counts) — informational only, except
--- index_chunks_done/total, which decide when a sync finalizes to READY.
--- summary_tasks_total/done are unused residue from the removed summarizer.
-ALTER TABLE repositories ADD COLUMN IF NOT EXISTS index_chunks_total   INTEGER;
-ALTER TABLE repositories ADD COLUMN IF NOT EXISTS index_chunks_done    INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE repositories ADD COLUMN IF NOT EXISTS index_files_total    INTEGER;
-ALTER TABLE repositories ADD COLUMN IF NOT EXISTS index_files_done     INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE repositories ADD COLUMN IF NOT EXISTS summary_tasks_total  INTEGER;
-ALTER TABLE repositories ADD COLUMN IF NOT EXISTS summary_tasks_done   INTEGER NOT NULL DEFAULT 0;
-
--- Unused residue from the removed summarizer; never read or written.
-ALTER TABLE repositories ADD COLUMN IF NOT EXISTS last_summary_error   TEXT NULL;
-
--- The run token fences old jobs; receipts commit atomically with index writes.
-ALTER TABLE repositories ADD COLUMN IF NOT EXISTS indexing_run_id TEXT;
-ALTER TABLE repositories ADD COLUMN IF NOT EXISTS indexing_target_sha TEXT;
-ALTER TABLE repositories ADD COLUMN IF NOT EXISTS completed_index_chunks INTEGER[] NOT NULL DEFAULT '{}';
-
--- One-time backfill for the old three-value indexing_status vocabulary
--- ('unindexed' | 'INDEXING' | 'INDEXED' | 'FAILED') into the current one
--- (NOT_STARTED | SYNCING | INDEXING | READY | FAILED). Each UPDATE is naturally idempotent (a second run finds no rows
--- still in the old state to touch), consistent with this file's
--- re-run-safe model.
-UPDATE repositories SET indexing_status = 'NOT_STARTED'
-  WHERE indexing_status = 'unindexed' OR indexing_status IS NULL;
-UPDATE repositories SET indexing_status = 'READY',
-       searchable_at = COALESCE(searchable_at, updated_at),
-       last_summarized_sha = last_indexed_sha
-  WHERE indexing_status = 'INDEXED';
-UPDATE repositories SET indexing_status = 'SYNCING'
-  WHERE indexing_status = 'INDEXING' AND searchable_at IS NULL AND indexing_run_id IS NULL;
--- Rows already 'FAILED' are left as-is — see CLAUDE.md for the one-time
--- backfill imprecision this implies (harmless, resolves on next sync).
-
--- SEARCHABLE / SUMMARIZING no longer exist: indexing is one phase ending in
--- READY. Rows left in either state by the removed summarizer map to READY.
--- Idempotent — a second run finds nothing left to update.
-UPDATE repositories SET indexing_status = 'READY'
-  WHERE indexing_status IN ('SEARCHABLE', 'SUMMARIZING') AND searchable_at IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_repo_rels_type ON repository_relationships (repository_id, relationship_type);
-
--- Size-adaptive AST chunking rework: astChunking.service.ts's ChunkMetadata
--- already computed these but they were dropped before persistence. First
--- time repository_embeddings itself is altered post-creation — do not fold
--- these into the CREATE TABLE block above, that only affects brand-new
--- databases. All nullable/no default: purely additive, safe to run ahead of
--- the code deploy that starts writing them.
--- symbol_type gains a new value from this rework, 'class_skeleton' — a
--- signature-only chunk for a class too large to stay one whole chunk (see
--- astChunking.service.ts). Still free-text, no CHECK constraint added.
-ALTER TABLE repository_embeddings ADD COLUMN IF NOT EXISTS qualified_name TEXT;
-ALTER TABLE repository_embeddings ADD COLUMN IF NOT EXISTS parent_symbol TEXT;
-ALTER TABLE repository_embeddings ADD COLUMN IF NOT EXISTS docstring TEXT;
-ALTER TABLE repository_embeddings ADD COLUMN IF NOT EXISTS is_exported BOOLEAN;
-ALTER TABLE repository_embeddings ADD COLUMN IF NOT EXISTS chunk_index INTEGER;
-ALTER TABLE repository_embeddings ADD COLUMN IF NOT EXISTS chunk_total INTEGER;
-
--- Legacy jobs have no run token and are ignored by the new worker. Allow a fresh sync.
-UPDATE repositories SET indexing_status = 'FAILED'
-WHERE indexing_run_id IS NULL AND indexing_status IN ('SYNCING', 'INDEXING');
+CREATE INDEX IF NOT EXISTS idx_activity_logs_user_recent ON activity_logs (user_id, created_at DESC);

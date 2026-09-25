@@ -2,12 +2,11 @@ import { pool } from "../../config/db.js";
 import { withCache } from "../../shared/utils/cache.js";
 
 /**
- * INVARIANT: every query here that returns relationship keys as file paths
- * must filter target_node_type = 'file'. repository_relationships also holds
- * target_node_type = 'pending' rows whose target_node_key is an unresolved
- * import SPECIFIER (e.g. "./repositorySync.service"), not a path — see
- * RelationshipIndexingService#resolvePendingImports. Without the filter, a
- * specifier would surface to Q&A, Review and Interview as a fake file.
+ * INVARIANT: every query here that returns import targets as file paths must
+ * filter `resolved`. repository_imports also holds unresolved rows whose
+ * target is an import SPECIFIER (e.g. "./repositorySync.service"), not a
+ * path — see RelationshipIndexingService#resolvePendingImports. Without the
+ * filter, a specifier would surface to Q&A, Review and Interview as a fake file.
  */
 export class RepositoryGraphService {
   /**
@@ -15,16 +14,14 @@ export class RepositoryGraphService {
    */
   public async getDirectDependencies(repositoryId: string, filePath: string): Promise<string[]> {
     const { rows } = await pool.query(
-      `SELECT target_node_key
-       FROM repository_relationships
+      `SELECT target
+       FROM repository_imports
        WHERE repository_id = $1
-         AND source_node_type = 'file'
-         AND source_node_key = $2
-         AND target_node_type = 'file'
-         AND relationship_type = 'IMPORTS'`,
+         AND source_path = $2
+         AND resolved`,
       [repositoryId, filePath]
     );
-    return rows.map((r) => r.target_node_key);
+    return rows.map((r) => r.target);
   }
 
   /**
@@ -32,15 +29,14 @@ export class RepositoryGraphService {
    */
   public async getDirectDependents(repositoryId: string, filePath: string): Promise<string[]> {
     const { rows } = await pool.query(
-      `SELECT source_node_key 
-       FROM repository_relationships 
-       WHERE repository_id = $1 
-         AND target_node_type = 'file' 
-         AND target_node_key = $2 
-         AND relationship_type = 'IMPORTS'`,
+      `SELECT source_path
+       FROM repository_imports
+       WHERE repository_id = $1
+         AND target = $2
+         AND resolved`,
       [repositoryId, filePath]
     );
-    return rows.map((r) => r.source_node_key);
+    return rows.map((r) => r.source_path);
   }
 
   /**
@@ -55,17 +51,15 @@ export class RepositoryGraphService {
     if (filePaths.length === 0) return result;
 
     const { rows } = await pool.query(
-      `SELECT source_node_key, target_node_key
-       FROM repository_relationships
+      `SELECT source_path, target
+       FROM repository_imports
        WHERE repository_id = $1
-         AND source_node_type = 'file'
-         AND source_node_key = ANY($2::text[])
-         AND target_node_type = 'file'
-         AND relationship_type = 'IMPORTS'`,
+         AND source_path = ANY($2::text[])
+         AND resolved`,
       [repositoryId, filePaths],
     );
     for (const r of rows) {
-      result.get(r.source_node_key)!.push(r.target_node_key);
+      result.get(r.source_path)!.push(r.target);
     }
     return result;
   }
@@ -81,16 +75,15 @@ export class RepositoryGraphService {
     if (filePaths.length === 0) return result;
 
     const { rows } = await pool.query(
-      `SELECT target_node_key, source_node_key
-       FROM repository_relationships
+      `SELECT target, source_path
+       FROM repository_imports
        WHERE repository_id = $1
-         AND target_node_type = 'file'
-         AND target_node_key = ANY($2::text[])
-         AND relationship_type = 'IMPORTS'`,
+         AND target = ANY($2::text[])
+         AND resolved`,
       [repositoryId, filePaths],
     );
     for (const r of rows) {
-      result.get(r.target_node_key)!.push(r.source_node_key);
+      result.get(r.target)!.push(r.source_path);
     }
     return result;
   }
@@ -111,15 +104,14 @@ export class RepositoryGraphService {
       600,
       async () => {
         const { rows } = await pool.query(
-          `SELECT target_node_key, COUNT(*)::int AS fan_in
-           FROM repository_relationships
+          `SELECT target, COUNT(*)::int AS fan_in
+           FROM repository_imports
            WHERE repository_id = $1
-             AND target_node_type = 'file'
-             AND relationship_type = 'IMPORTS'
-           GROUP BY target_node_key`,
+             AND resolved
+           GROUP BY target`,
           [repositoryId],
         );
-        return rows.map((r) => [r.target_node_key as string, r.fan_in as number]);
+        return rows.map((r) => [r.target as string, r.fan_in as number]);
       },
     );
     return new Map(entries);

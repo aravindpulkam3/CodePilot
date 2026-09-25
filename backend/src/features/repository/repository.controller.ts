@@ -28,9 +28,8 @@ export const getSyncStatus = async (req: Request, res: Response) => {
     if (!isUuid(repositoryId)) return res.status(400).json({ error: "repositoryId must be a UUID" });
 
     const { rows } = await pool.query(
-      `SELECT indexing_status, searchable_at,
-              index_files_done, index_files_total,
-              index_chunks_done, index_chunks_total
+      `SELECT indexing_status, last_indexed_sha, index_chunks_total,
+              cardinality(completed_index_chunks) AS chunks_done
        FROM repositories WHERE id = $1 AND user_id = $2`,
       [repositoryId, req.dbUser!.id],
     );
@@ -39,18 +38,13 @@ export const getSyncStatus = async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Repository not found.' });
     }
     const repo = rows[0];
-    const status = repo.indexing_status || 'NOT_STARTED';
 
     return res.status(200).json({
-      status,
-      searchableAt: repo.searchable_at,
-      indexProgress: repo.index_files_total != null || repo.index_chunks_total != null
-        ? {
-            filesDone: repo.index_files_done,
-            filesTotal: repo.index_files_total,
-            chunksDone: repo.index_chunks_done,
-            chunksTotal: repo.index_chunks_total,
-          }
+      status: repo.indexing_status,
+      // A previous index stays searchable while a later run is in flight.
+      searchable: repo.last_indexed_sha != null,
+      indexProgress: repo.index_chunks_total != null
+        ? { chunksDone: repo.chunks_done, chunksTotal: repo.index_chunks_total }
         : null,
     });
   } catch (error) {

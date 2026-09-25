@@ -2,14 +2,11 @@ import { pool } from "../../config/db.js";
 import { safeErrorDetails } from "../../shared/utils/safeErrorDetails.js";
 import { astChunker } from "../../infrastructure/chunking/astChunking.service.js";
 import { documentationChunker } from "../../infrastructure/chunking/documentationChunking.service.js";
-import { isConfigFile, isDocumentationFile } from "../../shared/utils/documentationPaths.js";
+import { isConfigFile, isDocumentationFile, isExcludedPath } from "../../shared/utils/documentationPaths.js";
 import { embedder } from "../../infrastructure/embedding/embedding.service.js";
-import { extractLocalImports } from "../../shared/utils/importResolver.js";
-import { MemoryRelationshipIndexer } from "../../shared/utils/transactionBuffer.js";
+import { extractLocalImports, type LocalImport } from "../../shared/utils/importResolver.js";
 import { RelationshipIndexingService } from "./relationshipIndexing.service.js";
 import { appEvents, EVENT_TYPES } from "../../shared/events/eventEmitter.js";
-// TEMPORARY verification logging — see utils/readmeDebugLog.ts for removal.
-import { readmeLog, docPreview } from "../../shared/utils/readmeDebugLog.js";
 
 export interface FileChange {
   path: string;
@@ -24,17 +21,51 @@ export interface FileChange {
   previousPath?: string;
 }
 
+/**
+ * The single rule for what the index stores: source code with a registered
+ * parser, prose docs, or config files — never generated/vendored content.
+ * Sync applies it before downloading anything, for full and delta syncs alike.
+ */
+export function isIndexableFile(filePath: string): boolean {
+  if (isExcludedPath(filePath)) return false;
+  return astChunker.supportsFile(filePath) || isConfigFile(filePath) || isDocumentationFile(filePath);
+}
+
+interface RunRow {
+  indexing_run_id: string | null;
+  indexing_target_sha: string | null;
+  completed_index_chunks: number[];
+}
+
+/**
+ * True while this chunk job still belongs to the repository's current run and
+ * hasn't committed yet. A superseded run (new run id or target) or an already
+ * receipted chunk (a retried/stalled job that did commit) must not write.
+ */
+function isCurrentChunk(
+  row: RunRow | undefined,
+  runId: string,
+  commitSha: string,
+  chunkIndex: number,
+): boolean {
+  return (
+    !!row &&
+    row.indexing_run_id === runId &&
+    row.indexing_target_sha === commitSha &&
+    !row.completed_index_chunks.includes(chunkIndex)
+  );
+}
+
 export class RepositoryIndexingService {
   /**
-   * The single indexing phase — processes a repository update by selectively
-   * syncing only changed files: AST chunking (code), whole-file / section
-   * chunking (config and docs), embeddings, and the IMPORTS graph. No LLM
-   * calls. Once every chunk job of a sync has committed, pending imports are
-   * resolved and the repo is stamped READY.
+   * The single indexing phase for one chunk job of a run: AST chunking (code),
+   * whole-file / section chunking (config and docs), embeddings, and the
+   * import graph. No LLM calls. The chunk that completes the run's last
+   * receipt resolves pending imports and stamps the repo READY.
    *
-   * Finalization uses a persisted chunk-completion counter, not a boolean
-   * flag passed at enqueue time — indexQueue's concurrency:4 means the
-   * last-*enqueued* chunk isn't reliably the last to *complete*.
+   * Slow work (parsing, embedding) happens before the transaction; the
+   * transaction re-checks the run under a row lock, writes, and records this
+   * chunk's receipt atomically with those writes.
    */
   public async processRepositoryUpdate(
     repositoryId: string,
@@ -49,27 +80,26 @@ export class RepositoryIndexingService {
 
     // --- STAGE 1: OUTSIDE TRANSACTION (Generation) ---
 
-    // Capture consistency snapshot
+    // Cheap early exit so a superseded job doesn't pay for embeddings; the
+    // authoritative check is repeated under the row lock in stage 2.
     const { rows: repoRows } = await pool.query(
-      "SELECT last_indexed_sha, user_id, indexing_run_id, indexing_target_sha, completed_index_chunks FROM repositories WHERE id = $1",
+      `SELECT user_id, indexing_run_id, indexing_target_sha, completed_index_chunks
+       FROM repositories WHERE id = $1`,
       [repositoryId],
     );
-    const currentRun = repoRows[0];
-    if (!currentRun || currentRun.indexing_run_id !== runId || currentRun.indexing_target_sha !== commitSha
-      || currentRun.completed_index_chunks.includes(chunkIndex)) return;
+    if (!isCurrentChunk(repoRows[0], runId, commitSha, chunkIndex)) return;
+    const ownerUserId = repoRows[0].user_id;
     await astChunker.init();
-    const snapshotSha = currentRun.last_indexed_sha;
-    const ownerUserId = repoRows[0]?.user_id;
-    console.log(
-      `[Index] Snapshot SHA for ${repositoryId}: ${snapshotSha || "(none — initial index)"}.`,
-    );
 
     const chunksToDelete: { filePath: string; contentHashes: string[] }[] = [];
     const chunksToInsert: any[] = [];
     const hashesToKeepUpdate: { filePath: string; contentHashes: string[] }[] =
       [];
 
-    const memRelationshipIndexer = new MemoryRelationshipIndexer();
+    // Import-graph changes, applied inside the stage 2 transaction.
+    const removedPaths: string[] = [];
+    const renames: { oldPath: string; newPath: string }[] = [];
+    const importsByFile = new Map<string, LocalImport[]>();
 
     // "Known paths" for import resolution: every file already indexed for this repo, plus every non-removed file in this chunk. Relationship edges pointing at files outside this set are treated as external (not yet indexed, or a real external package) by extractLocalImports.
     const { rows: knownFileRows } = await pool.query(
@@ -84,27 +114,18 @@ export class RepositoryIndexingService {
     for (const file of changedFiles) {
       if (file.status === "removed") {
         chunksToDelete.push({ filePath: file.path, contentHashes: [] }); // Empty array means delete all for file
-        await memRelationshipIndexer.deleteFileRelationships(
-          repositoryId,
-          file.path,
-        );
+        removedPaths.push(file.path);
         continue;
       }
 
-      // A rename is a delete of the OLD path plus a full index of the new one. Deliberately NOT deleteFileRelationships here: that clears edges where
-      // the old path is source OR target, and the incoming half can't be rebuilt from this sync — an importer only shows up in changedFiles if
-      // its own bytes changed, which a case-only / extension-only /
-      // file-to-index rename doesn't require. renameFileRelationships drops
-      // the old outgoing edges (rebuilt below from the new content) and
-      // RETARGETS the incoming ones onto the new path instead.
+      // A rename is a delete of the OLD path plus a full index of the new one. Its import edges are not deleted: the old
+      // path's outgoing edges are rebuilt from the new content below, and its
+      // incoming edges are RETARGETED onto the new path — an importer only shows up in changedFiles if its own bytes changed,
+      // which a case-only / extension-only / file-to-index rename doesn't require.
       // No `continue` — the new path still needs chunking/embedding/linking.
       if (file.status === "renamed" && file.previousPath) {
         chunksToDelete.push({ filePath: file.previousPath, contentHashes: [] });
-        await memRelationshipIndexer.renameFileRelationships(
-          repositoryId,
-          file.previousPath,
-          file.path,
-        );
+        renames.push({ oldPath: file.previousPath, newPath: file.path });
       }
 
       if (!file.content) continue;
@@ -119,30 +140,12 @@ export class RepositoryIndexingService {
       const isConfig = isConfigFile(file.path);
       const isDoc = isConfig || isDocumentationFile(file.path);
 
-      if (isDoc) {
-        readmeLog(
-          `Detected documentation file "${file.path}" (status=${file.status}, ${file.content.length} chars) in repo ${repositoryId} @ ${commitSha}.`,
-        );
-      }
-
       const newChunks = isConfig
         ? await documentationChunker.chunkWholeFile(file.path, file.content)
         : isDoc
           ? await documentationChunker.chunkDocument(file.path, file.content)
           : await astChunker.chunkFile(file.path, file.content);
       const newHashes = new Set(newChunks.map((c) => c.content_hash));
-
-      if (isDoc) {
-        readmeLog(
-          `Chunked "${file.path}" into ${newChunks.length} section(s):`,
-        );
-        newChunks.forEach((c, i) => {
-          readmeLog(
-            `  [${i + 1}/${newChunks.length}] § "${c.symbol_name}" ` +
-              `lines ${c.start_line}-${c.end_line} hash=${c.content_hash.slice(0, 8)} :: ${docPreview(c.content)}`,
-          );
-        });
-      }
 
       const { rows } = await pool.query(
         `SELECT content_hash FROM repository_embeddings
@@ -165,22 +168,8 @@ export class RepositoryIndexingService {
         (c) => !existingHashes.has(c.content_hash),
       );
 
-      if (isDoc) {
-        readmeLog(
-          `"${file.path}": ${chunksToEmbed.length} new section(s) to embed, ` +
-            `${newChunks.length - chunksToEmbed.length} unchanged (content-hash skip), ` +
-            `${hashesToDelete.length} stale row(s) to delete.`,
-        );
-      }
-
       if (chunksToEmbed.length > 0) {
         const embeddedChunks = await embedder.generateEmbeddings(chunksToEmbed);
-        if (isDoc) {
-          readmeLog(
-            `Embedded ${embeddedChunks.length}/${chunksToEmbed.length} section(s) of "${file.path}" ` +
-              `(dim=${embeddedChunks[0]?.embedding?.length ?? "n/a"}).`,
-          );
-        }
         chunksToInsert.push(...embeddedChunks);
       }
 
@@ -192,25 +181,19 @@ export class RepositoryIndexingService {
         });
       }
 
-      // Import/relationship graph (Review's graph expansion, Q&A's graph
-      // augmentation and Interview's neighbours read repository_relationships).
-      // Skipped for documentation and config: they have no imports to resolve,
-      // and extractFileAstMetadata would return null for them anyway.
+      // Import graph (Review's graph expansion, Q&A's graph augmentation and
+      // Interview's neighbours read repository_imports). Skipped for
+      // documentation and config: they have no imports to resolve, and
+      // extractFileAstMetadata would return null for them anyway.
       if (!isDoc) {
         const astMeta = await astChunker.extractFileAstMetadata(
           file.path,
           file.content,
         );
         if (astMeta) {
-          const localImports = extractLocalImports(
+          importsByFile.set(
             astMeta.filePath,
-            astMeta.imports,
-            knownPaths,
-          );
-          await memRelationshipIndexer.indexFileRelationships(
-            repositoryId,
-            astMeta.filePath,
-            localImports,
+            extractLocalImports(astMeta.filePath, astMeta.imports, knownPaths),
           );
         }
       }
@@ -225,18 +208,17 @@ export class RepositoryIndexingService {
     try {
       await client.query("BEGIN");
 
-      // 1. Verify snapshot
-      const { rows: currentRepoRows } = await client.query(
-        "SELECT last_indexed_sha, indexing_run_id, indexing_target_sha, completed_index_chunks FROM repositories WHERE id = $1 FOR UPDATE",
+      // 1. Re-check the run under the row lock. Every other writer of this
+      // row (a new run's claim, finalize, the worker's FAILED update) needs
+      // the same lock, so the check holds until COMMIT.
+      const { rows: lockedRows } = await client.query(
+        `SELECT indexing_run_id, indexing_target_sha, completed_index_chunks
+         FROM repositories WHERE id = $1 FOR UPDATE`,
         [repositoryId],
       );
-      const currentSha = currentRepoRows[0]?.last_indexed_sha;
-
-      const lockedRepo = currentRepoRows[0];
-      if (!lockedRepo || currentSha !== snapshotSha || lockedRepo.indexing_run_id !== runId
-        || lockedRepo.indexing_target_sha !== commitSha || lockedRepo.completed_index_chunks.includes(chunkIndex)) {
+      if (!isCurrentChunk(lockedRows[0], runId, commitSha, chunkIndex)) {
         console.warn(
-          `[RepositoryIndexingService] Stale generation detected for ${repositoryId}. Aborting transaction.`,
+          `[RepositoryIndexingService] Stale chunk ${chunkIndex} of run ${runId} for ${repositoryId}. Aborting transaction.`,
         );
         await client.query("ROLLBACK");
         return;
@@ -261,13 +243,12 @@ export class RepositoryIndexingService {
         const embeddingVectorStr = `[${chunk.embedding.join(",")}]`;
         await client.query(
           `INSERT INTO repository_embeddings
-                    (repository_id, commit_sha, file_path, language, symbol_type, symbol_name, start_line, end_line, content_hash, content, embedding, qualified_name, parent_symbol, docstring, is_exported, chunk_index, chunk_total)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+                    (repository_id, commit_sha, file_path, symbol_type, symbol_name, start_line, end_line, content_hash, content, embedding, qualified_name, parent_symbol, is_exported, chunk_index, chunk_total)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
           [
             repositoryId,
             commitSha,
             chunk.file_path,
-            chunk.language,
             chunk.symbol_type,
             chunk.symbol_name,
             chunk.start_line,
@@ -277,7 +258,6 @@ export class RepositoryIndexingService {
             embeddingVectorStr,
             chunk.qualified_name ?? null,
             chunk.parent_symbol ?? null,
-            chunk.docstring ?? null,
             chunk.is_exported ?? null,
             chunk.chunk_index ?? null,
             chunk.chunk_total ?? null,
@@ -287,61 +267,47 @@ export class RepositoryIndexingService {
 
       for (const update of hashesToKeepUpdate) {
         await client.query(
-          `UPDATE repository_embeddings SET commit_sha = $1, updated_at = CURRENT_TIMESTAMP 
+          `UPDATE repository_embeddings SET commit_sha = $1
                      WHERE repository_id = $2 AND file_path = $3 AND content_hash = ANY($4)`,
           [commitSha, repositoryId, update.filePath, update.contentHashes],
         );
       }
 
-      // 3. Apply Relationships
-      const realTxRelIndexer = new RelationshipIndexingService(client);
+      // 3. Apply import-graph changes
+      const importIndexer = new RelationshipIndexingService(client);
       // Renames first: retargeting incoming edges has to happen while the old
       // path's rows are still present, before any delete can remove them.
-      for (const { oldPath, newPath } of memRelationshipIndexer.pendingRenames) {
-        await realTxRelIndexer.renameFileRelationships(
-          repositoryId,
-          oldPath,
-          newPath,
-        );
+      for (const { oldPath, newPath } of renames) {
+        await importIndexer.renameFileRelationships(repositoryId, oldPath, newPath);
       }
-      for (const filePath of memRelationshipIndexer.pendingDeletes) {
-        await realTxRelIndexer.deleteFileRelationships(repositoryId, filePath);
+      for (const filePath of removedPaths) {
+        await importIndexer.deleteFileRelationships(repositoryId, filePath);
       }
-      for (const [
-        filePath,
-        imports,
-      ] of memRelationshipIndexer.pendingImports.entries()) {
-        await realTxRelIndexer.indexFileRelationships(
-          repositoryId,
-          filePath,
-          imports,
-        );
+      for (const [filePath, imports] of importsByFile) {
+        await importIndexer.indexFileRelationships(repositoryId, filePath, imports);
       }
 
-      // 4. Advance the chunk-completion counter and, only once every chunk
-      // enqueued for this sync has completed, finalize READY. Using a
-      // counter instead of an "isFinalChunk" flag matters because
+      // 4. Record this chunk's receipt. The receipts are the run's single
+      // completion count: finalize only once every chunk has committed —
       // indexQueue's concurrency:4 means the last-*enqueued* chunk isn't
       // reliably the last to *complete*.
       const { rows: progressRows } = await client.query(
         `UPDATE repositories
-         SET index_chunks_done = index_chunks_done + 1,
-             index_files_done = index_files_done + $2,
-             completed_index_chunks = array_append(completed_index_chunks, $3)
+         SET completed_index_chunks = array_append(completed_index_chunks, $2)
          WHERE id = $1
-         RETURNING index_chunks_done, index_chunks_total`,
-        [repositoryId, changedFiles.length, chunkIndex],
+         RETURNING cardinality(completed_index_chunks) AS chunks_done, index_chunks_total`,
+        [repositoryId, chunkIndex],
       );
-      const { index_chunks_done: chunksDone, index_chunks_total: chunksTotal } =
+      const { chunks_done: chunksDone, index_chunks_total: chunksTotal } =
         progressRows[0];
       const isFinalChunk = chunksTotal != null && chunksDone >= chunksTotal;
 
       if (isFinalChunk) {
-        // Every chunk of this sync has committed (counter above), so the
-        // file list is now complete: resolve the relative imports that
-        // pointed into a later chunk and were recorded as pending. Pure SQL
-        // plus in-memory path matching — no network, safe inside the tx.
-        const { pending, resolved } = await realTxRelIndexer.resolvePendingImports(repositoryId);
+        // Every chunk of this run has committed, so the file list is now
+        // complete: resolve the relative imports that pointed into a later
+        // chunk and were recorded unresolved. Pure SQL plus in-memory path
+        // matching — no network, safe inside the tx.
+        const { pending, resolved } = await importIndexer.resolvePendingImports(repositoryId);
         console.log(
           `[Index] Pending imports for ${repositoryId}: resolved ${resolved} of ${pending}.`,
         );
@@ -349,7 +315,6 @@ export class RepositoryIndexingService {
         await client.query(
           `UPDATE repositories
            SET last_indexed_sha = $1,
-               searchable_at = COALESCE(searchable_at, NOW()),
                indexing_status = 'READY'
            WHERE id = $2`,
           [commitSha, repositoryId],
@@ -364,28 +329,10 @@ export class RepositoryIndexingService {
         `[Index] Transaction committed for ${repositoryId} (chunk ${chunksDone}/${chunksTotal}).`,
       );
 
-      // Doc rows are committed by this SAME transaction, at this SAME
-      // commitSha, as the code rows around them — that shared stamp is what
-      // guarantees retrieval can never mix README content from one revision
-      // with code from another. 
-      const persistedDocChunks = chunksToInsert.filter(
-        (c) => c.symbol_type === "documentation",
-      );
-      if (persistedDocChunks.length > 0) {
-        readmeLog(
-          `Persisted ${persistedDocChunks.length} documentation row(s) for repo ${repositoryId} ` +
-            `at commit_sha=${commitSha}: ${persistedDocChunks
-              .map((c) => `"${c.symbol_name}"`)
-              .join(", ")}.`,
-        );
-      }
-
       if (isFinalChunk) {
-        // This is the actual completion point for a chunked sync — the
-        // chunk-completion counter above just confirmed every enqueued
-        // chunk committed and the repo is now READY. Emitting here
-        // (rather than at enqueue time in repositorySync.service.ts) is
-        // what stops invalidation from firing before the new data exists.
+        // The actual completion point of a run — emitting here (not when the
+        // chunks were enqueued) is what stops cache invalidation from firing
+        // before the new data exists.
         appEvents.emit(EVENT_TYPES.REPOSITORY_SYNCED, {
           userId: ownerUserId,
           repositoryId,

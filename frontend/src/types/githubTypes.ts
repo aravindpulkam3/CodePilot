@@ -37,7 +37,6 @@ export interface GitHubUser {
  */
 export enum IndexingStatus {
   NOT_STARTED = 'NOT_STARTED',
-  SYNCING = 'SYNCING',
   INDEXING = 'INDEXING',
   READY = 'READY',
   FAILED = 'FAILED',
@@ -57,9 +56,7 @@ export interface GitHubRepository {
   is_private: boolean;
   default_branch: string;
   html_url: string;
-  clone_url: string;
   last_pushed_at: string | null;
-  last_synced_at: string;
   created_at: string;
   updated_at: string;
   indexing_status?: IndexingStatus | null;
@@ -67,5 +64,4 @@ export interface GitHubRepository {
   // the user explicitly clicked "Start Working on This Repo" (or imported
   // it by URL); it does NOT track whether a job is currently running.
   workspace_started_at?: string | null;
-  searchable_at?: string | null;
 }

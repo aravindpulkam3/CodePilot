@@ -31,16 +31,6 @@ const CONFIG_BASENAMES: RegExp[] = [
   /\.sql$/i,
 ];
 
-/** Applies to both allowlists: generated, vendored or binary content is never indexed. */
-function isDenied(normalized: string, basename: string): boolean {
-  if (/(^|\/)(node_modules|dist)\//.test(normalized)) return true;
-  return (
-    /^package-lock\.json$/i.test(basename) ||
-    /\.lock$/i.test(basename) ||
-    /\.wasm$/i.test(basename)
-  );
-}
-
 function normalize(filePath: string): { normalized: string; basename: string } {
   const normalized = filePath.replace(/\\/g, "/").replace(/^\.\//, "");
   return {
@@ -49,10 +39,24 @@ function normalize(filePath: string): { normalized: string; basename: string } {
   };
 }
 
+/**
+ * Generated, vendored or binary content is never indexed, whatever its type.
+ * Applies to both allowlists here and to source code (isIndexableFile).
+ */
+export function isExcludedPath(filePath: string): boolean {
+  const { normalized, basename } = normalize(filePath);
+  if (/(^|\/)(node_modules|dist)\//.test(normalized)) return true;
+  return (
+    /^package-lock\.json$/i.test(basename) ||
+    /\.lock$/i.test(basename) ||
+    /\.wasm$/i.test(basename)
+  );
+}
+
 /** Prose documentation (README / ARCHITECTURE / CONTRIBUTING), at any depth. */
 export function isDocumentationFile(filePath: string): boolean {
-  const { normalized, basename } = normalize(filePath);
-  if (isDenied(normalized, basename)) return false;
+  if (isExcludedPath(filePath)) return false;
+  const { basename } = normalize(filePath);
   return PROSE_DOC_BASENAMES.some((p) => p.test(basename));
 }
 
@@ -61,8 +65,8 @@ export function isDocumentationFile(filePath: string): boolean {
  * services", "which env vars", "which dependencies", at any depth.
  */
 export function isConfigFile(filePath: string): boolean {
+  if (isExcludedPath(filePath)) return false;
   const { normalized, basename } = normalize(filePath);
-  if (isDenied(normalized, basename)) return false;
   if (/^\.github\/workflows\/[^/]+\.ya?ml$/i.test(normalized)) return true;
   return CONFIG_BASENAMES.some((p) => p.test(basename));
 }

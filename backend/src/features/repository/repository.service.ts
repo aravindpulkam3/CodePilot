@@ -11,7 +11,6 @@ export interface UpsertRepoInput {
   isPrivate: boolean;
   defaultBranch: string;
   htmlUrl: string;
-  cloneUrl: string;
   lastPushedAt: string | null;
 }
 
@@ -27,9 +26,7 @@ export interface RepositoryRow {
   is_private: boolean;
   default_branch: string;
   html_url: string;
-  clone_url: string;
   last_pushed_at: string | null;
-  last_synced_at: string;
   last_indexed_sha?: string | null;
   created_at: string;
   updated_at: string;
@@ -41,8 +38,6 @@ export interface RepositoryRow {
  */
 export const upsertRepositories = async (userId: string, repos: UpsertRepoInput[]) => {
   if (repos.length === 0) return [];
-
-  const now = new Date();
 
   const queryText = `
     INSERT INTO repositories (
@@ -56,13 +51,11 @@ export const upsertRepositories = async (userId: string, repos: UpsertRepoInput[
       is_private,
       default_branch,
       html_url,
-      clone_url,
       last_pushed_at,
-      last_synced_at,
       created_at,
       updated_at
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
     ON CONFLICT (user_id, github_repo_id)
     DO UPDATE SET
       source_type = EXCLUDED.source_type,
@@ -73,9 +66,7 @@ export const upsertRepositories = async (userId: string, repos: UpsertRepoInput[
       is_private = EXCLUDED.is_private,
       default_branch = EXCLUDED.default_branch,
       html_url = EXCLUDED.html_url,
-      clone_url = EXCLUDED.clone_url,
       last_pushed_at = EXCLUDED.last_pushed_at,
-      last_synced_at = EXCLUDED.last_synced_at,
       updated_at = NOW()
       RETURNING *, (xmax = 0) AS is_new_record;
   `;
@@ -93,9 +84,7 @@ export const upsertRepositories = async (userId: string, repos: UpsertRepoInput[
       repo.isPrivate,
       repo.defaultBranch,
       repo.htmlUrl,
-      repo.cloneUrl,
       repo.lastPushedAt,
-      now,
     ];
 
     return pool.query(queryText, values);
