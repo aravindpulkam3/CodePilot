@@ -2,6 +2,8 @@ import { Worker } from "bullmq";
 import { createQueueConnection } from "./config/redis.js";
 import { repositorySyncService } from "./features/repository/repositorySync.service.js";
 import { repositoryIndexer } from "./features/repository/repositoryIndex.service.js";
+import { pool } from "./config/db.js";
+import { safeErrorDetails } from "./shared/utils/safeErrorDetails.js";
 
 /**
  * BullMQ Worker Entry Point
@@ -11,31 +13,18 @@ import { repositoryIndexer } from "./features/repository/repositoryIndex.service
 
 console.log("Starting BullMQ Workers...");
 
-// Jobs are durable by design — that's the point of a queue instead of doing this inline on the request (the worker can restart/be down without losing work). But a job queued while the worker was down has no natural upper bound on how long it waits; without this, restarting the worker after it's been off for a while fires every backlog request at once, including ones tied to a browser session nobody's looking at anymore. Anything older than this just gets skipped instead of silently running late.
-const MAX_JOB_AGE_MS = 60 * 60 * 1000; // 1 hour
-
-function isTooStale(job: { id?: string; timestamp: number }): boolean {
-  const ageMs = Date.now() - job.timestamp;
-  if (ageMs > MAX_JOB_AGE_MS) {
-    console.warn(
-      `[Worker] Skipping job ${job.id} — queued ${Math.round(ageMs / 60000)} min ago, older than the ${MAX_JOB_AGE_MS / 60000} min limit.`,
-    );
-    return true;
-  }
-  return false;
-}
+// Durable jobs are not discarded just because the worker was offline.
+// Repository run tokens fence superseded jobs instead of an age cutoff.
 
 // 1. Sync Worker: Pulls from RepositorySync queue
 const syncWorker = new Worker(
   "RepositorySync",
   async (job) => {
-    if (isTooStale(job)) return { status: "skipped_stale" };
-
     const { clerkUserId, repositoryId } = job.data;
     console.log(
       `[SyncWorker] Processing Job ${job.id} for Repo ${repositoryId}`,
     );
-    await repositorySyncService.processSyncJob(clerkUserId, repositoryId);
+    await repositorySyncService.processSyncJob(clerkUserId, repositoryId, job.id!);
   },
   {
     connection: createQueueConnection(),
@@ -47,8 +36,18 @@ syncWorker.on("completed", (job) => {
   console.log(`[SyncWorker] Completed Job ${job.id}`);
 });
 
-syncWorker.on("failed", (job, err) => {
-  console.error(`[SyncWorker] Failed Job ${job?.id}:`, err);
+syncWorker.on("failed", async (job, err) => {
+  console.error(`[SyncWorker] Failed job ${job?.id}:`, safeErrorDetails(err));
+  if (!job) return;
+  try {
+    if (await job.getState() !== "failed") return;
+    await pool.query(
+      "UPDATE repositories SET indexing_status = 'FAILED' WHERE id = $1 AND indexing_run_id = $2 AND indexing_status IN ('SYNCING', 'INDEXING')",
+      [job.data.repositoryId, job.id],
+    );
+  } catch (statusError) {
+    console.error("[SyncWorker] Could not record terminal failure:", safeErrorDetails(statusError));
+  }
 });
 
 // Connection-level errors (bad Redis config, dropped connection, etc.) don't
@@ -66,9 +65,9 @@ syncWorker.on("ready", () => {
 const indexWorker = new Worker(
   "RepositoryIndex",
   async (job) => {
-    if (isTooStale(job)) return { status: "skipped_stale" };
-
-    const { repositoryId, latestSha, filesToIndex } = job.data;
+    const { repositoryId, latestSha, filesToIndex, runId, chunkIndex } = job.data;
+    // Pre-upgrade jobs have no fence/receipt identity. Migration makes their repos retryable.
+    if (!runId || !Number.isInteger(chunkIndex)) return { status: "skipped_legacy" };
     console.log(
       `[IndexWorker] Processing Chunk Job ${job.id} for Repo ${repositoryId}`,
     );
@@ -76,6 +75,8 @@ const indexWorker = new Worker(
       repositoryId,
       latestSha,
       filesToIndex,
+      runId,
+      chunkIndex,
     );
   },
   {
@@ -88,8 +89,26 @@ indexWorker.on("completed", (job) => {
   console.log(`[IndexWorker] Completed Job ${job.id}`);
 });
 
-indexWorker.on("failed", (job, err) => {
-  console.error(`[IndexWorker] Failed Job ${job?.id}:`, err);
+indexWorker.on("failed", async (job, err) => {
+  console.error(
+    `[IndexWorker] Failed Job ${job?.id} for repo ${job?.data.repositoryId}:`,
+    safeErrorDetails(err),
+  );
+  if (!job) return;
+  try {
+    // BullMQ also emits failed when scheduling a retry. Leave those jobs INDEXING.
+    if ((await job.getState()) !== "failed") return;
+    await pool.query(
+      "UPDATE repositories SET indexing_status = 'FAILED' WHERE id = $1 AND indexing_run_id = $2 AND indexing_status = 'INDEXING'",
+      [job.data.repositoryId, job.data.runId],
+    );
+  } catch (statusError) {
+    // The original failure remains on the BullMQ job even if this update fails.
+    console.error(
+      `[IndexWorker] Could not record failure for job ${job.id}, repo ${job.data.repositoryId}:`,
+      safeErrorDetails(statusError),
+    );
+  }
 });
 
 indexWorker.on("error", (err) => {

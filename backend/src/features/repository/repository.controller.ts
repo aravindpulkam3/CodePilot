@@ -1,3 +1,5 @@
+import { safeErrorDetails } from "../../shared/utils/safeErrorDetails.js";
+import { isUuid } from "../../shared/utils/inputValidation.js";
 // src/controllers/repositoryController.ts
 import { Request, Response } from 'express';
 import * as repositoryService from './repository.service.js';
@@ -6,7 +8,8 @@ import { pool } from '../../config/db.js';
 export const getRepositoryById = async (req: Request, res: Response) => {
   try {
     const repoId = req.params.repositoryId as string;
-    const repo = await repositoryService.findRepositoryById(repoId);
+    if (!isUuid(repoId)) return res.status(400).json({ error: "repositoryId must be a UUID" });
+    const repo = await repositoryService.findOwnedRepositoryById(repoId, req.dbUser!.id);
 
     if (!repo) {
       return res.status(404).json({ error: 'Repository not found.' });
@@ -14,6 +17,7 @@ export const getRepositoryById = async (req: Request, res: Response) => {
 
     return res.status(200).json(repo);
   } catch (error) {
+    console.error("Error fetching repository details:", { repositoryId: req.params.repositoryId, ...safeErrorDetails(error) });
     return res.status(500).json({ error: 'Failed to retrieve repository details.' });
   }
 };
@@ -21,13 +25,14 @@ export const getRepositoryById = async (req: Request, res: Response) => {
 export const getSyncStatus = async (req: Request, res: Response) => {
   try {
     const repositoryId = req.params.repositoryId as string;
+    if (!isUuid(repositoryId)) return res.status(400).json({ error: "repositoryId must be a UUID" });
 
     const { rows } = await pool.query(
       `SELECT indexing_status, searchable_at,
               index_files_done, index_files_total,
               index_chunks_done, index_chunks_total
-       FROM repositories WHERE id = $1`,
-      [repositoryId],
+       FROM repositories WHERE id = $1 AND user_id = $2`,
+      [repositoryId, req.dbUser!.id],
     );
 
     if (rows.length === 0) {
@@ -57,6 +62,7 @@ export const getSyncStatus = async (req: Request, res: Response) => {
 export const startWorking = async (req: Request, res: Response) => {
   try {
     const repositoryId = req.params.repositoryId as string;
+    if (!isUuid(repositoryId)) return res.status(400).json({ error: "repositoryId must be a UUID" });
     const appUserId = req.dbUser!.id;
     const clerkUserId = req.dbUser!.clerkId;
 
@@ -91,6 +97,7 @@ export const startWorking = async (req: Request, res: Response) => {
 export const stopWorking = async (req: Request, res: Response) => {
   try {
     const repositoryId = req.params.repositoryId as string;
+    if (!isUuid(repositoryId)) return res.status(400).json({ error: "repositoryId must be a UUID" });
     const appUserId = req.dbUser!.id;
 
     const repo = await repositoryService.findRepositoryById(repositoryId);

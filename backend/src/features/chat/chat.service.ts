@@ -1,3 +1,4 @@
+import { assertOwnedContext } from "../../shared/utils/ownership.js";
 import { pool } from "../../config/db.js";
 import { llmService, LLMMessage, ollamaService } from "../../infrastructure/llm/llm.service.js";
 import {
@@ -25,13 +26,8 @@ export class ChatService {
     REVIEW_CHAT: new ReviewContextProvider(),
     REVIEW: new ReviewContextProvider(), // alias
     ISSUE_CHAT: new IssueContextProvider(),
-    // INTERVIEW deliberately absent: interview.service.ts (POST /interview/*)
-    // is the sole implementation — see okay-so-the-thing-enumerated-crab.md.
-    // The old InterviewContextProvider did zero retrieval, read an orphaned
-    // table (interview_sessions) that Path A never wrote to, and crashed on
-    // resume for any session it had itself created. An INTERVIEW-typed chat
-    // stream now falls back to REPO_QA below, which is at least retrieval-
-    // backed rather than a silent no-op.
+    // INTERVIEW deliberately absent: interview.service.ts owns it, and
+    // streamMessage rejects any type without a provider.
   };
 
   /**
@@ -57,6 +53,7 @@ export class ChatService {
   }): Promise<ChatSessionRecord> {
     const { userId, repositoryId, reviewId, findingId, title } = params;
     const normalizedType = this.normalizeType(params.type);
+    await assertOwnedContext(userId, { repositoryId, reviewId, findingId });
 
     // 1. For ISSUE_CHAT, check if a session already exists for this finding & user
     if (normalizedType === "ISSUE_CHAT" && findingId) {
@@ -97,11 +94,7 @@ export class ChatService {
 
     const session: ChatSessionRecord = rows[0];
 
-    // interview_sessions is unused — interview.service.ts's startInterview
-    // (POST /interview/start) is the sole interview creation path and keeps
-    // all state in this row's own `state` JSONB instead.
-
-    // 4. Log the creation activity
+    // 3. Log the creation activity
     await activityLogService.logEvent({
       userId,
       repositoryId: repositoryId || null,
@@ -126,6 +119,7 @@ export class ChatService {
     if (rows.length === 0) {
       throw new Error(`Chat session not found: ${sessionId}`);
     }
+    await assertOwnedContext(userId, { repositoryId: rows[0].repository_id, reviewId: rows[0].review_id, findingId: rows[0].finding_id });
     return rows[0];
   }
 
@@ -170,13 +164,14 @@ export class ChatService {
     // another user's transcript — including interview transcripts, since
     // this is the endpoint the interview UI uses for history.
     const { rows: owned } = await pool.query(
-      `SELECT 1 FROM chat_sessions WHERE id = $1 AND user_id = $2`,
+      `SELECT repository_id, review_id, finding_id FROM chat_sessions WHERE id = $1 AND user_id = $2`,
       [sessionId, userId]
     );
     if (owned.length === 0) {
       throw new Error(`Chat session not found: ${sessionId}`);
     }
 
+    await assertOwnedContext(userId, { repositoryId: owned[0].repository_id, reviewId: owned[0].review_id, findingId: owned[0].finding_id });
     const { rows } = await pool.query(
       `SELECT id, role, content, metadata, created_at
        FROM chat_messages
@@ -220,7 +215,12 @@ export class ChatService {
 
   async clearMessages(sessionId: string, userId: string): Promise<void> {
     // Validate ownership
-    await this.getSession(sessionId, userId);
+    const session = await this.getSession(sessionId, userId);
+    // Wiping an interview transcript would leave its state pointing at
+    // questions that no longer exist.
+    if (session.type === "INTERVIEW") {
+      throw new Error("INTERVIEW_SESSION_READ_ONLY");
+    }
     await pool.query(`DELETE FROM chat_messages WHERE session_id = $1`, [
       sessionId,
     ]);
@@ -228,9 +228,10 @@ export class ChatService {
 
   /**
    * Universal streaming orchestrator:
+   * 0. Resolves the session type's provider (rejects unsupported types before any write)
    * 1. Saves user message
    * 2. Fetches conversation history (reused below for both retrieval and the LLM prompt)
-   * 3. Resolves context from the appropriate provider
+   * 3. Resolves context from the provider
    * 4. Streams response via LLM service
    * 5. Saves assistant message & executes after-hooks
    */
@@ -243,6 +244,13 @@ export class ChatService {
     // caller that doesn't pass this explicitly keeps existing behavior.
     isNewSession: boolean = true
   ): Promise<void> {
+    // 0. Resolve the provider first: an unsupported type (INTERVIEW included)
+    // must fail before anything is written, never fall back to REPO_QA.
+    const provider = this.providers[this.normalizeType(session.type)];
+    if (!provider) {
+      throw new Error(`Unsupported chat session type: ${session.type}`);
+    }
+
     // 1. Save user turn
     await this.saveMessage(session.id, "user", userMessage);
 
@@ -274,9 +282,6 @@ export class ChatService {
     }));
 
     // 3. Fetch context from the registered provider
-    const normType = this.normalizeType(session.type);
-    const provider = this.providers[normType] || this.providers["REPO_QA"];
-
     const context = await provider.buildContext(session, userMessage, clerkUserId, {
       isNewSession,
       recentHistory,

@@ -61,9 +61,8 @@ Listing/import saves metadata. Start Working records membership and enqueues syn
 | `repository_embeddings` | Code and documentation chunks; repo FK, commit SHA, path/symbol/line metadata, enriched content/hash, `VECTOR(3072)`; unique `(repository_id, file_path, content_hash)` |
 | `repository_summaries` | JSONB and optional `VECTOR(3072)` for file/component/architecture/repository nodes; unique `(repository_id, node_type, node_key)`; `parent_key` encodes hierarchy. **No repository FK/cascade is declared here.** |
 | `repository_relationships` | Repo FK; file-key graph edges, metadata, composite uniqueness. Schema allows `IMPORTS` and `RELATED_COMPONENT`; current writer emits only `IMPORTS`. |
-| `reviews`, `review_findings`, `review_messages` | Reviews reference repository and PR number/head SHA; findings and original prompt/AI response reference review UUID. `is_latest` index is not unique. |
-| `chat_sessions`, `chat_messages` | Sessions owned by user, optional repository/review/finding FKs, type/status/JSONB state; messages hold content and metadata including sources/evaluations |
-| `interview_sessions` | Legacy table still created by schema; active interview service does not use it |
+| `reviews`, `review_findings` | Reviews reference repository and PR number/head SHA and keep the full structured LLM output in `raw_response`; findings reference review UUID. `is_latest` index is not unique. |
+| `chat_sessions`, `chat_messages` | Sessions owned by user, optional repository/review/finding FKs, type/status/JSONB state; messages hold content and metadata including sources/evaluations. One model for all four types: `REPO_QA`/`REVIEW_CHAT`/`ISSUE_CHAT` go through `chatService`, `INTERVIEW` only through `interview.service.ts` (generic stream/clear reject it; interview endpoints accept only `type = 'INTERVIEW'`) |
 | `activity_logs` | User activity with JSONB metadata; repository deletion sets its repository FK null |
 
 Most ownership FKs cascade. A partial unique index allows one `ISSUE_CHAT` per `(finding_id, user_id)`; select-then-insert can still race. Summary/graph keys are paths/module names, not UUID FKs. No persisted full AST/symbol table or source snapshot exists.
@@ -137,7 +136,7 @@ Use `listSummariesByType()` for singleton/unranked summaries; never invent a pla
 - `contextBudget.service.ts` estimates tokens as characters/4, defaults to 15,000 tokens of retrieved code; changed code first, then remaining graph/test/semantic quotas 35%/20%/45% with overflow redistribution. Retrieval trace records timing, counts, budget and dropped candidates.
 - Docs use cleaned title/description, basename fallback, or null to skip search. Prompt combines default-branch provenance, optional overview, code/docs/diff. Context is not PR-head/merge-base code; its SHA label comes from a pre-JIT-sync row and can lag.
 - Prompt ignores lockfiles, root dist/build/coverage, minified assets and listed binary/media extensions. Patch budget is 80,000 characters and documentation 6,000 characters, separately from retrieval budget. No unified total context cap.
-- Structured result: summary, overall score, risk, findings with severity/category/path/line/title/description/recommendation/optional suggestion. Transaction demotes prior `is_latest`, inserts review/findings, and saves original prompt plus JSON result in `review_messages`.
+- Structured result: summary, overall score, risk, findings with severity/category/path/line/title/description/recommendation/optional suggestion. Transaction demotes prior `is_latest` and inserts the review (JSON result in `raw_response`) and its findings.
 - GET returns `{latest,history}` with finding IDs; POST findings lack IDs, requiring frontend refetch. UI marks outdated by comparing review/PR head SHAs.
 - `REVIEW_CHAT`/`ISSUE_CHAT` load stored review/findings, without new repository retrieval or original diff. ISSUE_CHAT means review finding, not GitHub Issues. All unified chat streams use Ollama.
 

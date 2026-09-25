@@ -1,3 +1,4 @@
+import { safeErrorDetails } from "../../shared/utils/safeErrorDetails.js";
 import { pool } from "../../config/db.js";
 import {
   findRepositoryById,
@@ -285,7 +286,7 @@ export class ReviewService {
       // 1. Fetch Repository
       const repoDetails = await findRepositoryById(repositoryId);
       if (!repoDetails) {
-        throw new Error("Repository not found in database.");
+        throw new Error("REPO_NOT_FOUND");
       }
       // 2. Fetch GitHub PR Data — always fresh, never cached (correctness-critical: review generation must see the latest commit, not a stale diff).
       const prDetails = await githubService.getPullRequestDetails(
@@ -380,16 +381,6 @@ export class ReviewService {
         await Promise.all(findingQueries);
       }
 
-      // D. Insert Audit Log (Review Messages)
-      const userPrompt = messages.find((m) => m.role === "user")?.content || "";
-      await client.query(
-        `
-        INSERT INTO review_messages (review_id, role, content)
-        VALUES ($1, 'user', $2), ($1, 'ai', $3);
-      `,
-        [newReviewId, userPrompt, JSON.stringify(aiReview)],
-      );
-
       await client.query("COMMIT");
 
       // Persisted successfully — safe to invalidate dashboard caches that
@@ -403,9 +394,14 @@ export class ReviewService {
 
       return { reviewId: newReviewId, ...aiReview };
     } catch (error) {
-      await client.query("ROLLBACK");
-      console.error("AI Review Generation Failed:", error);
-      throw new Error("Failed to generate and save code review.");
+      console.error("AI Review Generation Failed:", { repositoryId, pullNumber, ...safeErrorDetails(error) });
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error("Review rollback failed:", { repositoryId, pullNumber, ...safeErrorDetails(rollbackError) });
+      }
+      // Preserve readiness and upstream errors for the controller's existing handling.
+      throw error;
     } finally {
       client.release();
     }

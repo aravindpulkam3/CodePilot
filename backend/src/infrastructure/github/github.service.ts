@@ -1,3 +1,4 @@
+import { safeErrorDetails } from "../../shared/utils/safeErrorDetails.js";
 import { clerkClient } from '@clerk/express';
 import axios from 'axios';
 import * as repositoryService from '../../features/repository/repository.service.js';
@@ -24,7 +25,7 @@ export const getGitHubAccessToken = async (clerkUserId: string): Promise<string>
     if (error.message === 'GITHUB_NOT_CONNECTED') {
       throw error;
     }
-    console.error(`[GitHub] Clerk OAuth token lookup failed for user ${clerkUserId}:`, error);
+    console.error(`[GitHub] Clerk OAuth token lookup failed for user ${clerkUserId}:`, safeErrorDetails(error));
     throw new Error('CLERK_API_FAILURE');
   }
 };
@@ -43,7 +44,11 @@ export const getGitHubUserProfile = async (clerkUserId: string) => {
     });
     return data;
   } catch (error: any) {
-    throw new Error('GITHUB_API_FAILURE');
+    console.error("[GitHub] profile failed:", { clerkUserId, ...safeErrorDetails(error) });
+    if (axios.isAxiosError(error)) {
+      throw new Error(error.response?.status === 404 ? "GITHUB_NOT_FOUND" : "GITHUB_API_FAILURE");
+    }
+    throw error;
   }
 };
 
@@ -99,7 +104,11 @@ export const syncAndGetGitHubRepositories = async (clerkUserId: string, appUserI
     if (error.message === 'GITHUB_NOT_CONNECTED' || error.message === 'CLERK_API_FAILURE') {
       throw error;
     }
-    throw new Error('GITHUB_API_FAILURE');
+    console.error("[GitHub] repository sync failed:", { clerkUserId, ...safeErrorDetails(error) });
+    if (axios.isAxiosError(error)) {
+      throw new Error(error.response?.status === 404 ? "GITHUB_NOT_FOUND" : "GITHUB_API_FAILURE");
+    }
+    throw error;
   }
 };
 
@@ -134,7 +143,11 @@ export const getRepositoryPullRequests = async (clerkUserId: string, repoId: str
       html_url: pr.html_url,
     }));
   } catch (error: any) {
-    throw new Error('GITHUB_API_FAILURE');
+    console.error("[GitHub] pull request list failed:", { repoId, ...safeErrorDetails(error) });
+    if (axios.isAxiosError(error)) {
+      throw new Error(error.response?.status === 404 ? "GITHUB_NOT_FOUND" : "GITHUB_API_FAILURE");
+    }
+    throw error;
   }
 };
 
@@ -150,61 +163,69 @@ export const getPullRequestDetails = async (
 
   const repo = preFetchedRepo ?? await repositoryService.findRepositoryById(repositoryId);
   if (!repo) {
-    throw new Error(`Repository with ID ${repositoryId} not found.`);
+    throw new Error("REPO_NOT_FOUND");
   }
 
-  const prResponse = await axios.get(
-    `https://api.github.com/repos/${repo.owner}/${repo.name}/pulls/${pullNumber}`,
-    {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/vnd.github.v3+json",
+  try {
+    const prResponse = await axios.get(
+      `https://api.github.com/repos/${repo.owner}/${repo.name}/pulls/${pullNumber}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github.v3+json",
+        },
+      }
+    );
+
+    const filesResponse = await axios.get(
+      `https://api.github.com/repos/${repo.owner}/${repo.name}/pulls/${pullNumber}/files`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github.v3+json",
+        },
+      }
+    );
+
+    const prData = prResponse.data;
+
+    return {
+      number: prData.number,
+      title: prData.title,
+      description: prData.body,
+      state: prData.state,
+      merged: prData.merged,
+      head_sha: prData.head.sha,
+      base_sha: prData.base?.sha,
+      base_ref: prData.base?.ref,
+      author: {
+        login: prData.user.login,
+        avatar_url: prData.user.avatar_url,
       },
+      additions: prData.additions,
+      deletions: prData.deletions,
+      changed_files_count: prData.changed_files,
+      commits_count: prData.commits,
+      created_at: prData.created_at,
+      updated_at: prData.updated_at,
+      files: filesResponse.data.map((file: any) => ({
+        filename: file.filename,
+        // Present only for renames. The index holds the OLD path, so review
+        // retrieval needs this to find a renamed file's callers and tests.
+        previous_filename: file.previous_filename,
+        status: file.status,
+        additions: file.additions,
+        deletions: file.deletions,
+        patch: file.patch || "",
+      })),
+    };
+  } catch (error) {
+    console.error("[GitHub] Pull request details failed:", { repositoryId, pullNumber, ...safeErrorDetails(error) });
+    if (axios.isAxiosError(error)) {
+      throw new Error(error.response?.status === 404 ? "GITHUB_NOT_FOUND" : "GITHUB_API_FAILURE");
     }
-  );
-
-  const filesResponse = await axios.get(
-    `https://api.github.com/repos/${repo.owner}/${repo.name}/pulls/${pullNumber}/files`,
-    {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/vnd.github.v3+json",
-      },
-    }
-  );
-
-  const prData = prResponse.data;
-
-  return {
-    number: prData.number,
-    title: prData.title,
-    description: prData.body,
-    state: prData.state,
-    merged: prData.merged,
-    head_sha: prData.head.sha,
-    base_sha: prData.base?.sha,
-    base_ref: prData.base?.ref,
-    author: {
-      login: prData.user.login,
-      avatar_url: prData.user.avatar_url,
-    },
-    additions: prData.additions,
-    deletions: prData.deletions,
-    changed_files_count: prData.changed_files,
-    commits_count: prData.commits,
-    created_at: prData.created_at,
-    updated_at: prData.updated_at,
-    files: filesResponse.data.map((file: any) => ({
-      filename: file.filename,
-      // Present only for renames. The index holds the OLD path, so review
-      // retrieval needs this to find a renamed file's callers and tests.
-      previous_filename: file.previous_filename,
-      status: file.status,
-      additions: file.additions,
-      deletions: file.deletions,
-      patch: file.patch || "",
-    })),
-  };
+    throw error;
+  }
 };
 
 /**

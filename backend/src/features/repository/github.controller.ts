@@ -1,26 +1,31 @@
+import { safeErrorDetails } from "../../shared/utils/safeErrorDetails.js";
+import { isUuid, positiveInteger, parseGitHubRepositoryUrl } from "../../shared/utils/inputValidation.js";
 import { Request, Response } from 'express';
 // Adjust the import path for getAuth based on your Clerk setup (e.g., '@clerk/express' for v5)
 import { getAuth } from '@clerk/express';
 import { getGitHubUserProfile, getPullRequestDetails, getRepositoryPullRequests, syncAndGetGitHubRepositories, getGitHubAccessToken } from '../../infrastructure/github/github.service.js';
-import { createPublicRepository, findRepositoriesByUserId } from './repository.service.js';
+import { createPublicRepository, findRepositoriesByUserId, findOwnedRepositoryById } from './repository.service.js';
 import axios from 'axios';
 import { userService } from '../user/user.service.js';
 import { withCache } from '../../shared/utils/cache.js';
 
 const handleGitHubError = (res: Response, error: any) => {
-  if (error.message === 'GITHUB_NOT_CONNECTED') {
+  if (error?.message === 'REPO_NOT_FOUND' || error?.message === 'GITHUB_NOT_FOUND') {
+    return res.status(404).json({ error: 'GitHub repository or resource not found.' });
+  }
+  if (error?.message === 'GITHUB_NOT_CONNECTED') {
     return res.status(400).json({ 
       error: 'GitHub account is not connected to this user profile.' 
     });
   }
   
-  if (error.message === 'CLERK_API_FAILURE') {
+  if (error?.message === 'CLERK_API_FAILURE') {
     return res.status(502).json({ 
       error: 'Failed to retrieve OAuth token from Clerk.' 
     });
   }
 
-  if (error.message === 'GITHUB_API_FAILURE') {
+  if (error?.message === 'GITHUB_API_FAILURE') {
     return res.status(502).json({ 
       error: 'Failed to communicate with the GitHub API.' 
     });
@@ -37,6 +42,7 @@ export const getUser = async (req: Request, res: Response) => {
     return res.status(200).json(profile);
     
   } catch (error: any) {
+    console.error("[GitHub] getUser failed:", { repositoryId: req.params.repositoryId, ...safeErrorDetails(error) });
     return handleGitHubError(res, error);
   }
 };
@@ -67,13 +73,8 @@ export const getRepositories = async (req: Request, res: Response) => {
     return res.status(200).json(repositories);
     
   } catch (error: any) {
-    if (error.message === 'GITHUB_NOT_CONNECTED') {
-      return res.status(400).json({ error: 'GitHub account is not connected.' });
-    }
-    if (error.message === 'GITHUB_API_FAILURE') {
-      return res.status(502).json({ error: 'Failed to communicate with GitHub API.' });
-    }
-    return res.status(500).json({ error: 'An unexpected error occurred.' });
+    console.error("[GitHub] getRepositories failed:", { repositoryId: req.params.repositoryId, ...safeErrorDetails(error) });
+    return handleGitHubError(res, error);
   }
 };
 
@@ -81,16 +82,18 @@ export const getPullRequests = async (req: Request, res: Response) => {
   try {
     const clerkUserId = req.dbUser!.clerkId;
     const repoId = req.params.repositoryId as string;
+    if (!isUuid(repoId)) return res.status(400).json({ error: "repositoryId must be a UUID" });
 
+    if (!await findOwnedRepositoryById(repoId, req.dbUser!.id)) {
+      return res.status(404).json({ error: "Repository not found." });
+    }
     const pulls = await withCache(`repo:${repoId}:pulls`, 90, () =>
       getRepositoryPullRequests(clerkUserId, repoId),
     );
     return res.status(200).json(pulls);
   } catch (error: any) {
-    if (error.message === 'REPO_NOT_FOUND') {
-      return res.status(404).json({ error: 'Repository not found.' });
-    }
-    return res.status(502).json({ error: 'Failed to fetch pull requests from GitHub.' });
+    console.error("[GitHub] getPullRequests failed:", { repositoryId: req.params.repositoryId, ...safeErrorDetails(error) });
+    return handleGitHubError(res, error);
   }
 };
 
@@ -98,37 +101,31 @@ export const getPullRequestDetail = async (req: Request, res: Response) => {
   try {
      const clerkUserId = req.dbUser!.clerkId
     const repoId = req.params.repositoryId as string;
-    const pullNumber = parseInt(req.params.pullNumber as string, 10);
+    if (!isUuid(repoId)) return res.status(400).json({ error: "repositoryId must be a UUID" });
+    const pullNumber = positiveInteger(req.params.pullNumber);
+    if (pullNumber === null) return res.status(400).json({ error: "pullNumber must be a positive integer" });
 
+    if (!await findOwnedRepositoryById(repoId, req.dbUser!.id)) {
+      return res.status(404).json({ error: "Repository not found." });
+    }
     const prDetail = await withCache(`repo:${repoId}:pr:${pullNumber}:details`, 90, () =>
       getPullRequestDetails(clerkUserId, repoId, pullNumber),
     );
     return res.status(200).json(prDetail);
   } catch (error: any) {
-    if (error.message === 'REPO_NOT_FOUND') {
-      return res.status(404).json({ error: 'Repository not found.' });
-    }
-    return res.status(502).json({ error: 'Failed to fetch pull request details from GitHub.' });
+    console.error("[GitHub] getPullRequestDetail failed:", { repositoryId: req.params.repositoryId, ...safeErrorDetails(error) });
+    return handleGitHubError(res, error);
   }
 };
 
 export const importPublicRepository = async (req: Request, res: Response) => {
   try {
     const appUserId = req.dbUser!.id;
-    const { repositoryUrl } = req.body;
-
-    if (!repositoryUrl) {
-      return res.status(400).json({ error: 'Repository URL is required.' });
-    }
-
-    // Basic validation & extraction of owner/repo
-    const match = repositoryUrl.match(/github\.com\/([^\/]+)\/([^\/\.]+)/);
-    if (!match) {
+    const parsed = parseGitHubRepositoryUrl(req.body?.repositoryUrl);
+    if (!parsed) {
       return res.status(400).json({ error: 'Invalid GitHub repository URL.' });
     }
-
-    const owner = match[1];
-    const repoName = match[2];
+    const { owner, repoName } = parsed;
 
     // Check if repository exists and is public
     let repoData;
@@ -181,7 +178,10 @@ export const importPublicRepository = async (req: Request, res: Response) => {
       }
     });
   } catch (error: any) {
-    console.error('Error importing public repository:', error);
+    console.error('Error importing public repository:', safeErrorDetails(error));
+    if (axios.isAxiosError(error)) {
+      return res.status(502).json({ error: 'Failed to communicate with the GitHub API.' });
+    }
     return res.status(500).json({ error: 'An unexpected error occurred during import.' });
   }
 };

@@ -1,4 +1,5 @@
 import { pool } from "../../config/db.js";
+import { safeErrorDetails } from "../../shared/utils/safeErrorDetails.js";
 import { astChunker } from "../../infrastructure/chunking/astChunking.service.js";
 import { documentationChunker } from "../../infrastructure/chunking/documentationChunking.service.js";
 import { isConfigFile, isDocumentationFile } from "../../shared/utils/documentationPaths.js";
@@ -39,20 +40,25 @@ export class RepositoryIndexingService {
     repositoryId: string,
     commitSha: string,
     changedFiles: FileChange[],
+    runId: string,
+    chunkIndex: number,
   ) {
     console.log(
       `[Index] processRepositoryUpdate started for repo ${repositoryId}: ${changedFiles.length} file(s).`,
     );
-    await astChunker.init();
 
     // --- STAGE 1: OUTSIDE TRANSACTION (Generation) ---
 
     // Capture consistency snapshot
     const { rows: repoRows } = await pool.query(
-      "SELECT last_indexed_sha, user_id FROM repositories WHERE id = $1",
+      "SELECT last_indexed_sha, user_id, indexing_run_id, indexing_target_sha, completed_index_chunks FROM repositories WHERE id = $1",
       [repositoryId],
     );
-    const snapshotSha = repoRows[0]?.last_indexed_sha;
+    const currentRun = repoRows[0];
+    if (!currentRun || currentRun.indexing_run_id !== runId || currentRun.indexing_target_sha !== commitSha
+      || currentRun.completed_index_chunks.includes(chunkIndex)) return;
+    await astChunker.init();
+    const snapshotSha = currentRun.last_indexed_sha;
     const ownerUserId = repoRows[0]?.user_id;
     console.log(
       `[Index] Snapshot SHA for ${repositoryId}: ${snapshotSha || "(none — initial index)"}.`,
@@ -221,12 +227,14 @@ export class RepositoryIndexingService {
 
       // 1. Verify snapshot
       const { rows: currentRepoRows } = await client.query(
-        "SELECT last_indexed_sha FROM repositories WHERE id = $1",
+        "SELECT last_indexed_sha, indexing_run_id, indexing_target_sha, completed_index_chunks FROM repositories WHERE id = $1 FOR UPDATE",
         [repositoryId],
       );
       const currentSha = currentRepoRows[0]?.last_indexed_sha;
 
-      if (currentSha !== snapshotSha) {
+      const lockedRepo = currentRepoRows[0];
+      if (!lockedRepo || currentSha !== snapshotSha || lockedRepo.indexing_run_id !== runId
+        || lockedRepo.indexing_target_sha !== commitSha || lockedRepo.completed_index_chunks.includes(chunkIndex)) {
         console.warn(
           `[RepositoryIndexingService] Stale generation detected for ${repositoryId}. Aborting transaction.`,
         );
@@ -318,10 +326,11 @@ export class RepositoryIndexingService {
       const { rows: progressRows } = await client.query(
         `UPDATE repositories
          SET index_chunks_done = index_chunks_done + 1,
-             index_files_done = index_files_done + $2
+             index_files_done = index_files_done + $2,
+             completed_index_chunks = array_append(completed_index_chunks, $3)
          WHERE id = $1
          RETURNING index_chunks_done, index_chunks_total`,
-        [repositoryId, changedFiles.length],
+        [repositoryId, changedFiles.length, chunkIndex],
       );
       const { index_chunks_done: chunksDone, index_chunks_total: chunksTotal } =
         progressRows[0];
@@ -383,19 +392,16 @@ export class RepositoryIndexingService {
         });
       }
     } catch (error) {
-      await client.query("ROLLBACK");
       console.error(
         `[Index] Error during indexing transaction for ${repositoryId}:`,
-        error,
+        safeErrorDetails(error),
       );
       try {
-        await pool.query(
-          `UPDATE repositories SET indexing_status = 'FAILED' WHERE id = $1`,
-          [repositoryId],
-        );
+        await client.query("ROLLBACK");
       } catch (e) {
-        console.error("Failed to update error status:", e);
+        console.error(`[Index] Rollback failed for ${repositoryId}:`, safeErrorDetails(e));
       }
+      // The worker marks FAILED only after BullMQ has stopped retrying.
       throw error;
     } finally {
       client.release();

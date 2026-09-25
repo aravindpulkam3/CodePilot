@@ -1,9 +1,9 @@
-import { Response,Request } from "express";
+import { safeErrorDetails } from "../../shared/utils/safeErrorDetails.js";
+import { Response, Request } from "express";
 import { pool } from "../../config/db.js"; // Your pg pool
 import axios from "axios";
 import { getGitHubAccessToken } from "../../infrastructure/github/github.service.js"; // Your token fetcher
 import { withCache } from "../../shared/utils/cache.js";
-
 
 /**
  * 1. Get Recent Work
@@ -13,8 +13,11 @@ export const getRecentWork = async (req: Request, res: Response) => {
   try {
     const userId = req.dbUser!.id;
 
-    const formattedWork = await withCache(`user:${userId}:dashboard:recent-work`, 300, async () => {
-      const query = `
+    const formattedWork = await withCache(
+      `user:${userId}:dashboard:recent-work`,
+      300,
+      async () => {
+        const query = `
         SELECT 
           r.id, 
           'REVIEW' as type, 
@@ -49,19 +52,20 @@ export const getRecentWork = async (req: Request, res: Response) => {
         ORDER BY "lastAccessedAt" DESC NULLS LAST
         LIMIT 5;
       `;
-      const { rows } = await pool.query(query, [userId]);
+        const { rows } = await pool.query(query, [userId]);
 
-      return rows.map(row => ({
-        id: row.id,
-        type: row.type,
-        repositoryId: row.repositoryId,
-        repositoryName: row.repositoryName || "Unknown",
-        title: row.title,
-        timeAgo: calculateTimeAgo(row.lastAccessedAt),
-        route: row.route,
-        lastAccessedAt: row.lastAccessedAt
-      }));
-    });
+        return rows.map((row) => ({
+          id: row.id,
+          type: row.type,
+          repositoryId: row.repositoryId,
+          repositoryName: row.repositoryName || "Unknown",
+          title: row.title,
+          timeAgo: calculateTimeAgo(row.lastAccessedAt),
+          route: row.route,
+          lastAccessedAt: row.lastAccessedAt,
+        }));
+      },
+    );
 
     res.json(formattedWork);
   } catch (error) {
@@ -69,7 +73,6 @@ export const getRecentWork = async (req: Request, res: Response) => {
     res.status(500).json({ error: "Internal Server Error" });
   }
 };
-
 
 /**
  * 2. Get Pending PRs
@@ -81,35 +84,58 @@ export const getPendingPRs = async (req: Request, res: Response) => {
     const userId = req.dbUser!.id;
     const token = await getGitHubAccessToken(clerkUserId);
 
-    const prs = await withCache(`user:${userId}:dashboard:pending-prs`, 300, async () => {
-      // Fetch PRs where the user is requested for review or PRs they opened
-      const githubQuery = `is:pr is:open author:@me`; 
-      const { data } = await axios.get(`https://api.github.com/search/issues?q=${encodeURIComponent(githubQuery)}`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: "application/vnd.github.v3+json",
-        },
-      });
+    const prs = await withCache(
+      `user:${userId}:dashboard:pending-prs`,
+      300,
+      async () => {
+        // Fetch PRs where the user is requested for review or PRs they opened
+        const githubQuery = `is:pr is:open author:@me`;
+        const { data } = await axios.get(
+          `https://api.github.com/search/issues?q=${encodeURIComponent(githubQuery)}`,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: "application/vnd.github.v3+json",
+            },
+          },
+        );
 
-      return data.items.slice(0, 4).map((pr: any) => ({
-        id: pr.id,
-        number: pr.number,
-        title: pr.title,
-        repositoryName: pr.repository_url.split("/").slice(-1)[0], // extracts repo name from URL
-        author: pr.user.login,
-        authorAvatarUrl: pr.user.avatar_url,
-        timeAgo: calculateTimeAgo(new Date(pr.created_at)),
-        status: pr.draft ? "draft" : "open",
-      }));
-    });
+        return data.items.slice(0, 4).map((pr: any) => ({
+          id: pr.id,
+          number: pr.number,
+          title: pr.title,
+          repositoryName: pr.repository_url.split("/").slice(-1)[0], // extracts repo name from URL
+          author: pr.user.login,
+          authorAvatarUrl: pr.user.avatar_url,
+          timeAgo: calculateTimeAgo(new Date(pr.created_at)),
+          status: pr.draft ? "draft" : "open",
+        }));
+      },
+    );
 
     res.json(prs);
   } catch (error) {
-    console.error("Error fetching pending PRs:", error);
+    console.error("Error fetching pending PRs:", {
+      userId: req.dbUser!.id,
+      ...safeErrorDetails(error),
+    });
+    const message = error instanceof Error ? error.message : undefined;
+    if (message === "GITHUB_NOT_CONNECTED") {
+      return res
+        .status(400)
+        .json({ error: "GitHub account is not connected." });
+    }
+    if (axios.isAxiosError(error) && error.response?.status === 404) {
+      return res.status(404).json({ error: "GitHub resource not found." });
+    }
+    if (axios.isAxiosError(error) || message === "CLERK_API_FAILURE") {
+      return res
+        .status(502)
+        .json({ error: "Failed to fetch pending pull requests from GitHub." });
+    }
     res.status(500).json({ error: "Internal Server Error" });
   }
 };
-
 
 /**
  * 3. Get Recent Activity
@@ -119,8 +145,11 @@ export const getRecentActivity = async (req: Request, res: Response) => {
   try {
     const userId = req.dbUser!.id;
 
-    const formattedActivity = await withCache(`user:${userId}:dashboard:activity`, 300, async () => {
-      const query = `
+    const formattedActivity = await withCache(
+      `user:${userId}:dashboard:activity`,
+      300,
+      async () => {
+        const query = `
         SELECT 
           a.id, 
           a.activity_type as type, 
@@ -133,17 +162,18 @@ export const getRecentActivity = async (req: Request, res: Response) => {
         ORDER BY a.created_at DESC
         LIMIT 20;
       `;
-      const { rows } = await pool.query(query, [userId]);
+        const { rows } = await pool.query(query, [userId]);
 
-      return rows.map(row => ({
-        id: row.id,
-        type: row.type,
-        metadata: row.metadata,
-        repositoryName: row.repositoryName,
-        timeAgo: calculateTimeAgo(row.created_at),
-        createdAt: row.created_at
-      }));
-    });
+        return rows.map((row) => ({
+          id: row.id,
+          type: row.type,
+          metadata: row.metadata,
+          repositoryName: row.repositoryName,
+          timeAgo: calculateTimeAgo(row.created_at),
+          createdAt: row.created_at,
+        }));
+      },
+    );
 
     res.json(formattedActivity);
   } catch (error) {
@@ -158,7 +188,7 @@ export const getRecentActivity = async (req: Request, res: Response) => {
 function calculateTimeAgo(dateInput: Date | string): string {
   const date = new Date(dateInput);
   const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000);
-  
+
   if (seconds < 60) return `${seconds} seconds ago`;
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes} minutes ago`;

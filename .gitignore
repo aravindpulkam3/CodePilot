@@ -79,3 +79,8 @@ backend/prisma/dev.db-journal
 # ===========================
 CLAUDE.md
 **/CLAUDE.md
+
+# ===========================
+# Graphify output (local knowledge-graph artifacts)
+# ===========================
+graphify-out/

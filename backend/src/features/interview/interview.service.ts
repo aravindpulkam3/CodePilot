@@ -1,5 +1,10 @@
+import { assertOwnedContext } from "../../shared/utils/ownership.js";
 import { pool } from "../../config/db.js";
-import { llmService, LLMMessage, ollamaService } from "../../infrastructure/llm/llm.service.js";
+import {
+  llmService,
+  LLMMessage,
+  ollamaService,
+} from "../../infrastructure/llm/llm.service.js";
 import { retrievalService } from "../../infrastructure/retrieval/retreival.service.js";
 import { Type, Schema } from "@google/genai";
 import {
@@ -79,7 +84,10 @@ const interviewEvaluationSchema: Schema = {
         filePath: { type: Type.STRING, nullable: true },
         module: { type: Type.STRING, nullable: true },
         symbolName: { type: Type.STRING, nullable: true },
-        reason: { type: Type.STRING, description: "One short clause: why this is the target." },
+        reason: {
+          type: Type.STRING,
+          description: "One short clause: why this is the target.",
+        },
       },
       required: ["filePath", "module", "symbolName", "reason"],
     },
@@ -140,7 +148,11 @@ export const interviewFinalAssessmentSchema: Schema = {
   required: ["overallAssessment", "strengths", "weaknesses", "score"],
 };
 
-const EMPTY_FOCUS: InterviewFocus = { filePath: null, symbolName: null, module: null };
+const EMPTY_FOCUS: InterviewFocus = {
+  filePath: null,
+  symbolName: null,
+  module: null,
+};
 
 /**
  * Defensive defaults for `chat_sessions.state`. Handles two cases: a row
@@ -152,16 +164,27 @@ const EMPTY_FOCUS: InterviewFocus = { filePath: null, symbolName: null, module: 
 function withStateDefaults(raw: any): InterviewState {
   const r = raw || {};
   return {
-    currentTopic: typeof r.currentTopic === "string" ? r.currentTopic : "Overview",
+    currentTopic:
+      typeof r.currentTopic === "string" ? r.currentTopic : "Overview",
     topicsCovered: Array.isArray(r.topicsCovered) ? r.topicsCovered : [],
-    currentFocus: r.currentFocus && typeof r.currentFocus === "object" ? r.currentFocus : EMPTY_FOCUS,
+    currentFocus:
+      r.currentFocus && typeof r.currentFocus === "object"
+        ? r.currentFocus
+        : EMPTY_FOCUS,
     visitedFiles: Array.isArray(r.visitedFiles) ? r.visitedFiles : [],
     visitedModules: Array.isArray(r.visitedModules) ? r.visitedModules : [],
-    turnsOnCurrentFocus: typeof r.turnsOnCurrentFocus === "number" ? r.turnsOnCurrentFocus : 0,
-    turnsOnCurrentModule: typeof r.turnsOnCurrentModule === "number" ? r.turnsOnCurrentModule : 0,
+    turnsOnCurrentFocus:
+      typeof r.turnsOnCurrentFocus === "number" ? r.turnsOnCurrentFocus : 0,
+    turnsOnCurrentModule:
+      typeof r.turnsOnCurrentModule === "number" ? r.turnsOnCurrentModule : 0,
     lastAction: r.lastAction ?? "INITIAL",
-    difficulty: r.difficulty === "easy" || r.difficulty === "medium" || r.difficulty === "hard" ? r.difficulty : "medium",
-    difficultyMode: r.difficultyMode ?? (r.difficulty ?? "medium"),
+    difficulty:
+      r.difficulty === "easy" ||
+      r.difficulty === "medium" ||
+      r.difficulty === "hard"
+        ? r.difficulty
+        : "medium",
+    difficultyMode: r.difficultyMode ?? r.difficulty ?? "medium",
     knownGaps: Array.isArray(r.knownGaps) ? r.knownGaps : [],
     questionCount: typeof r.questionCount === "number" ? r.questionCount : 0,
     assessment: r.assessment,
@@ -200,8 +223,13 @@ export class InterviewService {
     repositoryId: string,
     action: InterviewAction,
     previousFocus: InterviewFocus,
-  ): Promise<{ focus: InterviewFocus; pathRejected: boolean; moduleJumpRejected: boolean }> {
-    const indexedPaths = await semanticRetrievalService.listIndexedFilePaths(repositoryId);
+  ): Promise<{
+    focus: InterviewFocus;
+    pathRejected: boolean;
+    moduleJumpRejected: boolean;
+  }> {
+    const indexedPaths =
+      await semanticRetrievalService.listIndexedFilePaths(repositoryId);
 
     const { resolvedPath, rejected: pathRejected } = resolvePathAgainstList(
       rawFocus?.filePath,
@@ -214,7 +242,11 @@ export class InterviewService {
         `[Interview] focusRejected: model proposed unresolvable path "${rawFocus?.filePath}" ` +
           `(reason: ${rawFocus?.reason ?? "n/a"}). Keeping previous focus.`,
       );
-      return { focus: previousFocus, pathRejected: true, moduleJumpRejected: false };
+      return {
+        focus: previousFocus,
+        pathRejected: true,
+        moduleJumpRejected: false,
+      };
     }
 
     let resolvedFocus: InterviewFocus;
@@ -229,27 +261,42 @@ export class InterviewService {
         );
         if (rows.length > 0) symbolName = rawFocus.symbolName;
       }
-      resolvedFocus = { filePath: resolvedPath, symbolName, module: initialModuleFor(resolvedPath) };
+      resolvedFocus = {
+        filePath: resolvedPath,
+        symbolName,
+        module: initialModuleFor(resolvedPath),
+      };
     } else {
-      const allModules = Array.from(new Set(indexedPaths.map((p) => initialModuleFor(p))));
-      const { resolvedModule, rejected: moduleRejected } = resolveModuleAgainstList(
-        rawFocus?.module,
-        contextModules,
-        allModules,
+      const allModules = Array.from(
+        new Set(indexedPaths.map((p) => initialModuleFor(p))),
       );
+      const { resolvedModule, rejected: moduleRejected } =
+        resolveModuleAgainstList(rawFocus?.module, contextModules, allModules);
 
       if (moduleRejected) {
         console.warn(
           `[Interview] focusRejected: model proposed unresolvable module "${rawFocus?.module}" ` +
             `(reason: ${rawFocus?.reason ?? "n/a"}). Keeping previous focus.`,
         );
-        return { focus: previousFocus, pathRejected: true, moduleJumpRejected: false };
+        return {
+          focus: previousFocus,
+          pathRejected: true,
+          moduleJumpRejected: false,
+        };
       }
 
-      resolvedFocus = { filePath: null, symbolName: null, module: resolvedModule };
+      resolvedFocus = {
+        filePath: null,
+        symbolName: null,
+        module: resolvedModule,
+      };
     }
 
-    const { focus, moduleJumpRejected } = checkActionFocusConsistency(action, resolvedFocus, previousFocus);
+    const { focus, moduleJumpRejected } = checkActionFocusConsistency(
+      action,
+      resolvedFocus,
+      previousFocus,
+    );
     return { focus, pathRejected: false, moduleJumpRejected };
   }
 
@@ -259,11 +306,17 @@ export class InterviewService {
     clerkUserId?: string,
   ): Promise<{ sessionId: string; firstQuestion: string }> {
     if (!config.repositoryId) {
-      throw new Error("repositoryId is required to start a repository interview.");
+      throw new Error(
+        "repositoryId is required to start a repository interview.",
+      );
     }
     if (!clerkUserId) {
-      throw new Error("clerkUserId is required to start a repository interview.");
+      throw new Error(
+        "clerkUserId is required to start a repository interview.",
+      );
     }
+
+    await assertOwnedContext(userId, { repositoryId: config.repositoryId });
 
     // 1. Retrieve BEFORE creating any DB row. A failure here (including the
     // catchable INDEXING_IN_PROGRESS / INDEXING_FAILED) must never leave an
@@ -274,11 +327,15 @@ export class InterviewService {
     );
 
     // 2. Generate the first question.
-    const messages = interviewPromptBuilder.buildStartPrompt(config, seedContext);
-    const decision = await llmService.generateStructured<InterviewTurnEvaluation>(
-      messages,
-      interviewEvaluationSchema,
+    const messages = interviewPromptBuilder.buildStartPrompt(
+      config,
+      seedContext,
     );
+    const decision =
+      await llmService.generateStructured<InterviewTurnEvaluation>(
+        messages,
+        interviewEvaluationSchema,
+      );
 
     // 3. Validate the declared focus BEFORE persisting anything. No
     // previous focus exists yet on turn 1 (REPOSITORY scope), so §2b's
@@ -310,7 +367,10 @@ export class InterviewService {
       turnsOnCurrentFocus: 1,
       turnsOnCurrentModule: 1,
       lastAction: decision.nextAction,
-      difficulty: config.difficulty === "adaptive" ? decision.nextDifficulty : config.difficulty,
+      difficulty:
+        config.difficulty === "adaptive"
+          ? decision.nextDifficulty
+          : config.difficulty,
       difficultyMode: config.difficulty,
       knownGaps: [],
       questionCount: 0,
@@ -381,12 +441,18 @@ export class InterviewService {
     answer: string,
   ): Promise<{ nextQuestion?: string; assessment?: any; correction?: any }> {
     const sessionRes = await pool.query(
-      `SELECT repository_id, state FROM chat_sessions WHERE id = $1 AND user_id = $2`,
+      `SELECT repository_id, state, status FROM chat_sessions
+       WHERE id = $1 AND user_id = $2 AND type = 'INTERVIEW'`,
       [sessionId, userId],
     );
     if (sessionRes.rows.length === 0) throw new Error("Session not found");
+    if (sessionRes.rows[0].status === "completed") {
+      throw new Error("INTERVIEW_COMPLETED");
+    }
     const repositoryId = sessionRes.rows[0].repository_id;
-    if (!repositoryId) throw new Error("Interview session has no associated repository.");
+    await assertOwnedContext(userId, { repositoryId });
+    if (!repositoryId)
+      throw new Error("Interview session has no associated repository.");
     const state = withStateDefaults(sessionRes.rows[0].state);
 
     // Bounded recent history — see INTERVIEW_HISTORY_LIMIT. Older turns are
@@ -400,7 +466,9 @@ export class InterviewService {
       .reverse()
       .map((r) => ({ role: r.role, content: r.content }));
 
-    const lastQuestion = [...recentHistory].reverse().find((m) => m.role === "assistant")?.content;
+    const lastQuestion = [...recentHistory]
+      .reverse()
+      .find((m) => m.role === "assistant")?.content;
     if (!lastQuestion) {
       throw new Error("No prior question found for this interview session.");
     }
@@ -414,18 +482,24 @@ export class InterviewService {
 
     // Retrieval is keyed on the QUESTION, not the answer — see
     // retreival.service.ts's retrieveInterviewFollowUpContext.
-    const followUpContext = await retrievalService.retrieveInterviewFollowUpContext(
-      repositoryId,
-      lastQuestion,
+    const followUpContext =
+      await retrievalService.retrieveInterviewFollowUpContext(
+        repositoryId,
+        lastQuestion,
+        state,
+      );
+
+    const messages = interviewPromptBuilder.buildFollowUpPrompt(
       state,
+      recentHistory,
+      followUpContext,
     );
 
-    const messages = interviewPromptBuilder.buildFollowUpPrompt(state, recentHistory, followUpContext);
-
-    const decision = await llmService.generateStructured<InterviewTurnEvaluation>(
-      messages,
-      interviewEvaluationSchema,
-    );
+    const decision =
+      await llmService.generateStructured<InterviewTurnEvaluation>(
+        messages,
+        interviewEvaluationSchema,
+      );
 
     // Validate the declared focus for the NEXT question before persisting.
     // §2b's action/focus consistency check runs inside resolveFocus and may
@@ -461,10 +535,14 @@ export class InterviewService {
       turnsOnCurrentFocus = state.turnsOnCurrentFocus;
       turnsOnCurrentModule = state.turnsOnCurrentModule;
     } else {
-      const fileUnchanged = effectiveFocus.filePath === (state.currentFocus?.filePath ?? null);
+      const fileUnchanged =
+        effectiveFocus.filePath === (state.currentFocus?.filePath ?? null);
       turnsOnCurrentFocus = fileUnchanged ? state.turnsOnCurrentFocus + 1 : 1;
-      const moduleUnchanged = effectiveFocus.module === (state.currentFocus?.module ?? null);
-      turnsOnCurrentModule = moduleUnchanged ? state.turnsOnCurrentModule + 1 : 1;
+      const moduleUnchanged =
+        effectiveFocus.module === (state.currentFocus?.module ?? null);
+      turnsOnCurrentModule = moduleUnchanged
+        ? state.turnsOnCurrentModule + 1
+        : 1;
     }
 
     // Coverage tracking: only real CODE the candidate has actually been
@@ -479,7 +557,9 @@ export class InterviewService {
       ...followUpContext.stayCode.map((c) => c.filePath),
       ...(effectiveFocus.filePath ? [effectiveFocus.filePath] : []),
     ];
-    const visitedFiles = Array.from(new Set([...state.visitedFiles, ...newlySeenFiles]));
+    const visitedFiles = Array.from(
+      new Set([...state.visitedFiles, ...newlySeenFiles]),
+    );
     const visitedModules = Array.from(
       new Set([
         ...state.visitedModules,
@@ -491,7 +571,8 @@ export class InterviewService {
     // adaptive -> apply the model's suggestion; a fixed level is held
     // constant regardless of what the model proposes.
     const difficultyMode = state.difficultyMode;
-    const difficulty = difficultyMode === "adaptive" ? decision.nextDifficulty : difficultyMode;
+    const difficulty =
+      difficultyMode === "adaptive" ? decision.nextDifficulty : difficultyMode;
 
     const knownGaps = Array.from(
       new Set([...state.knownGaps, ...(decision.missingConcepts ?? [])]),
@@ -500,9 +581,9 @@ export class InterviewService {
     const newState: InterviewState = {
       ...state,
       currentTopic: decision.topic || state.currentTopic,
-      topicsCovered: Array.from(new Set([...state.topicsCovered, state.currentTopic])).slice(
-        -INTERVIEW_STATE_LIMITS.maxTopicsCovered,
-      ),
+      topicsCovered: Array.from(
+        new Set([...state.topicsCovered, state.currentTopic]),
+      ).slice(-INTERVIEW_STATE_LIMITS.maxTopicsCovered),
       currentFocus: effectiveFocus,
       visitedFiles,
       visitedModules,
@@ -564,28 +645,46 @@ export class InterviewService {
     // interviewEvaluationSchema for the source. `correction` is still
     // returned for structured/internal use, but the frontend no longer
     // displays it inline — its substance is already woven into the message.
-    return { nextQuestion: decision.interviewerMessage, correction: decision.correction };
+    return {
+      nextQuestion: decision.interviewerMessage,
+      correction: decision.correction,
+    };
   }
 
   public async endInterview(sessionId: string, userId: string): Promise<void> {
+    const { rows } = await pool.query(
+      `SELECT status FROM chat_sessions WHERE id = $1 AND user_id = $2 AND type = 'INTERVIEW'`,
+      [sessionId, userId],
+    );
+    if (rows.length === 0) throw new Error("Session not found");
+    // Idempotent: ending twice must not log a second completion.
+    if (rows[0].status === "completed") return;
+
     await pool.query(
-      `UPDATE chat_sessions SET status = 'completed', last_accessed_at = NOW() WHERE id = $1 AND user_id = $2`,
-      [sessionId, userId]
+      `UPDATE chat_sessions SET status = 'completed', last_accessed_at = NOW()
+       WHERE id = $1 AND user_id = $2 AND type = 'INTERVIEW'`,
+      [sessionId, userId],
     );
 
     await activityLogService.logEvent({
       userId,
       activityType: "INTERVIEW_COMPLETED",
-      metadata: { sessionId }
+      metadata: { sessionId },
     });
   }
 
-  public async generateInsights(sessionId: string, userId: string): Promise<InterviewFinalAssessment> {
+  public async generateInsights(
+    sessionId: string,
+    userId: string,
+  ): Promise<InterviewFinalAssessment> {
     const sessionRes = await pool.query(
-      `SELECT state FROM chat_sessions WHERE id = $1 AND user_id = $2`,
+      `SELECT state, repository_id FROM chat_sessions WHERE id = $1 AND user_id = $2 AND type = 'INTERVIEW'`,
       [sessionId, userId],
     );
     if (sessionRes.rows.length === 0) throw new Error("Session not found");
+    await assertOwnedContext(userId, {
+      repositoryId: sessionRes.rows[0].repository_id,
+    });
     const state = withStateDefaults(sessionRes.rows[0].state);
 
     if (state.assessment) {
@@ -597,17 +696,21 @@ export class InterviewService {
       [sessionId],
     );
 
-    const messages = interviewPromptBuilder.buildFinalReviewPrompt(state, historyRes.rows);
-
-    const assessment = await ollamaService.generateStructured<InterviewFinalAssessment>(
-      messages,
-      interviewFinalAssessmentSchema,
+    const messages = interviewPromptBuilder.buildFinalReviewPrompt(
+      state,
+      historyRes.rows,
     );
+
+    const assessment =
+      await ollamaService.generateStructured<InterviewFinalAssessment>(
+        messages,
+        interviewFinalAssessmentSchema,
+      );
 
     const newState = { ...state, assessment };
     await pool.query(
       `UPDATE chat_sessions SET state = $2, last_accessed_at = NOW() WHERE id = $1`,
-      [sessionId, JSON.stringify(newState)]
+      [sessionId, JSON.stringify(newState)],
     );
 
     return assessment;

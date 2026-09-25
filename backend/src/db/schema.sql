@@ -91,19 +91,6 @@ CREATE TABLE IF NOT EXISTS review_findings (
 );
 CREATE INDEX IF NOT EXISTS review_findings_review_id_idx ON review_findings(review_id);
 
-
-CREATE TABLE IF NOT EXISTS review_messages (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-
-    review_id UUID NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
-
-    role TEXT NOT NULL,
-
-    content TEXT NOT NULL,
-
-    created_at TIMESTAMP DEFAULT NOW()
-);
-
 -- 1. Enable the pgvector extension (Crucial first step)
 CREATE EXTENSION IF NOT EXISTS vector;
 
@@ -219,32 +206,6 @@ ON chat_sessions (finding_id, user_id)
 WHERE type = 'ISSUE_CHAT' AND finding_id IS NOT NULL;
 
 
-CREATE TABLE IF NOT EXISTS interview_sessions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    
-    -- 1-to-1 link to chat_sessions
-    session_id UUID NOT NULL UNIQUE REFERENCES chat_sessions(id) ON DELETE CASCADE,
-    
-    -- Ownership links
-    user_id UUID NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
-    repository_id UUID NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
-    
-    -- Interview domain state
-    current_topic TEXT NOT NULL DEFAULT 'System Architecture',
-    topics_covered TEXT[] DEFAULT '{}',
-    current_difficulty VARCHAR(20) NOT NULL DEFAULT 'medium',
-    question_count INTEGER NOT NULL DEFAULT 0,
-    overall_score NUMERIC(4, 2),
-    assessment JSONB,
-    
-    last_accessed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_interview_sessions_user_recent ON interview_sessions(user_id, last_accessed_at DESC);
-
-
 CREATE TABLE IF NOT EXISTS chat_messages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     
@@ -333,6 +294,11 @@ ALTER TABLE repositories ADD COLUMN IF NOT EXISTS summary_tasks_done   INTEGER N
 -- Unused residue from the removed summarizer; never read or written.
 ALTER TABLE repositories ADD COLUMN IF NOT EXISTS last_summary_error   TEXT NULL;
 
+-- The run token fences old jobs; receipts commit atomically with index writes.
+ALTER TABLE repositories ADD COLUMN IF NOT EXISTS indexing_run_id TEXT;
+ALTER TABLE repositories ADD COLUMN IF NOT EXISTS indexing_target_sha TEXT;
+ALTER TABLE repositories ADD COLUMN IF NOT EXISTS completed_index_chunks INTEGER[] NOT NULL DEFAULT '{}';
+
 -- One-time backfill for the old three-value indexing_status vocabulary
 -- ('unindexed' | 'INDEXING' | 'INDEXED' | 'FAILED') into the current one
 -- (NOT_STARTED | SYNCING | INDEXING | READY | FAILED). Each UPDATE is naturally idempotent (a second run finds no rows
@@ -345,7 +311,7 @@ UPDATE repositories SET indexing_status = 'READY',
        last_summarized_sha = last_indexed_sha
   WHERE indexing_status = 'INDEXED';
 UPDATE repositories SET indexing_status = 'SYNCING'
-  WHERE indexing_status = 'INDEXING' AND searchable_at IS NULL;
+  WHERE indexing_status = 'INDEXING' AND searchable_at IS NULL AND indexing_run_id IS NULL;
 -- Rows already 'FAILED' are left as-is — see CLAUDE.md for the one-time
 -- backfill imprecision this implies (harmless, resolves on next sync).
 
@@ -371,3 +337,7 @@ ALTER TABLE repository_embeddings ADD COLUMN IF NOT EXISTS docstring TEXT;
 ALTER TABLE repository_embeddings ADD COLUMN IF NOT EXISTS is_exported BOOLEAN;
 ALTER TABLE repository_embeddings ADD COLUMN IF NOT EXISTS chunk_index INTEGER;
 ALTER TABLE repository_embeddings ADD COLUMN IF NOT EXISTS chunk_total INTEGER;
+
+-- Legacy jobs have no run token and are ignored by the new worker. Allow a fresh sync.
+UPDATE repositories SET indexing_status = 'FAILED'
+WHERE indexing_run_id IS NULL AND indexing_status IN ('SYNCING', 'INDEXING');

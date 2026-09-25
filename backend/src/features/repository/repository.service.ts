@@ -115,6 +115,13 @@ export const findRepositoryById = async (id: string): Promise<RepositoryRow | nu
   return rows[0] ?? null;
 };
 
+export const findOwnedRepositoryById = async (id: string, userId: string): Promise<RepositoryRow | null> => {
+  const { rows } = await pool.query<RepositoryRow>(
+    "SELECT * FROM repositories WHERE id = $1 AND user_id = $2", [id, userId],
+  );
+  return rows[0] ?? null;
+};
+
 export const findRepositoriesByUserId = async (userId: string): Promise<RepositoryRow[]> => {
   const { rows } = await pool.query<RepositoryRow>(
     `SELECT * FROM repositories WHERE user_id = $1 ORDER BY updated_at DESC`,

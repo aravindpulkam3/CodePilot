@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { env } from "./config/env.js";
-import { attachClerkAuth, requireAuth } from "./middleware/auth.middleware.js";
+import { attachClerkAuth } from "./middleware/auth.middleware.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { healthRoutes } from "./health/health.routes.js";
 import userRouter from "./features/user/user.routes.js";
@@ -13,7 +13,6 @@ import reviewRouter from "./features/review/review.routes.js";
 import unifiedChatRouter from "./features/chat/chat.routes.js";
 import interviewRouter from "./features/interview/interview.routes.js";
 import dashboardRouter from "./features/dashboard/dashboard.routes.js";
-import { serverAdapter } from "./config/bull-board.js";
 
 export const app = express();
 
@@ -26,11 +25,7 @@ app.use("/api/webhooks", webhookRoutes);
 app.use(express.json());
 app.use(attachClerkAuth);
 
-// Bull Board exposes job payloads and lets a caller pause/retry/remove queue
-// jobs, so it needs to sit behind the same auth as everything else — any
-// signed-in app user can reach it while this is a solo project with no
-// admin-role concept yet.
-app.use("/admin/queues", requireAuth, serverAdapter.getRouter());
+// Bull Board is intentionally not mounted: it exposes all users' job data and controls.
 
 app.use("/api/health", healthRoutes);
 app.use("/api/users", userRouter);

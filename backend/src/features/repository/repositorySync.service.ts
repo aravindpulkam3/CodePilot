@@ -1,200 +1,82 @@
 import { pool } from "../../config/db.js";
 import * as githubService from "../../infrastructure/github/github.service.js";
-import { repositoryIndexer, FileChange } from "./repositoryIndex.service.js";
+import type { FileChange } from "./repositoryIndex.service.js";
 import { syncQueue, indexQueue } from "../../config/queues.js";
 import { appEvents, EVENT_TYPES } from "../../shared/events/eventEmitter.js";
 import { enqueueWithDedup } from "../../shared/utils/queueHelpers.js";
 
-// In-flight indexing states — a new sync must not start while one of these
-// is true for the repo.
-const SYNC_IN_FLIGHT_STATUSES = new Set(["SYNCING", "INDEXING"]);
-
 export class RepositorySyncService {
-  /**
-   * Enqueues a sync job. Returns immediately.
-   */
   public async enqueueSync(clerkUserId: string, repositoryId: string) {
-    return enqueueWithDedup(syncQueue, `sync-${repositoryId}`, "syncRepo", {
-      clerkUserId,
-      repositoryId,
-    });
+    const { rows } = await pool.query(
+      `SELECT 1 FROM repositories r JOIN app_users u ON u.id = r.user_id
+       WHERE r.id = $1 AND u.clerk_id = $2`, [repositoryId, clerkUserId],
+    );
+    if (!rows.length) throw new Error("RESOURCE_NOT_FOUND");
+    return enqueueWithDedup(syncQueue, `sync-${repositoryId}`, "syncRepo", { clerkUserId, repositoryId });
   }
 
-  /**
-   * The actual heavy lifting executed by the BullMQ worker.
-   */
-  public async processSyncJob(clerkUserId: string, repositoryId: string) {
-    // 1. Fetch current database state
-    console.log(`[Sync] processSyncJob started for repo ${repositoryId}.`);
-
+  public async processSyncJob(clerkUserId: string, repositoryId: string, runId: string) {
+    // Claim before any network work. Two different runs cannot claim an in-flight repo.
+    // A retry resumes its own run without clearing committed chunk receipts/counters.
     const { rows } = await pool.query(
-      `SELECT name, owner, last_indexed_sha, indexing_status, source_type, user_id
-             FROM repositories WHERE id = $1`,
-      [repositoryId],
+      `UPDATE repositories r SET
+         indexing_target_sha = CASE WHEN indexing_run_id = $3 THEN indexing_target_sha ELSE NULL END,
+         completed_index_chunks = CASE WHEN indexing_run_id = $3 THEN completed_index_chunks ELSE '{}'::integer[] END,
+         indexing_status = CASE WHEN indexing_run_id = $3 THEN indexing_status ELSE 'SYNCING' END,
+         indexing_run_id = $3
+       WHERE r.id = $1 AND EXISTS (SELECT 1 FROM app_users u WHERE u.id = r.user_id AND u.clerk_id = $2)
+         AND ((indexing_run_id = $3 AND indexing_status IN ('SYNCING', 'INDEXING'))
+           OR (indexing_status NOT IN ('SYNCING', 'INDEXING') AND indexing_run_id IS DISTINCT FROM $3))
+       RETURNING r.*`, [repositoryId, clerkUserId, runId],
     );
-
-    if (rows.length === 0) throw new Error("Repository not found");
+    if (!rows.length) return { status: "already_indexing_or_stale" };
     const repo = rows[0];
-
-    // Prevent concurrent indexing runs for the same repo.
-    if (SYNC_IN_FLIGHT_STATUSES.has(repo.indexing_status)) {
-      console.log(
-        `[Sync] Repository ${repo.name} already has Phase 1 in flight (${repo.indexing_status}). Skipping trigger.`,
-      );
-      return { status: "already_indexing" };
-    }
-
-    // Fetch token only if it's a connected repository
-    let token: string | undefined = undefined;
+    let token: string | undefined;
     if (repo.source_type === "connected") {
-      try {
-        token = await githubService.getGitHubAccessToken(clerkUserId);
-      } catch (err) {
-        console.warn(
-          `Could not get token for connected repo ${repo.name}`,
-          err,
-        );
-      }
+      try { token = await githubService.getGitHubAccessToken(clerkUserId); }
+      catch { console.warn(`[Sync] OAuth unavailable for repo ${repositoryId}; trying public access.`); }
     }
-
-    const latestCommit = await githubService.getLatestCommit(
-      token,
-      repo.owner,
-      repo.name,
+    const requestedSha = repo.indexing_target_sha ?? (await githubService.getLatestCommit(token, repo.owner, repo.name)).sha;
+    const { rows: targets } = await pool.query(
+      `UPDATE repositories SET indexing_target_sha = COALESCE(indexing_target_sha, $3)
+       WHERE id = $1 AND indexing_run_id = $2 AND indexing_status IN ('SYNCING', 'INDEXING')
+       RETURNING indexing_target_sha`, [repositoryId, runId, requestedSha],
     );
-    const latestSha = latestCommit.sha;
-
-    // 3. The Guard Check: Are we already up to date?
-    if (repo.last_indexed_sha === latestSha) {
-      console.log(
-        `[Sync] Repository ${repo.name} is up to date (SHA: ${latestSha}). No indexing needed.`,
+    if (!targets.length) return { status: "stale" };
+    const latestSha = targets[0].indexing_target_sha;
+    let filesToIndex: FileChange[] = [];
+    if (repo.last_indexed_sha !== latestSha) {
+      filesToIndex = !repo.last_indexed_sha
+        ? await githubService.fetchAllRepositoryFiles(token, repo.owner, repo.name, latestSha)
+        : await githubService.getChangedFilesBetweenCommits(token, repo.owner, repo.name, repo.last_indexed_sha, latestSha);
+    }
+    // Stable chunk membership if a sync retries after only some jobs were enqueued.
+    filesToIndex.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+    if (!filesToIndex.length) {
+      const result = await pool.query(
+        `UPDATE repositories SET last_indexed_sha = $3,
+           searchable_at = COALESCE(searchable_at, NOW()), indexing_status = 'READY',
+           index_chunks_total = 0, index_chunks_done = 0, index_files_total = 0, index_files_done = 0
+         WHERE id = $1 AND indexing_run_id = $2 AND indexing_status = 'SYNCING'`, [repositoryId, runId, latestSha],
       );
+      if (result.rowCount) appEvents.emit(EVENT_TYPES.REPOSITORY_SYNCED, { userId: repo.user_id, repositoryId });
       return { status: "up_to_date", sha: latestSha };
     }
-
-    console.log(
-      `[Sync] Updating ${repo.name} from ${repo.last_indexed_sha || "(never indexed)"} to ${latestSha}...`,
-    );
-
-    // Committed to indexing now — reflect that immediately so pollers see real state rather than a stale prior status while GitHub is fetched.
+    const CHUNK_SIZE = 50;
+    const chunkCount = Math.ceil(filesToIndex.length / CHUNK_SIZE);
     await pool.query(
-      `UPDATE repositories SET indexing_status = 'SYNCING' WHERE id = $1`,
-      [repositoryId],
+      `UPDATE repositories SET index_chunks_total = $3, index_chunks_done = 0,
+         index_files_total = $4, index_files_done = 0, indexing_status = 'INDEXING'
+       WHERE id = $1 AND indexing_run_id = $2 AND indexing_status = 'SYNCING'`,
+      [repositoryId, runId, chunkCount, filesToIndex.length],
     );
-
-    // From here on, ANY failure (GitHub rate limits, network errors, a bad enqueue, etc.) must not leave the repo stuck at SYNCING/INDEXING forever — SYNC_IN_FLIGHT_STATUSES would then skip every future sync attempt as "already in flight" (see the guard above), with no way to retry short of a manual UPDATE.
-    try {
-      // 4. Fetch the actual file contents that need to be indexed
-      let filesToIndex: FileChange[] = [];
-
-      if (!repo.last_indexed_sha) {
-        // INITIAL SYNC: The database has no SHA. We must fetch the entire repository tree.
-        console.log(
-          `[Sync] Initial sync — fetching the full repository tree for ${repo.name}.`,
-        );
-        filesToIndex = await githubService.fetchAllRepositoryFiles(
-          token,
-          repo.owner,
-          repo.name,
-          latestSha,
-        );
-      } else {
-        // DELTA SYNC: Compare the old DB SHA with the new GitHub SHA.
-        // Fetch ONLY the files that were added, modified, or deleted.
-        console.log(
-          `[Sync] Delta sync — diffing ${repo.last_indexed_sha} against ${latestSha}.`,
-        );
-        filesToIndex = await githubService.getChangedFilesBetweenCommits(
-          token,
-          repo.owner,
-          repo.name,
-          repo.last_indexed_sha,
-          latestSha,
-        );
-      }
-
-      console.log(
-        `[Sync] ${filesToIndex.length} file(s) to index for ${repo.name}.`,
-      );
-
-      // 4a. Zero-file delta: nothing to index this sync, so the index is
-      // already complete for latestSha.
-      if (filesToIndex.length === 0) {
-        await pool.query(
-          `UPDATE repositories
-           SET last_indexed_sha = $2,
-               searchable_at = COALESCE(searchable_at, NOW()),
-               index_chunks_total = 0, index_chunks_done = 0,
-               index_files_total = 0, index_files_done = 0,
-               indexing_status = 'READY'
-           WHERE id = $1`,
-          [repositoryId, latestSha],
-        );
-        console.log(
-          `[Sync] ${repo.name}: no files changed this sync, advanced to ${latestSha} directly (status=READY).`,
-        );
-        appEvents.emit(EVENT_TYPES.REPOSITORY_SYNCED, {
-          userId: repo.user_id,
-          repositoryId,
-        });
-        return { status: "searchable_no_changes", new_sha: latestSha };
-      }
-
-      // 5. Hand off to the heavy Indexing pipeline by enqueuing chunks
-      const CHUNK_SIZE = 50;
-      const chunkCount = Math.ceil(filesToIndex.length / CHUNK_SIZE);
-      await pool.query(
-        `UPDATE repositories
-         SET index_chunks_total = $2, index_chunks_done = 0,
-             index_files_total = $3, index_files_done = 0,
-             indexing_status = 'INDEXING'
-         WHERE id = $1`,
-        [repositoryId, chunkCount, filesToIndex.length],
-      );
-      console.log(
-        `[Sync] Enqueuing ${chunkCount} index chunk job(s) for ${repo.name}.`,
-      );
-      for (let i = 0; i < filesToIndex.length; i += CHUNK_SIZE) {
-        const chunk = filesToIndex.slice(i, i + CHUNK_SIZE);
-        const isFinalChunk = i + CHUNK_SIZE >= filesToIndex.length;
-        const indexJob = await indexQueue.add("indexRepoChunk", {
-          repositoryId,
-          latestSha,
-          filesToIndex: chunk,
-          // isFinalChunk is kept on the payload for logging only — the
-          // actual READY-finalize decision uses the chunk-completion
-          // counter (repositoryIndex.service.ts), not this flag, since
-          // indexQueue's concurrency:4 means the last-enqueued chunk isn't
-          // reliably the last to complete.
-          isFinalChunk,
-        });
-        console.log(
-          `[Sync] Queued index job ${indexJob.id} (${chunk.length} files, final=${isFinalChunk}).`,
-        );
-      }
-
-      // REPOSITORY_SYNCED is NOT emitted here — indexing is only enqueued at
-      // this point, not complete. repositoryIndex.service.ts emits it once
-      // the chunk-completion counter confirms every enqueued chunk actually
-      // committed and the repo is READY (see processRepositoryUpdate).
-      // Emitting here would invalidate caches before the new data exists.
-
-      return {
-        status: "indexed",
-        new_sha: latestSha,
-        files_processed: filesToIndex.length,
-      };
-    } catch (err) {
-      console.error(
-        `[Sync] processSyncJob failed for ${repo.name}, marking FAILED:`,
-        err,
-      );
-      await pool.query(
-        `UPDATE repositories SET indexing_status = 'FAILED' WHERE id = $1`,
-        [repositoryId],
-      );
-      throw err;
+    for (let i = 0; i < filesToIndex.length; i += CHUNK_SIZE) {
+      const chunkIndex = i / CHUNK_SIZE;
+      await indexQueue.add("indexRepoChunk", {
+        repositoryId, latestSha, runId, chunkIndex, filesToIndex: filesToIndex.slice(i, i + CHUNK_SIZE),
+      }, { jobId: `index-${runId}-${chunkIndex}` });
     }
+    return { status: "indexed", new_sha: latestSha, files_processed: filesToIndex.length };
   }
 }
 
