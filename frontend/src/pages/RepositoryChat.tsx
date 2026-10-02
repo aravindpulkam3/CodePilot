@@ -27,18 +27,21 @@ export default function RepositoryChat() {
   const { data: chatSessions = [] } = useChatSessions(repositoryId!, "QA");
   const { data: history = [], isLoading: isHistoryLoading } = useChatHistory(sessionId ?? null);
 
-  const handleSendMessage = async (msgToSend: string) => {
-    if (!repositoryId || !msgToSend.trim() || isStreaming) return;
+  /** Resolves false when the message wasn't sent, so ChatInterface gives the text back. */
+  const handleSendMessage = async (msgToSend: string): Promise<boolean> => {
+    if (!repositoryId || !msgToSend.trim() || isStreaming) return false;
     setStreamedText("");
     setStreamedSources([]);
     setIsStreaming(true);
 
-    const token = await getToken();
-    if (!token) throw new Error("No token available");
-
     let resolvedSessionId = sessionId ?? null;
 
     try {
+      // Inside the try: a missing token must reach the catch below (toast,
+      // text restored) instead of rejecting past it with isStreaming stuck.
+      const token = await getToken();
+      if (!token) throw new Error("No token available");
+
       const response = await sendChatMessageStream(repositoryId, msgToSend, resolvedSessionId, token);
       if (!response.ok) {
         const body = await response.json().catch(() => null);
@@ -69,9 +72,11 @@ export default function RepositoryChat() {
 
       await queryClient.invalidateQueries({ queryKey: ["chatHistory", resolvedSessionId] });
       await queryClient.invalidateQueries({ queryKey: ["chatSessions", repositoryId, "QA"] });
+      return true;
     } catch (error) {
       console.error("Chat error:", error);
       toast.error(error instanceof Error ? error.message : "Failed to send message.");
+      return false;
     } finally {
       setIsStreaming(false);
       setStreamedText("");

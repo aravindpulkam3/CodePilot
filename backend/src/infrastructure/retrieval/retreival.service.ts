@@ -27,6 +27,7 @@ import { pool } from "../../config/db.js";
 import { performance } from "perf_hooks";
 import { repositoryMapService } from "./repositoryMap.service.js";
 import { granularityOf } from "../../features/interview/interviewFocusResolution.js";
+import { decideIndexReadiness } from "./indexReadiness.js";
 // TEMPORARY verification logging — see utils/readmeDebugLog.ts for removal.
 import { docRetrievalLog, docPreview } from "../../shared/utils/readmeDebugLog.js";
 
@@ -121,25 +122,21 @@ const INTERVIEW_LIMITS = {
 
 export class RepositoryRetrievalService {
   /**
-   * Blocks retrieval until the repository has a searchable index — or throws.
-   * Gated on `last_indexed_sha`, which is set once the first full index
-   * (sync/parse/embed/import-graph) completes and never cleared, so a repo
-   * stays usable while a later delta sync is still indexing.
+   * Refreshes the repository (JIT sync) and blocks until it has a servable
+   * index — or throws a catchable error.
    *
-   * Previously this waited on full `indexing_status === 'INDEXED'`
-   * (LLM summarization included) with a single 45s budget that, when it ran
-   * out, just logged and returned anyway regardless of real state — reviews
-   * /QA/interview answers were routinely generated against a partially- or
-   * un-indexed repo, silently. The fix here is NOT "wait longer" on its own
-   * — this still runs inline on a synchronous HTTP request (POST /reviews,
-   * chat stream, interview start), so blocking for minutes would just trade
-   * a silently-wrong result for a hung request/proxy timeout. Instead: keep
-   * the wait bounded and request-friendly, and when the
-   * deadline is hit without the repo being searchable, throw a specific,
-   * catchable error instead of pretending everything's fine. Callers already
-   * surface `error.message` back to the client (see review.controller.ts,
-   * chat.controller.ts), so this becomes a clear "still indexing, try again
-   * shortly" instead of a bad result.
+   * Servable means `last_indexed_sha` is set: indexing sets it only for a
+   * complete index and clears it whenever rows may be partial or mixed (a run
+   * that failed after enqueuing chunks, an untrustworthy delta). See
+   * decideIndexReadiness.
+   *
+   * The wait is bounded (60 s) because this runs inline on a request (POST
+   * /reviews, chat stream, interview start). It first waits for the enqueued
+   * sync job so a fresh push is picked up, but if that job is slow (worker
+   * down, queue backlog, retry backoff) the index is still checked once more
+   * and served when valid: freshness is best-effort, safety is not. Only a
+   * missing index times out, as INDEXING_IN_PROGRESS. Callers surface both
+   * error strings to the client (409, or an SSE error frame).
    */
   private async ensureSearchable(clerkUserId: string, repositoryId: string) {
     console.log(`[RetrievalService] Triggering JIT Sync check for repository ${repositoryId}...`);
@@ -175,26 +172,37 @@ export class RepositoryRetrievalService {
     }
 
     // 2. The sync job only enqueues indexing chunks; it doesn't wait for them.
-    // Poll the repo's last_indexed_sha/indexing_status until indexing finishes.
-    while (deadline()) {
+    // Poll until the index is servable. The state is read at least once even
+    // when the job wait above used up the whole budget, so a slow freshness
+    // sync can't make an existing complete index unservable.
+    for (;;) {
       const { rows } = await pool.query(
         "SELECT last_indexed_sha, indexing_status FROM repositories WHERE id = $1",
         [repositoryId]
       );
 
       const status = rows[0]?.indexing_status;
+      const readiness = decideIndexReadiness(
+        { lastIndexedSha: rows[0]?.last_indexed_sha, status },
+        !deadline(),
+      );
 
-      if (rows[0]?.last_indexed_sha) {
-        console.log(`[RetrievalService] Repository ${repositoryId} is searchable (status: ${status}).`);
+      if (readiness === "ready") {
+        console.log(
+          `[RetrievalService] Repository ${repositoryId} is searchable (status: ${status})` +
+            (deadline() ? "." : " — freshness sync still pending; serving the last complete index."),
+        );
         return;
       }
 
-      if (status === 'FAILED') {
+      if (readiness === "failed") {
         console.error(`[RetrievalService] Repository ${repositoryId} indexing FAILED — refusing to retrieve on a broken index.`);
         throw new Error('INDEXING_FAILED');
       }
 
-      // status is NOT_STARTED / INDEXING — still in progress, keep waiting.
+      if (readiness === "timed-out") break;
+
+      // No complete index yet and still NOT_STARTED / INDEXING — keep waiting.
       await new Promise(res => setTimeout(res, pollIntervalMs));
     }
 

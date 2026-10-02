@@ -1,6 +1,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { buildQAPromptContext, QAPromptContextInput } from "./qaPromptContext.js";
+import { buildQAPromptContext, buildQASystemPrompt, QAPromptContextInput } from "./qaPromptContext.js";
+import { NUMBERED_CITATION_RULE } from "../../../shared/prompts/sharedCitations.js";
 import type { CodeChunkSearchResult, DocChunkSearchResult } from "../../../infrastructure/retrieval/retrievalTypes.js";
 
 const code = (name: string, body: string, overrides: Partial<CodeChunkSearchResult> = {}): CodeChunkSearchResult => ({
@@ -111,5 +112,40 @@ describe("buildQAPromptContext", () => {
     const { items } = buildQAPromptContext(base());
     assert.equal(items.find((i) => i.kind === "code")!.commitSha, "sha-code");
     assert.equal(items.find((i) => i.kind === "documentation")!.commitSha, "sha-doc");
+  });
+});
+
+const NO_MATCH = /No indexed content matched this question/;
+
+describe("buildQASystemPrompt", () => {
+  test("an overview-only context is not evidence: no-match instruction, overview kept as orientation", () => {
+    const { systemPrompt, hasCitableEvidence } = buildQASystemPrompt(
+      buildQAPromptContext(base({ docChunks: [], codeChunks: [], graphNeighbors: null })),
+    );
+
+    assert.equal(hasCitableEvidence, false);
+    assert.match(systemPrompt, NO_MATCH);
+    assert.ok(systemPrompt.includes("Purpose: A URL shortener"), "overview still supplied");
+    assert.match(systemPrompt, /not evidence for how anything is implemented/);
+    assert.ok(!systemPrompt.includes(NUMBERED_CITATION_RULE), "nothing citable, so no citation rule");
+  });
+
+  test("citable entries get the citation rule and never the no-match instruction", () => {
+    const { systemPrompt, hasCitableEvidence } = buildQASystemPrompt(buildQAPromptContext(base()));
+
+    assert.equal(hasCitableEvidence, true);
+    assert.ok(systemPrompt.includes(NUMBERED_CITATION_RULE));
+    assert.doesNotMatch(systemPrompt, NO_MATCH);
+    assert.match(systemPrompt, /^\[1\] DOCUMENTATION · README\.md/m);
+  });
+
+  test("no context at all: no-match instruction and no overview", () => {
+    const { systemPrompt, hasCitableEvidence } = buildQASystemPrompt(
+      buildQAPromptContext(base({ repositoryProfile: null, docChunks: [], codeChunks: [], graphNeighbors: null })),
+    );
+
+    assert.equal(hasCitableEvidence, false);
+    assert.match(systemPrompt, NO_MATCH);
+    assert.doesNotMatch(systemPrompt, /background orientation only/);
   });
 });

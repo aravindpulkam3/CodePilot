@@ -457,6 +457,8 @@ export class InterviewService {
     if (!repositoryId)
       throw new Error("Interview session has no associated repository.");
     const state = withStateDefaults(sessionRes.rows[0].state);
+    // Identifies the question this request answers; re-checked at commit.
+    const answeredTurn = state.questionCount;
 
     // Bounded recent history — see INTERVIEW_HISTORY_LIMIT. Older turns are
     // represented by state.knownGaps rather than raw transcript text.
@@ -601,6 +603,25 @@ export class InterviewService {
     try {
       await client.query("BEGIN");
 
+      // Re-check the turn under a row lock before writing anything: another
+      // request may have answered this question meanwhile (second tab,
+      // refresh-and-resubmit, client retry), or the interview may have ended.
+      // Retrieval and the LLM call above ran outside this transaction, so the
+      // lock covers only these few statements.
+      const { rows: locked } = await client.query(
+        `SELECT status, state FROM chat_sessions
+         WHERE id = $1 AND user_id = $2 AND type = 'INTERVIEW'
+         FOR UPDATE`,
+        [sessionId, userId],
+      );
+      if (locked.length === 0) throw new Error("Session not found");
+      if (locked[0].status === "completed") {
+        throw new Error("INTERVIEW_COMPLETED");
+      }
+      if (withStateDefaults(locked[0].state).questionCount !== answeredTurn) {
+        throw new Error("INTERVIEW_STALE_TURN");
+      }
+
       // Explicit clock_timestamp(): the column default is the transaction
       // start time, which would give both rows the same created_at and make
       // ORDER BY created_at ambiguous between answer and question.
@@ -663,19 +684,24 @@ export class InterviewService {
   }
 
   public async endInterview(sessionId: string, userId: string): Promise<void> {
+    // One conditional UPDATE instead of read-then-write: of two concurrent
+    // calls exactly one changes the row, so a completion is logged once.
     const { rows } = await pool.query(
-      `SELECT status FROM chat_sessions WHERE id = $1 AND user_id = $2 AND type = 'INTERVIEW'`,
-      [sessionId, userId],
-    );
-    if (rows.length === 0) throw new Error("Session not found");
-    // Idempotent: ending twice must not log a second completion.
-    if (rows[0].status === "completed") return;
-
-    await pool.query(
       `UPDATE chat_sessions SET status = 'completed', last_accessed_at = NOW()
-       WHERE id = $1 AND user_id = $2 AND type = 'INTERVIEW'`,
+       WHERE id = $1 AND user_id = $2 AND type = 'INTERVIEW' AND status <> 'completed'
+       RETURNING id`,
       [sessionId, userId],
     );
+    if (rows.length === 0) {
+      // Nothing changed: already completed (idempotent no-op), or not this
+      // user's interview (404).
+      const { rows: existing } = await pool.query(
+        `SELECT 1 FROM chat_sessions WHERE id = $1 AND user_id = $2 AND type = 'INTERVIEW'`,
+        [sessionId, userId],
+      );
+      if (existing.length === 0) throw new Error("Session not found");
+      return;
+    }
 
     await activityLogService.logEvent({
       userId,

@@ -26,7 +26,7 @@ chatRouter.get("/sessions/:sessionId/messages", getMessages);
 chatRouter.post("/sessions/:sessionId/stream", rateLimit("chat"), sendMessageStream);
 chatRouter.delete("/sessions/:sessionId/messages", clearMessages);
 
-// Fallback convenience streaming without prior session lookup
-chatRouter.post("/stream", sendMessageStream);
+// First message of a new conversation: creates the session, then streams.
+chatRouter.post("/stream", rateLimit("chat"), sendMessageStream);
 
 export default chatRouter;

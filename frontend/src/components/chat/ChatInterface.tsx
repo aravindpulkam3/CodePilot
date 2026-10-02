@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useLayoutEffect } from "react";
 import { Send, User, Bot, Loader2 } from "lucide-react";
 import { cn } from "@/utils/cn";
 import { SessionSidebar } from "./SessionSidebar";
@@ -23,7 +23,14 @@ interface ChatInterfaceProps {
   isStreaming?: boolean;
   streamedText?: string;
   streamedSources?: SourceRef[];
-  onSendMessage: (message: string) => void;
+  /**
+   * Resolve to `false` when the message was NOT sent (the request failed):
+   * the optimistic bubble is removed and the exact typed text goes back into
+   * the input. Any other result counts as sent.
+   */
+  onSendMessage: (message: string) => boolean | void | Promise<boolean | void>;
+  /** Blocks typing and sending, e.g. once an interview has ended. */
+  disabled?: boolean;
   isLoadingHistory?: boolean;
 
   // Sidebar properties
@@ -52,6 +59,7 @@ export function ChatInterface({
   streamedText = "",
   streamedSources = [],
   onSendMessage,
+  disabled = false,
   isLoadingHistory = false,
   showSidebar = false,
   sessions = [],
@@ -93,26 +101,34 @@ export function ChatInterface({
     closeInspector();
   }, [activeSessionId, closeInspector]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || isStreaming) return;
-    const msg = input.trim();
+    if (!input.trim() || isStreaming || disabled) return;
+    const typed = input;
+    const msg = typed.trim();
     setInput("");
     setOptimisticUserMessage(msg);
-    onSendMessage(msg);
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "44px";
+    const sent = await onSendMessage(msg);
+    if (sent === false) {
+      // Not sent: drop the optimistic bubble and give the exact text back,
+      // unless something new was typed in the meantime.
+      setOptimisticUserMessage("");
+      setInput((current) => current || typed);
     }
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
-    const el = textareaRef.current;
-    if (el) {
-      el.style.height = "auto";
-      el.style.height = `${Math.min(el.scrollHeight, 128)}px`;
-    }
   };
+
+  // Height follows the content — typed, cleared on send, or restored after a
+  // failed send.
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 128)}px`;
+  }, [input]);
 
   // Deduplicate user message if history already caught up with our optimistic message
   const lastHistoryMessage = messages[messages.length - 1];
@@ -315,11 +331,11 @@ export function ChatInterface({
                 onChange={handleInputChange}
                 placeholder={placeholder}
                 className="w-full max-h-32 min-h-[44px] resize-none rounded-xl border border-border-light dark:border-border-dark bg-white dark:bg-slate-950 pl-4 pr-12 py-3 text-[15px] shadow-sm focus:border-signal-500 focus:outline-none focus:ring-1 focus:ring-signal-500 transition-all scrollbar-thin"
-                disabled={isStreaming}
+                disabled={isStreaming || disabled}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
-                    handleSubmit(e);
+                    void handleSubmit(e);
                   }
                 }}
                 rows={1}
@@ -327,7 +343,7 @@ export function ChatInterface({
             </div>
             <button
               type="submit"
-              disabled={isStreaming || !input.trim()}
+              disabled={isStreaming || disabled || !input.trim()}
               className="flex h-[44px] w-[44px] items-center justify-center rounded-xl bg-signal-500 text-white shadow-sm hover:bg-signal-600 focus:outline-none focus:ring-2 focus:ring-signal-500 focus:ring-offset-2 disabled:opacity-50 transition-all shrink-0"
             >
               <Send className="h-5 w-5" />

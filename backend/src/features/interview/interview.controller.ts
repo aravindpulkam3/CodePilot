@@ -16,6 +16,11 @@ function respondWithError(res: Response, error: any, fallback: string) {
   if (error?.message === "INTERVIEW_COMPLETED") {
     return res.status(409).json({ error: "This interview has already ended." });
   }
+  if (error?.message === "INTERVIEW_STALE_TURN") {
+    return res.status(409).json({
+      error: "This question has already been answered — reload the interview to see the latest question.",
+    });
+  }
   if (error?.message === "INTERVIEW_NOT_COMPLETED") {
     return res.status(409).json({ error: "End the interview before generating insights." });
   }

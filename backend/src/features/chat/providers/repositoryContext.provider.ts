@@ -1,8 +1,7 @@
 import { ChatContextProvider, ChatContextPayload, ChatSessionRecord, ConversationContext } from "../chat.types.js";
 import { retrievalService } from "../../../infrastructure/retrieval/retreival.service.js";
 import { findRepositoryById } from "../../repository/repository.service.js";
-import { BASE_SOURCE_AUTHORITY, NUMBERED_CITATION_RULE } from "../../../shared/prompts/sharedCitations.js";
-import { buildQAPromptContext, BudgetTier } from "./qaPromptContext.js";
+import { buildQAPromptContext, buildQASystemPrompt, BudgetTier } from "./qaPromptContext.js";
 // TEMPORARY verification logging — see utils/readmeDebugLog.ts for removal.
 import { docRetrievalLog } from "../../../shared/utils/readmeDebugLog.js";
 
@@ -105,7 +104,7 @@ export class RepositoryContextProvider implements ChatContextProvider {
     // prompt contains, including which entries the budgets skipped (absent)
     // and which were truncated. Docs and code keep distinct kind labels,
     // which is what carries source authority now that they share numbering.
-    const { promptText, items } = buildQAPromptContext({
+    const qaContext = buildQAPromptContext({
       repositoryProfile: retrieved.repositoryProfile,
       repositoryTier,
       docChunks: retrieved.docChunks || [],
@@ -114,43 +113,11 @@ export class RepositoryContextProvider implements ChatContextProvider {
       codeTier: codeSectionTier,
       graphNeighbors: retrieved.graphNeighbors,
     });
+    const { items } = qaContext;
 
-    const hasAnyContext = items.length > 0;
-
-    const sections: string[] = [
-      `You are a Senior Software Engineer helping explain a codebase.`,
-      ``,
-      BASE_SOURCE_AUTHORITY,
-      ``,
-      `Give a clean, structured response without unnecessary symbols.`,
-      ``,
-      `Evidence handling:`,
-      `- Sufficient evidence: when the material below directly answers the question, answer directly and confidently.`,
-      `- Partial evidence: answer what's supported and explicitly say what isn't covered — don't fill the gap with generic textbook knowledge presented as this repository's actual behavior.`,
-      `- Retrieved but not actually relevant: the material below was found by similarity search and isn't guaranteed to be relevant — if it doesn't actually address the question, say plainly that this repository's indexed content doesn't cover it, rather than stretching an unrelated snippet into an answer.`,
-      `- Adjacent but wrong: retrieved material can be topically close without covering the SPECIFIC thing asked (e.g. access-token expiration code surfacing for a refresh-token expiration question — same family, different mechanism). Check that the evidence describes the specific thing asked about before asserting behavior from it; if it's adjacent but not exact, say what the evidence actually shows and flag that the specific case isn't directly covered, rather than assuming an adjacent mechanism behaves the same way.`,
-      `- General/conceptual questions that don't depend on this specific repository: you may answer from general knowledge — say so plainly, and don't claim the repository demonstrates something the retrieved material doesn't actually show.`,
-      `- Out-of-repository questions: give a brief, honest redirect rather than pretending to search.`,
-      `- If documentation and code disagree about current behaviour, trust the code, and say plainly that the documentation appears out of date.`,
-    ];
-
-    if (!hasAnyContext) {
-      // Previously this still instructed the model to cite sources over the
-      // string "No specific code chunks retrieved." — which is what produced
-      // confident-sounding "I have no access to your files" answers that
-      // read like a broken integration rather than an empty search result.
-      sections.push(
-        ``,
-        `No indexed content matched this question. Tell the user that directly:`,
-        `nothing in the indexed repository matched, they could try rephrasing,`,
-        `and the repository may still be finishing indexing. Do not speculate`,
-        `about the codebase and do not cite any sources.`,
-      );
-    } else {
-      sections.push(``, NUMBERED_CITATION_RULE, ``, promptText);
-    }
-
-    const systemPrompt = sections.join("\n");
+    // Only numbered entries count as evidence: an overview-only context still
+    // gets the "nothing matched" instruction (see buildQASystemPrompt).
+    const { systemPrompt, hasCitableEvidence } = buildQASystemPrompt(qaContext);
 
     const displayable = items.filter((i) => i.displayable);
     const countOf = (kind: string) => displayable.filter((i) => i.kind === kind).length;
@@ -163,7 +130,7 @@ export class RepositoryContextProvider implements ChatContextProvider {
         `[code=${countOf("code")} (tier=${codeSectionTier}), doc=${countOf("documentation")} (tier=${docTier}), ` +
         `imports=${countOf("imports")}], overview=${items.some((i) => !i.displayable) ? "yes" : "no"} ` +
         `(tier=${repositoryTier}), systemPrompt=${systemPrompt.length} chars total.` +
-        (hasAnyContext ? "" : " NO CONTEXT — model instructed to say nothing matched."),
+        (hasCitableEvidence ? "" : " NO CITABLE EVIDENCE — model instructed to say nothing matched."),
     );
     displayable.forEach((i) => docRetrievalLog(`  -> ${i.heading}${i.truncated ? " (truncated)" : ""}`));
 
@@ -175,7 +142,7 @@ export class RepositoryContextProvider implements ChatContextProvider {
         sourcesCount: displayable.length,
         codeSourcesCount: countOf("code"),
         docSourcesCount: countOf("documentation"),
-        noContextFound: !hasAnyContext,
+        noContextFound: !hasCitableEvidence,
       },
     };
   }
