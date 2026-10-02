@@ -14,8 +14,9 @@ const handleGitHubError = (res: Response, error: any) => {
     return res.status(404).json({ error: 'GitHub repository or resource not found.' });
   }
   if (error?.message === 'GITHUB_NOT_CONNECTED') {
-    return res.status(400).json({ 
-      error: 'GitHub account is not connected to this user profile.' 
+    return res.status(400).json({
+      error: 'GitHub account is not connected to this user profile.',
+      code: 'GITHUB_NOT_CONNECTED',
     });
   }
   

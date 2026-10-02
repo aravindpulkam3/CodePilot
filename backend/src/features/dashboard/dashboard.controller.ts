@@ -123,7 +123,7 @@ export const getPendingPRs = async (req: Request, res: Response) => {
     if (message === "GITHUB_NOT_CONNECTED") {
       return res
         .status(400)
-        .json({ error: "GitHub account is not connected." });
+        .json({ error: "GitHub account is not connected.", code: "GITHUB_NOT_CONNECTED" });
     }
     if (axios.isAxiosError(error) && error.response?.status === 404) {
       return res.status(404).json({ error: "GitHub resource not found." });

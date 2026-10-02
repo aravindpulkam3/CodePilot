@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { ErrorState } from "@/components/ui/ErrorState";
+import { isGitHubNotConnected } from "@/utils/githubErrors";
 import { usePullRequestDetail } from "@/hooks/useRepository";
 import { useTriggerAiReview, usePullRequestReviews } from "@/hooks/useReview";
 import { PullRequestBar } from "@/components/review/PullRequestBar";
@@ -17,6 +18,7 @@ export default function PullRequestDetails() {
     data: pr,
     isLoading: isPrLoading,
     isError: isPrError,
+    error: prError,
     refetch: refetchPr,
   } = usePullRequestDetail(repositoryId!, pullNumber!);
 
@@ -92,6 +94,13 @@ export default function PullRequestDetails() {
 
   if (isPrLoading || isReviewsLoading) {
     return <div className="flex h-full items-center justify-center text-sm text-muted-light dark:text-muted-dark">Loading PR details...</div>;
+  }
+  if (isGitHubNotConnected(prError)) {
+    return (
+      <div className="flex h-full items-center justify-center text-sm text-muted-light dark:text-muted-dark">
+        Connect your GitHub account to view this pull request.
+      </div>
+    );
   }
   if (isPrError || isReviewsError) {
     return (

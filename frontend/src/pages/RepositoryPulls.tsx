@@ -4,6 +4,7 @@ import { useRepositoryPullRequests } from "@/hooks/useRepository";
 import { Card, CardBody } from "@/components/ui/Card";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { cn } from "@/utils/cn";
+import { isGitHubNotConnected } from "@/utils/githubErrors";
 
 export default function RepositoryPulls() {
   const { repositoryId } = useParams<{ repositoryId: string }>();
@@ -11,6 +12,7 @@ export default function RepositoryPulls() {
     data: pulls = [],
     isLoading,
     isError,
+    error,
     refetch,
   } = useRepositoryPullRequests(repositoryId!);
 
@@ -18,6 +20,14 @@ export default function RepositoryPulls() {
     return (
       <div className="py-12 text-center text-sm text-muted-light">
         Loading pull requests...
+      </div>
+    );
+  }
+
+  if (isGitHubNotConnected(error)) {
+    return (
+      <div className="py-12 text-center text-sm text-muted-light">
+        Connect your GitHub account to see pull requests and reviews.
       </div>
     );
   }

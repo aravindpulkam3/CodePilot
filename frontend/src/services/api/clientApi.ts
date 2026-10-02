@@ -1,5 +1,6 @@
 import axios from "axios";
 import { toast } from "sonner";
+import { isGitHubNotConnected } from "@/utils/githubErrors";
 
 /**
  * Shared axios instance for all backend calls. The Clerk session token is
@@ -40,6 +41,12 @@ apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
     if (axios.isCancel(error)) return Promise.reject(error);
+    // Reads hitting "GitHub not connected" render their own inline empty
+    // state; toasting them too fired once per query per retry on page load.
+    // User actions (POST etc.) still toast.
+    if (isGitHubNotConnected(error) && error.config?.method === "get") {
+      return Promise.reject(error);
+    }
 
     const message =
       error.response?.data?.error ||

@@ -10,6 +10,7 @@ import { ErrorState } from "@/components/ui/ErrorState";
 import { RepositoryCard } from "@/components/repository/RepositoryCard";
 import { ImportRepositoryModal } from "@/components/repository/ImportRepositoryModal";
 import { cn } from "@/utils/cn";
+import { isGitHubNotConnected } from "@/utils/githubErrors";
 import { Link, useNavigate } from "react-router-dom";
 import {
   Globe,
@@ -44,6 +45,7 @@ export default function Dashboard() {
     data: pendingPRs = [],
     isLoading: isPendingPRsLoading,
     isError: isPendingPRsError,
+    error: pendingPRsError,
     refetch: refetchPendingPRs,
   } = usePendingPRs();
   const {
@@ -305,6 +307,10 @@ export default function Dashboard() {
               {isPendingPRsLoading ? (
                 <div className="p-8 text-center text-sm text-slate-500">
                   Fetching pull requests...
+                </div>
+              ) : isGitHubNotConnected(pendingPRsError) ? (
+                <div className="p-8 text-center text-sm text-slate-500">
+                  Connect your GitHub account to see pending pull requests.
                 </div>
               ) : isPendingPRsError ? (
                 <ErrorState

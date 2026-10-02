@@ -45,7 +45,7 @@ export const generateReview = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Repository or pull request not found." });
     }
     if (error?.message === "GITHUB_NOT_CONNECTED") {
-      return res.status(400).json({ error: "GitHub account is not connected." });
+      return res.status(400).json({ error: "GitHub account is not connected.", code: "GITHUB_NOT_CONNECTED" });
     }
     if (error?.message === "GITHUB_API_FAILURE" || error?.message === "CLERK_API_FAILURE") {
       return res.status(502).json({ error: "Failed to communicate with GitHub or retrieve its access token." });
