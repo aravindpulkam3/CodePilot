@@ -24,6 +24,15 @@ export interface AppUserDto {
   updatedAt: string;
 }
 
+/**
+ * Clerk's Backend API and webhooks report GitHub as `oauth_github`, not
+ * `github` — comparing against `github` alone never matched, so
+ * `github_connected` stayed false forever. Accept both spellings.
+ */
+export function isGitHubProvider(provider: string): boolean {
+  return provider === "oauth_github" || provider === "github";
+}
+
 export function toUserDto(row: AppUserRow): AppUserDto {
   return {
     id: row.id,

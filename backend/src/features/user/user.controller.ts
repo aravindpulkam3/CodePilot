@@ -21,7 +21,9 @@ export async function getMe(req: Request, res: Response) {
     // Create on first sight, and self-heal a row that was previously
     // created without real data (e.g. by an older version of this
     // fallback, or a webhook that fired before GitHub was connected).
-    if (!user || !user.email || (!user.name && !user.avatar_url)) {
+    // A not-yet-connected row is re-checked too: the webhook can't reach
+    // localhost, so this is what picks up GitHub being linked later.
+    if (!user || !user.email || (!user.name && !user.avatar_url) || !user.github_connected) {
       user = await userService.syncFromClerkApi(clerkId);
     }
 

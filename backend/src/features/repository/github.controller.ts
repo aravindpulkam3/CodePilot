@@ -57,14 +57,16 @@ export const getRepositories = async (req: Request, res: Response) => {
     // Throttle the GitHub sync/upsert, not the read — the repo list itself
     // always comes straight from Postgres so a newly imported/removed repo
     // shows up on the very next request instead of waiting out a TTL.
-    await withCache(`github:sync:${appUserId}`, 60, async () => {
+    await withCache<boolean | null>(`github:sync:${appUserId}`, 60, async () => {
       try {
         await syncAndGetGitHubRepositories(clerkUserId, appUserId);
       } catch (e: any) {
         if (e.message !== 'GITHUB_NOT_CONNECTED') {
           throw e;
         }
-        // If not connected, we still want to return any 'public_import' repos they might have
+        // If not connected, we still want to return any 'public_import' repos they might have.
+        // null isn't cached, so the first request after connecting GitHub syncs immediately.
+        return null;
       }
       return true;
     });

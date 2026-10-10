@@ -1,6 +1,6 @@
 import { clerkClient } from "@clerk/express";
 import { pool } from "../../config/db.js";
-import type { AppUserRow } from "./user.js";
+import { isGitHubProvider, type AppUserRow } from "./user.js";
 
 /**
  * Data access for the `app_users` table. This is the ONLY module that
@@ -21,7 +21,7 @@ export const userService = {
    */
   async syncFromClerkApi(clerkId: string): Promise<AppUserRow> {
     const clerkUser = await clerkClient.users.getUser(clerkId);
-    const github = clerkUser.externalAccounts.find((a) => a.provider === "github");
+    const github = clerkUser.externalAccounts.find((a) => isGitHubProvider(a.provider));
 
     return userService.upsertFromClerk({
       clerkId,

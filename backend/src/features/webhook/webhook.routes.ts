@@ -3,6 +3,7 @@ import express from "express";
 import { Webhook } from "svix";
 import { env } from "../../config/env.js";
 import { userService } from "../user/user.service.js";
+import { isGitHubProvider } from "../user/user.js";
 
 export const webhookRoutes = Router();
 
@@ -63,7 +64,7 @@ webhookRoutes.post(
         const primaryEmail =
           data.email_addresses.find((e) => e.id === data.primary_email_address_id)
             ?.email_address ?? data.email_addresses[0]?.email_address ?? "";
-        const github = data.external_accounts?.find((a) => a.provider === "github");
+        const github = data.external_accounts?.find((a) => isGitHubProvider(a.provider));
 
         await userService.upsertFromClerk({
           clerkId: data.id,
