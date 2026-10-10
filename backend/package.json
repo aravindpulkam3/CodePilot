@@ -10,8 +10,15 @@
     "start": "node dist/server.js",
     "migrate": "tsx src/db/migrate.ts",
     "test": "node --import tsx --test src/**/*.test.ts",
+    "eval:review": "tsx scripts/evalReview.ts",
+    "eval:review:test": "node --import tsx --test scripts/review-eval/*.test.ts",
+    "eval:review:check": "tsc -p scripts/review-eval/tsconfig.json",
     "parsers:sync": "node scripts/syncParsers.mjs",
-    "parsers:verify": "node scripts/verifyParsers.mjs"
+    "parsers:verify": "node scripts/verifyParsers.mjs",
+    "eval:qa": "tsx scripts/evalQA.ts",
+    "eval:qa:test": "node --import tsx --test scripts/qa-eval/*.test.ts",
+    "eval:qa:check": "tsc -p scripts/qa-eval/tsconfig.json",
+    "eval:qa:verify": "node scripts/qa-eval/verify.mjs"
   },
   "dependencies": {
     "@bull-board/api": "^9.5.0",

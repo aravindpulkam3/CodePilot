@@ -1,0 +1,729 @@
+{
+  "version": 2,
+  "repositoryDirectory": "../parcel-shop-benchmark",
+  "baseBranch": "main",
+  "baseSha": "48f9459610c1a9735e4b5cfb651994dd769e61bd",
+  "expectedIndexSha": "48f9459610c1a9735e4b5cfb651994dd769e61bd",
+  "githubRepository": "aravindpulkam3/parcel-shop-benchmark",
+  "verification": {
+    "method": "Base/head/minimally corrected behavioral execution plus source inspection",
+    "evidence": "verification.json",
+    "humanReview": "Not independently human-reviewed"
+  },
+  "cases": [
+    {
+      "id": "stock-allocation",
+      "branch": "feature/stock-allocation",
+      "headSha": "896f080a29ce761855424117a27bb7902e25f6e2",
+      "pullNumber": 1,
+      "tags": [
+        "simple-bug"
+      ],
+      "prTitle": "Check available stock before calculating allocation",
+      "prDescription": "Move the availability check ahead of the stock subtraction and keep allocation updates together.",
+      "expectedFindings": [
+        {
+          "id": "stock-allocation-B1",
+          "file": "src/inventory.js",
+          "lineStart": 16,
+          "lineEnd": 16,
+          "symbol": "createInventory.allocate",
+          "trigger": "A positive requested quantity exactly equals the remaining stock",
+          "rootCause": "The >= comparison rejects an allocation that leaves zero units",
+          "consequence": "A customer cannot purchase all remaining units, including the last single unit",
+          "evidence": "Reserving eight notebooks from a stock of eight throws OUT_OF_STOCK at the branch head; base and the > correction succeed",
+          "acceptableAnchorPaths": [
+            "src/inventory.js"
+          ]
+        }
+      ],
+      "requiredContext": [],
+      "expectedTestFailures": [
+        "inventory supports complete allocation and replenishment"
+      ],
+      "verificationFix": {
+        "file": "src/inventory.js",
+        "before": "if (quantity >= currentStock)",
+        "after": "if (quantity > currentStock)"
+      },
+      "baseSha": "48f9459610c1a9735e4b5cfb651994dd769e61bd",
+      "snapshotHash": "58762b53b10372257256dc532e67f9a1df7615bbe06bd5812089996dc4f2c556"
+    },
+    {
+      "id": "reservation-window",
+      "branch": "feature/reservation-window",
+      "headSha": "2cab58a4f3e3de1a686e6c60a1ed886053e39d7c",
+      "pullNumber": 2,
+      "tags": [
+        "cross-file-bug"
+      ],
+      "prTitle": "Make the reservation window configurable",
+      "prDescription": "Read the reservation window from RESERVATION_TTL_SECONDS, validate its range, and document the configuration option.\n",
+      "expectedFindings": [
+        {
+          "id": "reservation-window-B1",
+          "file": "src/config.js",
+          "lineStart": 6,
+          "lineEnd": 6,
+          "symbol": "reservationLifetimeMs",
+          "trigger": "A reservation is created with the default or a valid configured lifetime",
+          "rootCause": "Configuration returns seconds while the reservation service adds that value directly to a millisecond timestamp",
+          "consequence": "Default reservations expire in 900 milliseconds rather than 15 minutes; checkout after two seconds fails and allocated stock is released prematurely",
+          "evidence": "Default expiry is 10900 instead of 910000 for a clock starting at 10000. Configured 120 seconds yields 10120 instead of 130000. Multiplying the returned value by 1000 restores both contracts",
+          "acceptableAnchorPaths": [
+            "src/config.js",
+            "src/reservations.js"
+          ]
+        }
+      ],
+      "requiredContext": [
+        {
+          "file": "src/reservations.js",
+          "symbol": "createReservations",
+          "requiredSource": [
+            "now = Date.now",
+            "const lifetime = reservationLifetimeMs();",
+            "expiresAt: timestamp + lifetime",
+            "timestamp >= reservation.expiresAt",
+            "inventory.release(reservation.productId, reservation.quantity)"
+          ],
+          "reason": "Establishes the millisecond clock, the unconverted lifetime addition, and the stock-release consequence"
+        }
+      ],
+      "expectedTestFailures": [
+        "reservations support checkout during their advertised lifetime",
+        "reservation availability follows the expiration instant"
+      ],
+      "configurationTests": true,
+      "verificationFix": {
+        "file": "src/config.js",
+        "before": "return seconds;",
+        "after": "return seconds * 1000;"
+      },
+      "baseSha": "48f9459610c1a9735e4b5cfb651994dd769e61bd",
+      "snapshotHash": "b80008bb65fdb02c9194e2d51e09cdfe0fbd49ae87ab9fbc8b82535da20e591b"
+    },
+    {
+      "id": "order-totals",
+      "branch": "refactor/order-totals",
+      "headSha": "b02326947b1a6dfdc973d9ad2a23ee6c8731e8a0",
+      "pullNumber": 3,
+      "tags": [
+        "safe-change"
+      ],
+      "prTitle": "Simplify merchandise subtotal calculation",
+      "prDescription": "Use an array reduction to calculate the merchandise subtotal while retaining the existing shipping calculation and order response.\n",
+      "expectedFindings": [],
+      "requiredContext": [],
+      "safeRationale": "For the dense arrays of integer-priced order lines produced by shop.checkout, both versions visit lines in order and add the same products starting at zero. The explicit initial value also preserves empty-array behavior. Shipping and response construction are unchanged; the calculation does not mutate inputs.",
+      "scope": "Behavioral correctness of this refactor for application-produced lines; arbitrary sparse arrays, hostile objects and pre-existing missing product features are outside the contract",
+      "expectedTestFailures": [],
+      "baseSha": "48f9459610c1a9735e4b5cfb651994dd769e61bd",
+      "snapshotHash": "7f62c741f6ecda3a395aba4b6cc3775f943ec7fcf28538bd5b8199891c821cc6"
+    },
+    {
+      "id": "delivery-threshold",
+      "branch": "refactor/delivery-threshold",
+      "tags": [
+        "simple-bug"
+      ],
+      "pullNumber": null,
+      "baseSha": "48f9459610c1a9735e4b5cfb651994dd769e61bd",
+      "headSha": "9a97704b9530e9cf5b79cddeee85dbbe4079fae3",
+      "snapshotHash": null,
+      "publicationStatus": "local-only",
+      "prTitle": "Express delivery pricing as a conditional block",
+      "prDescription": "Expand delivery fee selection into an explicit conditional before assembling the order totals.",
+      "expectedFindings": [
+        {
+          "id": "delivery-threshold-B1",
+          "file": "src/pricing.js",
+          "lineStart": 7,
+          "lineEnd": 7,
+          "rootCause": "The free-shipping comparison excludes an order exactly at the 7500-cent threshold.",
+          "trigger": "Merchandise subtotal equals 7500 cents.",
+          "consequence": "The customer is charged 499 cents for shipping that should be free.",
+          "evidence": "The 7499/7500/7501 boundary table and a five-notebook checkout establish the advertised inclusive threshold.",
+          "acceptableAnchorPaths": [
+            "src/pricing.js"
+          ]
+        }
+      ],
+      "requiredContext": [],
+      "verification": {
+        "patchSha256": "23f3c313d9321a8f07bc8855621ed72be2de6d890813defffea4413ebeec73b6",
+        "application": {
+          "tests": 10,
+          "passed": 8,
+          "failed": 2,
+          "failures": [
+            "delivery pricing follows the merchandise subtotal",
+            "large orders include delivery"
+          ],
+          "tapSha256": "0cd56868548c78622e03ca868d84ea7f7e0d1363f516a78c3d027214a20af5d3"
+        },
+        "behavioral": {
+          "tests": 9,
+          "passed": 6,
+          "failed": 3,
+          "failures": [
+            "checkout retains catalog monetary units",
+            "delivery amounts across the threshold",
+            "order totals across generated baskets"
+          ],
+          "tapSha256": "846b536bed78a1a9ea5523ef3fe039a68bc6702136f7c37690ee4eb8a511a010"
+        },
+        "corrected": {
+          "fix": {
+            "file": "src/pricing.js",
+            "before": "subtotalCents > 7500",
+            "after": "subtotalCents >= 7500"
+          },
+          "application": {
+            "tests": 10,
+            "passed": 10,
+            "failed": 0,
+            "failures": [],
+            "tapSha256": "73211f609e33395b878896b4b20e3749bfbbf3f1a72846d139938f4c01ed6aac"
+          },
+          "behavioral": {
+            "tests": 9,
+            "passed": 9,
+            "failed": 0,
+            "failures": [],
+            "tapSha256": "76809d071dcfe15362dc219be6d17acc26504f6edba97f0675ef3434874572af"
+          }
+        }
+      }
+    },
+    {
+      "id": "line-amounts",
+      "branch": "refactor/line-amounts",
+      "tags": [
+        "simple-bug"
+      ],
+      "pullNumber": null,
+      "baseSha": "48f9459610c1a9735e4b5cfb651994dd769e61bd",
+      "headSha": "b48790ae5a9680002a850fda41f888ce7de2a06d",
+      "snapshotHash": null,
+      "publicationStatus": "local-only",
+      "prTitle": "Name the merchandise amount for each order line",
+      "prDescription": "Introduce a named amount inside the subtotal loop to make the calculation easier to follow.",
+      "expectedFindings": [
+        {
+          "id": "line-amounts-B1",
+          "file": "src/pricing.js",
+          "lineStart": 5,
+          "lineEnd": 5,
+          "rootCause": "Assigning each line amount overwrites rather than accumulates the subtotal.",
+          "trigger": "calculateOrder receives two or more positive-priced lines.",
+          "consequence": "Only the final line contributes to the subtotal and shipping may be calculated from an understated amount.",
+          "evidence": "1500*2 plus 900*3 must total 5700; the changed implementation returns 2700. calculateOrder already has a public multi-line test even though shop currently creates one line.",
+          "acceptableAnchorPaths": [
+            "src/pricing.js"
+          ]
+        }
+      ],
+      "requiredContext": [],
+      "verification": {
+        "patchSha256": "cc5c7e71b9dcfb22220a372e2f4733ff11f82b36f7c0ba289cc9094d4932756d",
+        "application": {
+          "tests": 10,
+          "passed": 9,
+          "failed": 1,
+          "failures": [
+            "line amounts contribute to the order subtotal"
+          ],
+          "tapSha256": "640d26e76be9df4488afd7efe6c757c204aa39e9898d44039c6bc1aadf85f219"
+        },
+        "behavioral": {
+          "tests": 9,
+          "passed": 7,
+          "failed": 2,
+          "failures": [
+            "line amounts across multiple products",
+            "order totals across generated baskets"
+          ],
+          "tapSha256": "e22849c17934c04cd3daaf29a0befc293a26719d53901a68668fc58954260dcb"
+        },
+        "corrected": {
+          "fix": {
+            "file": "src/pricing.js",
+            "before": "subtotalCents = lineAmountCents;",
+            "after": "subtotalCents += lineAmountCents;"
+          },
+          "application": {
+            "tests": 10,
+            "passed": 10,
+            "failed": 0,
+            "failures": [],
+            "tapSha256": "51e5545c20d4f67b83bfa2a8d8a512631f51d306e42bae6b85197b42617557e7"
+          },
+          "behavioral": {
+            "tests": 9,
+            "passed": 9,
+            "failed": 0,
+            "failures": [],
+            "tapSha256": "412b8113b242b12f6d3728954028807dbe89ccb97394e8222debdcdb785bf823"
+          }
+        }
+      }
+    },
+    {
+      "id": "stock-replenishment",
+      "branch": "refactor/stock-replenishment",
+      "tags": [
+        "cross-file-bug"
+      ],
+      "pullNumber": null,
+      "baseSha": "48f9459610c1a9735e4b5cfb651994dd769e61bd",
+      "headSha": "630ac41cb85da8737323a559a023ef8c3f9f7a9a",
+      "snapshotHash": null,
+      "publicationStatus": "local-only",
+      "prTitle": "Use a named stock value when releasing inventory",
+      "prDescription": "Make the value written during an inventory release explicit.",
+      "expectedFindings": [
+        {
+          "id": "stock-replenishment-B1",
+          "file": "src/inventory.js",
+          "lineStart": 20,
+          "lineEnd": 20,
+          "rootCause": "Release treats its quantity argument as an absolute stock count although reservation expiry passes only the released amount.",
+          "trigger": "An abandoned reservation expires while other units remain available.",
+          "consequence": "Reclaiming two notebooks from six available resets stock to two instead of restoring eight.",
+          "evidence": "At expiry, the shop stock read must restore eight units and remain eight on repeated reads.",
+          "acceptableAnchorPaths": [
+            "src/inventory.js"
+          ]
+        }
+      ],
+      "requiredContext": [
+        {
+          "file": "src/reservations.js",
+          "requiredSource": [
+            "reservation.status = 'expired';",
+            "inventory.release(reservation.productId, reservation.quantity);"
+          ],
+          "reason": "The caller establishes that release receives a delta, not an absolute inventory snapshot."
+        }
+      ],
+      "verification": {
+        "patchSha256": "a83dfe2f2df5fd9f4e089d1290483cb1e5eaa0ccdc47e1d1a0d3d6f1fd4950a9",
+        "application": {
+          "tests": 10,
+          "passed": 9,
+          "failed": 1,
+          "failures": [
+            "abandoned reservations return stock"
+          ],
+          "tapSha256": "e901edf9d15d406a5c98f90197de75da215f12e75e4c176f6431207a6c856160"
+        },
+        "behavioral": {
+          "tests": 9,
+          "passed": 6,
+          "failed": 3,
+          "failures": [
+            "availability after reservation cleanup",
+            "inventory movements preserve balances",
+            "shop factory uses its supplied clock"
+          ],
+          "tapSha256": "d11b784ed6be5564b96329aa86cab4513a7913d3b4bb8999fb8946c43cac9598"
+        },
+        "corrected": {
+          "fix": {
+            "file": "src/inventory.js",
+            "before": "const nextStock = quantity;",
+            "after": "const nextStock = available(productId) + quantity;"
+          },
+          "application": {
+            "tests": 10,
+            "passed": 10,
+            "failed": 0,
+            "failures": [],
+            "tapSha256": "11398ddd8fe5ffa9492796678a4727b03fdf12419bdd13e104e117786ce96ca3"
+          },
+          "behavioral": {
+            "tests": 9,
+            "passed": 9,
+            "failed": 0,
+            "failures": [],
+            "tapSha256": "68e033b6073571a66e7ab796ac238bff1c766de08ab58382b32eea4da016bced"
+          }
+        }
+      }
+    },
+    {
+      "id": "shop-clock",
+      "branch": "refactor/shop-clock",
+      "tags": [
+        "cross-file-bug"
+      ],
+      "pullNumber": null,
+      "baseSha": "48f9459610c1a9735e4b5cfb651994dd769e61bd",
+      "headSha": "c5f2aed17008eb8b77b813e4d27dc5bd745ddc55",
+      "snapshotHash": null,
+      "publicationStatus": "local-only",
+      "prTitle": "Separate inventory construction from reservation setup",
+      "prDescription": "Name the inventory instance before constructing the reservation service in the shop factory.",
+      "expectedFindings": [
+        {
+          "id": "shop-clock-B1",
+          "file": "src/shop.js",
+          "lineStart": 9,
+          "lineEnd": 9,
+          "rootCause": "The factory drops its injected now callback, causing createReservations to use Date.now instead.",
+          "trigger": "A caller supplies a deterministic or simulated clock to createShop.",
+          "consequence": "Reservation deadlines use wall time and advancing the supplied clock no longer expires reservations.",
+          "evidence": "A clock at 10000 must yield expiresAt=910000 and expiry must follow the callback at the exact deadline.",
+          "acceptableAnchorPaths": [
+            "src/shop.js"
+          ]
+        }
+      ],
+      "requiredContext": [
+        {
+          "file": "src/reservations.js",
+          "requiredSource": [
+            "createReservations(inventory, now = Date.now)",
+            "const timestamp = now();",
+            "expiresAt: timestamp + lifetime",
+            "expireAt(now());"
+          ],
+          "reason": "Shows the default wall clock and all consumers of the injected clock."
+        }
+      ],
+      "verification": {
+        "patchSha256": "70ed8df7ed4027a64b09980e6fea598a1520eab3643c3c05d14defeec36f88f5",
+        "application": {
+          "tests": 10,
+          "passed": 9,
+          "failed": 1,
+          "failures": [
+            "abandoned reservations return stock"
+          ],
+          "tapSha256": "43c214ff4cc9220fd3a0331dae22f197dc51abf3e71df462335c12cde6a60ad6"
+        },
+        "behavioral": {
+          "tests": 9,
+          "passed": 7,
+          "failed": 2,
+          "failures": [
+            "availability after reservation cleanup",
+            "shop factory uses its supplied clock"
+          ],
+          "tapSha256": "aae4492f1710371bcafd780858fb78e8bfbc4b73b4c460906ebee905543c8edd"
+        },
+        "corrected": {
+          "fix": {
+            "file": "src/shop.js",
+            "before": "createReservations(inventory);",
+            "after": "createReservations(inventory, now);"
+          },
+          "application": {
+            "tests": 10,
+            "passed": 10,
+            "failed": 0,
+            "failures": [],
+            "tapSha256": "18cb6eaa2865a0550a1f8d02efc5e8c01938bf7c48441f760fb557b6e953ee0b"
+          },
+          "behavioral": {
+            "tests": 9,
+            "passed": 9,
+            "failed": 0,
+            "failures": [],
+            "tapSha256": "c375d9c8458a68d69fb678d7dca46e7cacbc234aa6ee4d4af9b6982954d4089c"
+          }
+        }
+      }
+    },
+    {
+      "id": "checkout-units",
+      "branch": "refactor/checkout-units",
+      "tags": [
+        "cross-file-bug"
+      ],
+      "pullNumber": null,
+      "baseSha": "48f9459610c1a9735e4b5cfb651994dd769e61bd",
+      "headSha": "c80a1c2020bab2c247c31915be996cb14042afdc",
+      "snapshotHash": null,
+      "publicationStatus": "local-only",
+      "prTitle": "Return a compact checkout reservation receipt",
+      "prDescription": "Build the checkout receipt explicitly from the consumed reservation fields.",
+      "expectedFindings": [
+        {
+          "id": "checkout-units-B1",
+          "file": "src/reservations.js",
+          "lineStart": 40,
+          "lineEnd": 40,
+          "rootCause": "The checkout receipt renames quantity to units without updating the shop consumer that reads reservation.quantity.",
+          "trigger": "Any reservation is checked out through createShop.",
+          "consequence": "Order line quantity is undefined and monetary totals become NaN.",
+          "evidence": "Checkout of three pens must yield line quantity 3 and subtotal 2700; finite totals and stock consumption are asserted.",
+          "acceptableAnchorPaths": [
+            "src/reservations.js"
+          ]
+        }
+      ],
+      "requiredContext": [
+        {
+          "file": "src/shop.js",
+          "requiredSource": [
+            "const reservation = reservations.checkout(reservationId);",
+            "quantity: reservation.quantity,",
+            "...calculateOrder(lines)"
+          ],
+          "reason": "The unchanged consumer expects quantity on the checkout receipt."
+        },
+        {
+          "file": "src/pricing.js",
+          "requiredSource": [
+            "subtotalCents += line.priceCents * line.quantity;"
+          ],
+          "reason": "Shows undefined quantity propagating into a NaN subtotal."
+        }
+      ],
+      "verification": {
+        "patchSha256": "57cc5e7d178531684a1332a626f7b00dfb842d81a15b7058a4eda373b1bbae99",
+        "application": {
+          "tests": 10,
+          "passed": 7,
+          "failed": 3,
+          "failures": [
+            "large orders include delivery",
+            "orders include merchandise and delivery amounts",
+            "returned reservation data does not change stored state"
+          ],
+          "tapSha256": "11a57efad977c31d710407409432682e19e9147efde4fa4c2eae7f178cfcdf8c"
+        },
+        "behavioral": {
+          "tests": 9,
+          "passed": 7,
+          "failed": 2,
+          "failures": [
+            "checkout retains catalog monetary units",
+            "checkout transports the reserved quantity"
+          ],
+          "tapSha256": "601ed5e6c5737279c6962d1d6ec9037f36efa68649657f4145a63113f1af69ce"
+        },
+        "corrected": {
+          "fix": {
+            "file": "src/reservations.js",
+            "before": "productId, units, expiresAt, status };",
+            "after": "productId, quantity: units, expiresAt, status };"
+          },
+          "application": {
+            "tests": 10,
+            "passed": 10,
+            "failed": 0,
+            "failures": [],
+            "tapSha256": "b7de09e749579548e718a275a76d3d0d0d7e5c41dbaa62dea4cdb36de0b840cb"
+          },
+          "behavioral": {
+            "tests": 9,
+            "passed": 9,
+            "failed": 0,
+            "failures": [],
+            "tapSha256": "929aa88006c747115ef89f352fc91701bc81437e0dd509503b0393c734d61ffe"
+          }
+        }
+      }
+    },
+    {
+      "id": "catalog-amounts",
+      "branch": "refactor/catalog-amounts",
+      "tags": [
+        "cross-file-bug"
+      ],
+      "pullNumber": null,
+      "baseSha": "48f9459610c1a9735e4b5cfb651994dd769e61bd",
+      "headSha": "93b6afc070b7e9a360392f255caaa938ed8b16ff",
+      "snapshotHash": null,
+      "publicationStatus": "local-only",
+      "prTitle": "Normalize catalog amounts while assembling order lines",
+      "prDescription": "Introduce a local unit price when building the checkout line from the catalog entry.",
+      "expectedFindings": [
+        {
+          "id": "catalog-amounts-B1",
+          "file": "src/shop.js",
+          "lineStart": 16,
+          "lineEnd": 16,
+          "rootCause": "The shop divides catalog cents by 100 but passes the result into the cents-based pricing contract.",
+          "trigger": "Any product is checked out through the shop.",
+          "consequence": "Merchandise is undercharged by a factor of 100 and qualifying orders may incorrectly incur shipping.",
+          "evidence": "A notebook line must retain priceCents=1500. Five notebooks total 7500 with free shipping, not 75 plus 499.",
+          "acceptableAnchorPaths": [
+            "src/shop.js"
+          ]
+        }
+      ],
+      "requiredContext": [
+        {
+          "file": "src/catalog.js",
+          "requiredSource": [
+            "id: 'notebook'",
+            "priceCents: 1500"
+          ],
+          "reason": "Confirms that catalog amounts are already cents."
+        },
+        {
+          "file": "src/pricing.js",
+          "requiredSource": [
+            "subtotalCents += line.priceCents * line.quantity;",
+            "subtotalCents >= 7500 ? 0 : 499"
+          ],
+          "reason": "The downstream calculation uses integer cents and a cents-based shipping threshold."
+        }
+      ],
+      "verification": {
+        "patchSha256": "fc1be89e874cb1bdca742166bc0238eba81bf2ba0c725808ff5d32541aff26c2",
+        "application": {
+          "tests": 10,
+          "passed": 8,
+          "failed": 2,
+          "failures": [
+            "large orders include delivery",
+            "orders include merchandise and delivery amounts"
+          ],
+          "tapSha256": "e0cc75d0f4d53ead3b547289d8f549507910f80da67472d3f3a0390fa080c3cd"
+        },
+        "behavioral": {
+          "tests": 9,
+          "passed": 7,
+          "failed": 2,
+          "failures": [
+            "checkout retains catalog monetary units",
+            "checkout transports the reserved quantity"
+          ],
+          "tapSha256": "b17fb9afebca0b6654d6aed702bf9feb7de61f045d362cf66db6e4c50fd778b3"
+        },
+        "corrected": {
+          "fix": {
+            "file": "src/shop.js",
+            "before": "const unitPrice = product.priceCents / 100;",
+            "after": "const unitPrice = product.priceCents;"
+          },
+          "application": {
+            "tests": 10,
+            "passed": 10,
+            "failed": 0,
+            "failures": [],
+            "tapSha256": "ee0eaff6e30ab1671c46d153a4f98c6a8257cd7fab40bce31492363a22c54acd"
+          },
+          "behavioral": {
+            "tests": 9,
+            "passed": 9,
+            "failed": 0,
+            "failures": [],
+            "tapSha256": "b39bdc054959f343bd35cc20b5e6b629fc304df11f632159dd5504c3eea46f52"
+          }
+        }
+      }
+    },
+    {
+      "id": "inventory-initialization",
+      "branch": "refactor/inventory-initialization",
+      "tags": [
+        "safe-change"
+      ],
+      "pullNumber": null,
+      "baseSha": "48f9459610c1a9735e4b5cfb651994dd769e61bd",
+      "headSha": "35057e566b818ea91a132abd03956a9dce53c5a2",
+      "snapshotHash": null,
+      "publicationStatus": "local-only",
+      "prTitle": "Initialize inventory entries with an explicit loop",
+      "prDescription": "Populate the inventory map directly while traversing the supplied catalog.",
+      "expectedFindings": [],
+      "requiredContext": [],
+      "safeRationale": "For the dense product arrays supported by this library, both versions visit entries in order, preserve stock values, and use the last duplicate ID. Empty input and instance isolation remain unchanged. Sparse arrays and hostile accessors are outside the application contract.",
+      "verification": {
+        "patchSha256": "1dc68af69ee02adb0cad07393691fd3dd269bf32173b190f7eee0f29cbb0c957",
+        "application": {
+          "tests": 10,
+          "passed": 10,
+          "failed": 0,
+          "failures": [],
+          "tapSha256": "f4f779096e25a7c887620164773fd20b3240f47dbbf60db0f00d2b7e17b0fce9"
+        },
+        "behavioral": {
+          "tests": 9,
+          "passed": 9,
+          "failed": 0,
+          "failures": [],
+          "tapSha256": "7fa4ad8ea660c3529d250a81284fe8293a14878106e773c734e222fadbe3a542"
+        },
+        "corrected": null
+      }
+    },
+    {
+      "id": "checkout-line-helper",
+      "branch": "refactor/checkout-line-helper",
+      "tags": [
+        "safe-change"
+      ],
+      "pullNumber": null,
+      "baseSha": "48f9459610c1a9735e4b5cfb651994dd769e61bd",
+      "headSha": "82e5526589027675c5c57e639f66ea19ae00db03",
+      "snapshotHash": null,
+      "publicationStatus": "local-only",
+      "prTitle": "Extract checkout line construction into a helper",
+      "prDescription": "Move order line construction into a small module-local helper reused by checkout.",
+      "expectedFindings": [],
+      "requiredContext": [],
+      "safeRationale": "The helper builds the same three fields from the same product and quantity, creates a fresh object, and leaves reservation consumption and pricing order unchanged. All catalog products and supported quantities are checked.",
+      "verification": {
+        "patchSha256": "34d419ad0b68d8d4cd6a164b44edd95918bbb4eadf98b2c9c643743011e663df",
+        "application": {
+          "tests": 10,
+          "passed": 10,
+          "failed": 0,
+          "failures": [],
+          "tapSha256": "ffe0fe70b3c8a59da26c39a9b23fb5bc230d0fd5a3a91d263c1364eb23a27a19"
+        },
+        "behavioral": {
+          "tests": 9,
+          "passed": 9,
+          "failed": 0,
+          "failures": [],
+          "tapSha256": "88df4b82bfe0562b8750d114701612b1d9bc83955e97f39ed55aaf741d456da4"
+        },
+        "corrected": null
+      }
+    },
+    {
+      "id": "reservation-sweep",
+      "branch": "refactor/reservation-sweep",
+      "tags": [
+        "safe-change"
+      ],
+      "pullNumber": null,
+      "baseSha": "48f9459610c1a9735e4b5cfb651994dd769e61bd",
+      "headSha": "7299aadf8e3b4b527acd597adf208a4fea415d12",
+      "snapshotHash": null,
+      "publicationStatus": "local-only",
+      "prTitle": "Use guard clauses during reservation cleanup",
+      "prDescription": "Skip inactive and unexpired reservations before applying cleanup updates.",
+      "expectedFindings": [],
+      "requiredContext": [],
+      "safeRationale": "The guard clauses preserve the original conjunction, including the exact expiry boundary and unordered numeric comparisons. Only active expired reservations release stock, exactly once. Checked-out reservations remain consumed.",
+      "verification": {
+        "patchSha256": "726345aeee44d9e942cedd93335fd20269f4a82a5875ae6c90f4e2809a0c5848",
+        "application": {
+          "tests": 10,
+          "passed": 10,
+          "failed": 0,
+          "failures": [],
+          "tapSha256": "ed4957ae6bd344d2884f82ace9a258be6a624b9c8ea9d1b52bfb22483140c8f1"
+        },
+        "behavioral": {
+          "tests": 9,
+          "passed": 9,
+          "failed": 0,
+          "failures": [],
+          "tapSha256": "e5cbcb7814e3d67492dbae2997bcfa00aa1e49ec08d3849f2fbbc295dc45e178"
+        },
+        "corrected": null
+      }
+    }
+  ],
+  "status": "draft-unpublished"
+}

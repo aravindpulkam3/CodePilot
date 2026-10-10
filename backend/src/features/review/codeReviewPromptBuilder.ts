@@ -57,7 +57,9 @@ export class CodeReviewPromptBuilder {
     documentation: string[];
     changedCode: ChangedCodeContext | null;
     excludedEvidence?: ReviewInputMetadata["excludedEvidence"];
-  }): { messages: LLMMessage[]; reviewInput: ReviewInputMetadata } {
+  }): { messages: LLMMessage[]; reviewInput: ReviewInputMetadata; selection: {
+    codeIndices: number[]; documentIndices: number[]; enclosing: ChangedCodeContext; files: PRFile[];
+  } } {
     const parsed = input.files.map((file) => splitReviewPatch(file));
     const reviewInput: ReviewInputMetadata = {
       version: 1,
@@ -271,7 +273,12 @@ export class CodeReviewPromptBuilder {
       messages,
       schema,
     );
-    return { messages, reviewInput };
+    return { messages, reviewInput, selection: {
+      codeIndices: code.map((item) => input.codeContext.indexOf(item)),
+      documentIndices: docs.map((item) => input.documentation.indexOf(item)),
+      enclosing,
+      files: [...selected.values()],
+    } };
   }
 
   /** Pure renderer. Generation uses buildBudgetedReviewPrompt and validates again at the provider. */

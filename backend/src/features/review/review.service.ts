@@ -1,4 +1,5 @@
 import { safeErrorDetails } from "../../shared/utils/safeErrorDetails.js";
+import { observe, type DiagnosticObserver } from "../../shared/utils/diagnostics.js";
 import { pool } from "../../config/db.js";
 import type { PoolClient } from "pg";
 import {
@@ -10,7 +11,7 @@ import type { PullRequestFile } from "../../infrastructure/github/pullRequestSna
 import {
   LLMService,
   LLMMessage,
-  ollamaService,
+  llmService,
 } from "../../infrastructure/llm/llm.service.js";
 import { CodeReviewPromptBuilder } from "./codeReviewPromptBuilder.js";
 import { retrievalService } from "../../infrastructure/retrieval/retreival.service.js";
@@ -78,7 +79,7 @@ export function githubChangedCodeDeps(
 }
 
 export class ReviewService {
-  constructor(private llm: LLMService = ollamaService) {}
+  constructor(private llm: LLMService = llmService) {}
 
   /**
    * Retrieval + prompt assembly for one review, with no LLM call and no
@@ -94,6 +95,7 @@ export class ReviewService {
       skipSync?: boolean;
       githubToken?: string;
       budget?: LLMRequestBudget;
+      onDiagnostic?: DiagnosticObserver;
     },
   ): Promise<{
     messages: LLMMessage[];
@@ -140,8 +142,9 @@ export class ReviewService {
         prDetails.description,
         changedFilePaths,
       ),
-      { skipSync: extra?.skipSync },
+      { skipSync: extra?.skipSync, onDiagnostic: extra?.onDiagnostic },
     );
+    observe(extra?.onDiagnostic, "selected", candidates);
     // Retrieval may overlap an index update. Its output is discovery only:
     // neither indexed bodies, old line numbers, profiles nor claimed edges
     // are passed as factual evidence. All source below is reparsed at HEAD.
@@ -157,6 +160,7 @@ export class ReviewService {
       },
     );
     const retrievedContext = verified.context;
+    observe(extra?.onDiagnostic, "verified", { ...retrievedContext, excluded: verified.excluded });
     const codeContext = retrievedContext.codeChunks.map(
       (chunk) =>
         `// File: ${chunk.filePath}\n// Symbol: ${chunk.symbolName}\n// Lines: ${chunk.lineStart}-${chunk.lineEnd}\n// Candidate discovery: ${chunk.symbolType}\n${stripChunkHeader(chunk.content)}`,
@@ -179,7 +183,71 @@ export class ReviewService {
       changedCode,
       excludedEvidence: verified.excluded,
     });
+    if (extra?.onDiagnostic) observe(extra.onDiagnostic, "prompt", {
+      codeChunks: result.selection.codeIndices.map((i) => ({ ...retrievedContext.codeChunks[i], content: stripChunkHeader(retrievedContext.codeChunks[i].content) })),
+      docChunks: result.selection.documentIndices.map((i) => ({ ...retrievedContext.docChunks[i], content: stripChunkHeader(retrievedContext.docChunks[i].content) })),
+      enclosing: result.selection.enclosing,
+      files: result.selection.files,
+    });
     return { ...result, retrievedContext, changedCode };
+  }
+
+  /** Shared acquisition through validation/revision check. No publication writes.
+   * Callers enforce repository ownership (HTTP controller or local evaluation CLI).
+   */
+  async generateReview(
+    clerkUserId: string,
+    repositoryId: string,
+    pullNumber: number,
+    options: {
+      skipSync?: boolean;
+      onDiagnostic?: DiagnosticObserver;
+      expectedRevision?: { headSha: string; baseSha: string };
+      checkSnapshot?: (snapshot: ReviewPrInput) => void;
+      onAcquired?: () => void;
+    } = {},
+  ) {
+    const started = performance.now();
+    const repoDetails = await findRepositoryById(repositoryId);
+    if (!repoDetails) throw new Error("REPO_NOT_FOUND");
+    const prDetails = await githubService.getPullRequestDetails(clerkUserId, repositoryId, pullNumber, repoDetails);
+    const headSha = prDetails.head_sha;
+    observe(options.onDiagnostic, "snapshot", prDetails);
+    const expected = options.expectedRevision;
+    if (expected && (headSha !== expected.headSha || prDetails.base_sha !== expected.baseSha)) {
+      throw new Error("EVAL_PR_REVISION_DRIFT");
+    }
+    options.checkSnapshot?.(prDetails);
+    options.onAcquired?.();
+    const acquired = performance.now();
+    const githubToken = await githubService.getGitHubAccessToken(clerkUserId).catch(() => undefined);
+    const { messages, reviewInput } = await this.buildReviewMessages(
+      clerkUserId, repositoryId, repoDetails, prDetails,
+      { githubToken, skipSync: options.skipSync, onDiagnostic: options.onDiagnostic },
+    );
+    const schema = CodeReviewPromptBuilder.getReviewSchema();
+    observe(options.onDiagnostic, "request", { messages, schema, reviewInput, model: this.llm.modelName });
+    const prepared = performance.now();
+    let generated = prepared;
+    let rawReview: StructuredReview;
+    try {
+      rawReview = await this.llm.generateStructured<StructuredReview>(messages, schema, reviewInput.budget, options.onDiagnostic);
+    } finally {
+      generated = performance.now();
+      observe(options.onDiagnostic, "timing", { acquisitionMs: acquired - started,
+        preparationMs: prepared - acquired, generationMs: generated - prepared });
+    }
+    observe(options.onDiagnostic, "rawReview", rawReview);
+    const aiReview = applyReviewInput(rawReview, reviewInput);
+    observe(options.onDiagnostic, "validated", aiReview);
+    // Remains outside publication's transaction, as before.
+    const currentRevision = await githubService.getPullRequestRevision(clerkUserId, repoDetails, pullNumber);
+    const isLatest = currentRevision.head_sha === headSha && currentRevision.base_sha === reviewInput.baseSha;
+    observe(options.onDiagnostic, "revision", currentRevision);
+    if (expected && !isLatest) throw new Error("EVAL_PR_REVISION_DRIFT");
+    observe(options.onDiagnostic, "completion", { totalMs: performance.now() - started,
+      validationAndRevisionMs: performance.now() - generated });
+    return { repoDetails, headSha, reviewInput, aiReview, isLatest };
   }
 
   async generateAndStoreReview(
@@ -190,55 +258,11 @@ export class ReviewService {
     let client: PoolClient | undefined;
 
     try {
-      // 1. Fetch Repository
-      const repoDetails = await findRepositoryById(repositoryId);
-      if (!repoDetails) {
-        throw new Error("REPO_NOT_FOUND");
-      }
-      // 2. Fetch GitHub PR Data — always fresh, never cached (correctness-critical: review generation must see the latest commit, not a stale diff).
-      const prDetails = await githubService.getPullRequestDetails(
-        clerkUserId,
-        repositoryId,
-        pullNumber,
-        repoDetails,
+      const { repoDetails, headSha, aiReview, isLatest } = await this.generateReview(
+        clerkUserId, repositoryId, pullNumber, {
+          onAcquired: () => appEvents.emit(EVENT_TYPES.PR_UPDATED, { repositoryId, pullNumber }),
+        },
       );
-      const headSha = prDetails.head_sha;
-
-      // We just fetched this PR's real current state — invalidate any
-      // display cache for it now instead of waiting out its TTL.
-      appEvents.emit(EVENT_TYPES.PR_UPDATED, { repositoryId, pullNumber });
-
-      // 3. Retrieve context and build the prompt. getPullRequestDetails above
-      // already required a working GitHub token; a failed second lookup only
-      // disables private-repo head fetches (per-file fallback), never the review.
-      const githubToken = await githubService
-        .getGitHubAccessToken(clerkUserId)
-        .catch(() => undefined);
-      const { messages, reviewInput } = await this.buildReviewMessages(
-        clerkUserId,
-        repositoryId,
-        repoDetails,
-        prDetails,
-        { githubToken },
-      );
-      const schema = CodeReviewPromptBuilder.getReviewSchema();
-
-      // 4. Generate AI Review
-      const rawReview = await this.llm.generateStructured<StructuredReview>(
-        messages,
-        schema,
-        reviewInput.budget,
-      );
-
-      const aiReview = applyReviewInput(rawReview, reviewInput);
-
-      // This is a fresh metadata-only check, outside the publication transaction.
-      // GitHub can still advance afterward; this is not an atomic GitHub/DB snapshot.
-      const currentRevision = await githubService.getPullRequestRevision(
-        clerkUserId, repoDetails, pullNumber,
-      );
-      const isLatest = currentRevision.head_sha === headSha &&
-        currentRevision.base_sha === reviewInput.baseSha;
 
       // 5. Database Transaction
       client = await pool.connect();

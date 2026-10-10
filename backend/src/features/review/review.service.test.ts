@@ -59,7 +59,7 @@ const modules: Record<string, string> = {
   "../../config/redis.js": "export const cacheRedisClient = globalThis.__reviewTestBoundary.redis; export const coordinationRedisClient = {};",
   "../repository/repository.service.js": "export const findRepositoryById = async () => ({id:'repo',user_id:'user',owner:'owner',name:'repo'});",
   "../../infrastructure/github/github.service.js": "export const getPullRequestDetails = async () => ({head_sha:'head',base_sha:'base',files:[]}); export const getGitHubAccessToken = async () => 'test-token'; export const getPullRequestRevision = (...args) => globalThis.__reviewTestBoundary.revision(...args);",
-  "../../infrastructure/llm/llm.service.js": "export const ollamaService = {};",
+  "../../infrastructure/llm/llm.service.js": "export const llmService = {modelName:'gemini-3.6-flash'};",
   "../../infrastructure/retrieval/retreival.service.js": "export const retrievalService = {};",
   "../../shared/events/eventEmitter.js": "export const appEvents = {emit(){}}; export const EVENT_TYPES = {PR_UPDATED:'updated',PR_REVIEW_COMPLETED:'completed'};",
 };
@@ -101,6 +101,48 @@ function deferred<T>() {
 }
 
 describe("review transaction lifetime", () => {
+  test("default production reviewer uses the Gemini adapter", () => {
+    assert.equal((new ReviewService() as any).llm.modelName, "gemini-3.6-flash");
+  });
+  test("shared evaluation generation validates output without publication or invalidation", async () => {
+    const events: any[] = [];
+    const result = await service().generateReview("clerk", "repo", 1, {
+      skipSync: true, expectedRevision: { headSha: "head", baseSha: "base" },
+      onDiagnostic: (event) => { events.push(event); if (event.stage === "rawReview") event.data.findings = []; },
+    });
+    assert.equal(result.aiReview.findings.length, 1);
+    assert.equal(state.connects, 0);
+    assert.ok(!state.calls.includes("invalidate"));
+    assert.ok(events.some((event) => event.stage === "request"));
+    assert.ok(events.some((event) => event.stage === "validated"));
+  });
+  test("production and evaluation use identical generation inputs and validated results", async () => {
+    const requests: any[] = [];
+    const instance = service();
+    (instance as any).llm.generateStructured = async (...args: any[]) => { requests.push(structuredClone(args.slice(0, 3))); return review(); };
+    const evaluation = await instance.generateReview("clerk", "repo", 1, { skipSync: true, onDiagnostic: () => {} });
+    const { reviewId, ...published } = await instance.generateAndStoreReview("clerk", "repo", 1);
+    assert.equal(reviewId, "new-review");
+    assert.deepEqual(requests[0], requests[1]);
+    assert.deepEqual(evaluation.aiReview, published);
+    assert.equal(state.connects, 1);
+  });
+  test("evaluation rejects revision and snapshot drift before the model", async () => {
+    await assert.rejects(service().generateReview("clerk", "repo", 1, { expectedRevision: { headSha: "different", baseSha: "base" } }), /DRIFT/);
+    await assert.rejects(service().generateReview("clerk", "repo", 1, { checkSnapshot: () => { throw new Error("snapshot-drift"); } }), /snapshot-drift/);
+    assert.ok(!state.calls.includes("model"));
+    assert.equal(state.connects, 0);
+  });
+  test("evaluation rejects post-generation drift; ordinary publication still keeps history", async () => {
+    state.revision.head_sha = "new-head";
+    await assert.rejects(service().generateReview("clerk", "repo", 1, { expectedRevision: { headSha: "head", baseSha: "base" } }), /DRIFT/);
+    assert.ok(state.calls.includes("model"));
+    assert.equal(state.connects, 0);
+  });
+  test("diagnostic observer exceptions cannot change production generation", async () => {
+    const result = await service().generateReview("clerk", "repo", 1, { onDiagnostic: () => { throw new Error("observer failed"); } });
+    assert.equal(result.aiReview.findings.length, 1);
+  });
   test("model completes before connect; commit/release precede invalidation", async () => {
     const result = await service().generateAndStoreReview("clerk", "repo", 1);
     assert.equal(result.reviewId, "new-review");

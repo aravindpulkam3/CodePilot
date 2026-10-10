@@ -14,22 +14,38 @@ import {
   DocChunkSearchResult,
   QAGraphNeighbors,
 } from "./retrievalTypes.js";
-import { ConversationTurn, buildQAEmbeddingQuery } from "../../shared/utils/conversationalQuery.js";
-import { InterviewState, MAX_TURNS_ON_MODULE } from "../../features/interview/interviewTypes.js";
+import {
+  ConversationTurn,
+  buildQAEmbeddingQuery,
+} from "../../shared/utils/conversationalQuery.js";
+import {
+  InterviewState,
+  MAX_TURNS_ON_MODULE,
+} from "../../features/interview/interviewTypes.js";
 
 import { semanticRetrievalService } from "./semanticRetrieval.service.js";
 import { repositoryGraphService } from "../../features/repository/repositoryGraph.service.js";
 import { relatedTestDiscoveryService } from "./relatedTestDiscovery.service.js";
 import { candidateMergerService } from "./candidateMerger.service.js";
-import { retrievalRerankerService, primarySource } from "./retrievalReranker.service.js";
+import {
+  retrievalRerankerService,
+  primarySource,
+} from "./retrievalReranker.service.js";
 import { contextBudgetService } from "./contextBudget.service.js";
 import { pool } from "../../config/db.js";
 import { performance } from "perf_hooks";
+import {
+  observe,
+  type DiagnosticObserver,
+} from "../../shared/utils/diagnostics.js";
 import { repositoryMapService } from "./repositoryMap.service.js";
 import { granularityOf } from "../../features/interview/interviewFocusResolution.js";
 import { decideIndexReadiness } from "./indexReadiness.js";
 // TEMPORARY verification logging — see utils/readmeDebugLog.ts for removal.
-import { docRetrievalLog, docPreview } from "../../shared/utils/readmeDebugLog.js";
+import {
+  docRetrievalLog,
+  docPreview,
+} from "../../shared/utils/readmeDebugLog.js";
 
 const DEFAULT_OPTIONS: RetrievalOptions = {
   maxComponents: 3,
@@ -139,7 +155,9 @@ export class RepositoryRetrievalService {
    * error strings to the client (409, or an SSE error frame).
    */
   private async ensureSearchable(clerkUserId: string, repositoryId: string) {
-    console.log(`[RetrievalService] Triggering JIT Sync check for repository ${repositoryId}...`);
+    console.log(
+      `[RetrievalService] Triggering JIT Sync check for repository ${repositoryId}...`,
+    );
 
     const maxWaitMs = 60000;
     const pollIntervalMs = 2000;
@@ -153,20 +171,27 @@ export class RepositoryRetrievalService {
       "SELECT last_indexed_sha, indexing_status FROM repositories WHERE id = $1",
       [repositoryId],
     );
-    if (!current[0]?.last_indexed_sha && current[0]?.indexing_status === "FAILED") {
+    if (
+      !current[0]?.last_indexed_sha &&
+      current[0]?.indexing_status === "FAILED"
+    ) {
       throw new Error("INDEXING_FAILED");
     }
 
     // 1. Enqueue the sync job, then wait for THIS job to finish (not just any past
     // state) before looking at last_indexed_sha — the repo can already read
     // searchable from a previous sync while this job is still sitting in the queue.
-    const { jobId } = await repositorySyncService.enqueueSync(clerkUserId, repositoryId);
+    const { jobId } = await repositorySyncService.enqueueSync(
+      clerkUserId,
+      repositoryId,
+    );
     const job = jobId ? await syncQueue.getJob(jobId) : undefined;
 
     if (job) {
       while (deadline()) {
         const state = await job.getState();
-        if (state === "completed" || state === "failed" || state === "unknown") break;
+        if (state === "completed" || state === "failed" || state === "unknown")
+          break;
         await new Promise((res) => setTimeout(res, pollIntervalMs));
       }
     }
@@ -178,7 +203,7 @@ export class RepositoryRetrievalService {
     for (;;) {
       const { rows } = await pool.query(
         "SELECT last_indexed_sha, indexing_status FROM repositories WHERE id = $1",
-        [repositoryId]
+        [repositoryId],
       );
 
       const status = rows[0]?.indexing_status;
@@ -190,26 +215,30 @@ export class RepositoryRetrievalService {
       if (readiness === "ready") {
         console.log(
           `[RetrievalService] Repository ${repositoryId} is searchable (status: ${status})` +
-            (deadline() ? "." : " — freshness sync still pending; serving the last complete index."),
+            (deadline()
+              ? "."
+              : " — freshness sync still pending; serving the last complete index."),
         );
         return;
       }
 
       if (readiness === "failed") {
-        console.error(`[RetrievalService] Repository ${repositoryId} indexing FAILED — refusing to retrieve on a broken index.`);
-        throw new Error('INDEXING_FAILED');
+        console.error(
+          `[RetrievalService] Repository ${repositoryId} indexing FAILED — refusing to retrieve on a broken index.`,
+        );
+        throw new Error("INDEXING_FAILED");
       }
 
       if (readiness === "timed-out") break;
 
       // No complete index yet and still NOT_STARTED / INDEXING — keep waiting.
-      await new Promise(res => setTimeout(res, pollIntervalMs));
+      await new Promise((res) => setTimeout(res, pollIntervalMs));
     }
 
     console.error(
       `[RetrievalService] Timed out after ${maxWaitMs / 1000}s waiting for repository ${repositoryId} to become searchable — refusing to retrieve on a partial index.`,
     );
-    throw new Error('INDEXING_IN_PROGRESS');
+    throw new Error("INDEXING_IN_PROGRESS");
   }
 
   /**
@@ -233,11 +262,15 @@ export class RepositoryRetrievalService {
     if (rows[0]?.last_indexed_sha) return;
 
     if (status === "FAILED") {
-      console.error(`[RetrievalService] Repository ${repositoryId} indexing FAILED — refusing to retrieve on a broken index.`);
+      console.error(
+        `[RetrievalService] Repository ${repositoryId} indexing FAILED — refusing to retrieve on a broken index.`,
+      );
       throw new Error("INDEXING_FAILED");
     }
 
-    console.warn(`[RetrievalService] Repository ${repositoryId} is not searchable (status: ${status}) — refusing this turn.`);
+    console.warn(
+      `[RetrievalService] Repository ${repositoryId} is not searchable (status: ${status}) — refusing this turn.`,
+    );
     throw new Error("INDEXING_IN_PROGRESS");
   }
 
@@ -254,11 +287,11 @@ export class RepositoryRetrievalService {
     // resolve dangling references ("that", "where is this implemented") in
     // the embedding query below — it is never rendered into the returned
     // context or the prompt built from it.
-    conversation?: { isNewSession: boolean; recentHistory: ConversationTurn[] },
+    conversation?: { isNewSession: boolean; recentHistory: ConversationTurn[]; skipSync?: boolean },
   ): Promise<RetrievedContext> {
     const options = { ...DEFAULT_OPTIONS, ...opts };
     const isNewSession = conversation?.isNewSession ?? true;
-    if (isNewSession) {
+    if (isNewSession && !conversation?.skipSync) {
       await this.ensureSearchable(clerkUserId, repositoryId);
     } else {
       await this.assertSearchable(repositoryId);
@@ -269,7 +302,9 @@ export class RepositoryRetrievalService {
     // resolves against the turn BEFORE this one, not against itself.
     const priorHistory = (conversation?.recentHistory ?? []).slice(0, -1);
     const embeddingQuery = buildQAEmbeddingQuery(query, priorHistory);
-    const queryVectorStr = await semanticRetrievalService.getQueryVectorStr(embeddingQuery.text);
+    const queryVectorStr = await semanticRetrievalService.getQueryVectorStr(
+      embeddingQuery.text,
+    );
 
     const context: RetrievedContext = {
       repositoryProfile: null,
@@ -302,9 +337,14 @@ export class RepositoryRetrievalService {
         repositoryId,
         queryVectorStr,
         options.maxDocChunks ?? DEFAULT_OPTIONS.maxDocChunks,
-        options.docSimilarityThreshold ?? DEFAULT_OPTIONS.docSimilarityThreshold,
+        options.docSimilarityThreshold ??
+          DEFAULT_OPTIONS.docSimilarityThreshold,
       ),
-      semanticRetrievalService.searchCodeChunks(repositoryId, queryVectorStr, options),
+      semanticRetrievalService.searchCodeChunks(
+        repositoryId,
+        queryVectorStr,
+        options,
+      ),
       repositoryMapService.getRepositoryProfile(repositoryId),
     ]);
 
@@ -361,7 +401,10 @@ export class RepositoryRetrievalService {
     // confident match, deliberately not a cross-type comparison against
     // docs/summaries — see the Design principle note on evidence roles.
     context.graphNeighbors = null;
-    if (codeChunks.length > 0 && codeChunks[0].similarity >= QA_GRAPH_AUGMENTATION_SIMILARITY_FLOOR) {
+    if (
+      codeChunks.length > 0 &&
+      codeChunks[0].similarity >= QA_GRAPH_AUGMENTATION_SIMILARITY_FLOOR
+    ) {
       const anchorFile = codeChunks[0].filePath;
       const [deps, dependents] = await Promise.all([
         repositoryGraphService.getDirectDependencies(repositoryId, anchorFile),
@@ -369,10 +412,18 @@ export class RepositoryRetrievalService {
       ]);
       // Excludes the anchor itself in case of a self-referential edge, and
       // never overlaps with the file already shown in full in ## Code.
-      const dependencies = deps.filter((f) => f !== anchorFile).slice(0, QA_GRAPH_NEIGHBOR_LIMIT);
-      const dependentsList = dependents.filter((f) => f !== anchorFile).slice(0, QA_GRAPH_NEIGHBOR_LIMIT);
+      const dependencies = deps
+        .filter((f) => f !== anchorFile)
+        .slice(0, QA_GRAPH_NEIGHBOR_LIMIT);
+      const dependentsList = dependents
+        .filter((f) => f !== anchorFile)
+        .slice(0, QA_GRAPH_NEIGHBOR_LIMIT);
       if (dependencies.length > 0 || dependentsList.length > 0) {
-        context.graphNeighbors = { anchorFile, dependencies, dependents: dependentsList };
+        context.graphNeighbors = {
+          anchorFile,
+          dependencies,
+          dependents: dependentsList,
+        };
         docRetrievalLog(
           `  Graph augmentation fired on ${anchorFile} (sim=${Number(codeChunks[0].similarity).toFixed(4)}): ` +
             `${dependencies.length} dependenc(y/ies), ${dependentsList.length} dependent(s).`,
@@ -385,7 +436,11 @@ export class RepositoryRetrievalService {
 
   // --- Interview Mode: Coverage-driven retrieval ---
   /** Unvisited-first ordering used by both FRONTIER (modules) and NARROW-at-MODULE (files) — coverage should bias toward what hasn't been seen without ever excluding what has. */
-  private unvisitedFirst<T>(items: T[], visited: Set<string>, keyOf: (item: T) => string): T[] {
+  private unvisitedFirst<T>(
+    items: T[],
+    visited: Set<string>,
+    keyOf: (item: T) => string,
+  ): T[] {
     const unvisited = items.filter((i) => !visited.has(keyOf(i)));
     const seen = items.filter((i) => visited.has(keyOf(i)));
     return [...unvisited, ...seen];
@@ -436,9 +491,11 @@ export class RepositoryRetrievalService {
     const [moduleInventory, docChunks, profile] = await Promise.all([
       repositoryMapService.buildModuleInventory(repositoryId),
       semanticRetrievalService.searchDocumentationChunks(
-        repositoryId, queryVectorStr,
+        repositoryId,
+        queryVectorStr,
         options.maxDocChunks ?? DEFAULT_OPTIONS.maxDocChunks,
-        options.docSimilarityThreshold ?? DEFAULT_OPTIONS.docSimilarityThreshold,
+        options.docSimilarityThreshold ??
+          DEFAULT_OPTIONS.docSimilarityThreshold,
       ),
       repositoryMapService.getRepositoryProfile(repositoryId),
     ]);
@@ -454,7 +511,13 @@ export class RepositoryRetrievalService {
         `profile=${profile.text.length} chars.`,
     );
 
-    return { repositoryProfile, moduleInventory, docChunks, contextPaths, contextModules };
+    return {
+      repositoryProfile,
+      moduleInventory,
+      docChunks,
+      contextPaths,
+      contextModules,
+    };
   }
 
   /**
@@ -475,7 +538,9 @@ export class RepositoryRetrievalService {
   ): Promise<InterviewFollowUpContext> {
     await this.assertSearchable(repositoryId);
 
-    const granularity: InterviewGranularity = granularityOf(state.currentFocus ?? { filePath: null, symbolName: null, module: null });
+    const granularity: InterviewGranularity = granularityOf(
+      state.currentFocus ?? { filePath: null, symbolName: null, module: null },
+    );
     const focusFile = state.currentFocus?.filePath ?? null;
     const focusModule = state.currentFocus?.module ?? null;
     const visitedFiles = new Set(state.visitedFiles ?? []);
@@ -486,10 +551,13 @@ export class RepositoryRetrievalService {
     // for THIS question was already decided last turn; the action for the
     // NEXT one isn't known until this turn's call returns, which is why
     // STAY/NARROW/FRONTIER are always all assembled regardless.
-    const moduleBoundReached = (state.turnsOnCurrentModule ?? 0) >= MAX_TURNS_ON_MODULE;
-    const wantsFrontierLarge = moduleBoundReached || state.lastAction === "NEW_TOPIC";
+    const moduleBoundReached =
+      (state.turnsOnCurrentModule ?? 0) >= MAX_TURNS_ON_MODULE;
+    const wantsFrontierLarge =
+      moduleBoundReached || state.lastAction === "NEW_TOPIC";
 
-    const questionVectorStr = await semanticRetrievalService.getQueryVectorStr(question);
+    const questionVectorStr =
+      await semanticRetrievalService.getQueryVectorStr(question);
 
     // A second, distinct embedding for STAY's deeper doc framing — only one
     // of these ever actually fires per turn, gated by granularity below.
@@ -503,7 +571,8 @@ export class RepositoryRetrievalService {
       ? semanticRetrievalService.getQueryVectorStr(stayDocQuery)
       : Promise.resolve(null);
 
-    const moduleInventoryPromise = repositoryMapService.buildModuleInventory(repositoryId);
+    const moduleInventoryPromise =
+      repositoryMapService.buildModuleInventory(repositoryId);
 
     const [moduleInventory, stayDocVectorStr] = await Promise.all([
       moduleInventoryPromise,
@@ -533,17 +602,26 @@ export class RepositoryRetrievalService {
         repositoryGraphService.getDirectDependencies(repositoryId, focusFile),
         repositoryGraphService.getDirectDependents(repositoryId, focusFile),
       ]);
-      const neighbourFiles = Array.from(new Set([focusFile, ...deps, ...dependents]));
+      const neighbourFiles = Array.from(
+        new Set([focusFile, ...deps, ...dependents]),
+      );
 
       const [groundingCodeRes, stayCodeRaw] = await Promise.all([
         semanticRetrievalService.searchCodeChunksInFiles(
-          repositoryId, questionVectorStr, neighbourFiles,
-          INTERVIEW_LIMITS.localPerFileChunks, INTERVIEW_LIMITS.groundingCodeLimit,
+          repositoryId,
+          questionVectorStr,
+          neighbourFiles,
+          INTERVIEW_LIMITS.localPerFileChunks,
+          INTERVIEW_LIMITS.groundingCodeLimit,
           DEFAULT_OPTIONS.similarityThreshold,
         ),
         semanticRetrievalService.searchCodeChunksInFiles(
-          repositoryId, questionVectorStr, neighbourFiles,
-          INTERVIEW_LIMITS.localPerFileChunks, INTERVIEW_LIMITS.localTotalLimit, 0,
+          repositoryId,
+          questionVectorStr,
+          neighbourFiles,
+          INTERVIEW_LIMITS.localPerFileChunks,
+          INTERVIEW_LIMITS.localTotalLimit,
+          0,
         ),
       ]);
       groundingCode = groundingCodeRes;
@@ -552,16 +630,26 @@ export class RepositoryRetrievalService {
       // so the same chunk can legitimately come back from both. Grounding
       // wins (it's what's actually used to judge the answer) and STAY drops
       // its copy, so the model isn't shown one span twice under two labels.
-      const groundingKeys = new Set(groundingCode.map((c) => `${c.filePath}#${c.lineStart}-${c.lineEnd}`));
-      stayCode = stayCodeRaw.filter((c) => !groundingKeys.has(`${c.filePath}#${c.lineStart}-${c.lineEnd}`));
+      const groundingKeys = new Set(
+        groundingCode.map((c) => `${c.filePath}#${c.lineStart}-${c.lineEnd}`),
+      );
+      stayCode = stayCodeRaw.filter(
+        (c) => !groundingKeys.has(`${c.filePath}#${c.lineStart}-${c.lineEnd}`),
+      );
 
       groundingDocsPromise = semanticRetrievalService.searchDocumentationChunks(
-        repositoryId, questionVectorStr, INTERVIEW_LIMITS.groundingDocLimit, DEFAULT_OPTIONS.docSimilarityThreshold,
+        repositoryId,
+        questionVectorStr,
+        INTERVIEW_LIMITS.groundingDocLimit,
+        DEFAULT_OPTIONS.docSimilarityThreshold,
       );
       // No NARROW at FILE — nothing finer than an implementation to offer.
     } else if (granularity === "MODULE" && focusModule) {
       groundingDocsPromise = semanticRetrievalService.searchDocumentationChunks(
-        repositoryId, questionVectorStr, INTERVIEW_LIMITS.groundingDocLimit, DEFAULT_OPTIONS.docSimilarityThreshold,
+        repositoryId,
+        questionVectorStr,
+        INTERVIEW_LIMITS.groundingDocLimit,
+        DEFAULT_OPTIONS.docSimilarityThreshold,
       );
       groundingProfilePromise = repositoryMapService
         .getModuleProfile(repositoryId, focusModule)
@@ -569,20 +657,28 @@ export class RepositoryRetrievalService {
 
       stayDocsPromise = stayDocVectorStr
         ? semanticRetrievalService.searchDocumentationChunks(
-            repositoryId, stayDocVectorStr, INTERVIEW_LIMITS.stayDocLimit, DEFAULT_OPTIONS.docSimilarityThreshold,
+            repositoryId,
+            stayDocVectorStr,
+            INTERVIEW_LIMITS.stayDocLimit,
+            DEFAULT_OPTIONS.docSimilarityThreshold,
           )
         : Promise.resolve([]);
 
       const moduleEntry = moduleInventory.find((m) => m.module === focusModule);
       if (moduleEntry) {
-        narrowFiles = this.unvisitedFirst(moduleEntry.files, visitedFiles, (f) => f).slice(
-          0, INTERVIEW_LIMITS.narrowFileLimit,
-        );
+        narrowFiles = this.unvisitedFirst(
+          moduleEntry.files,
+          visitedFiles,
+          (f) => f,
+        ).slice(0, INTERVIEW_LIMITS.narrowFileLimit);
       }
     } else {
       // REPOSITORY
       groundingDocsPromise = semanticRetrievalService.searchDocumentationChunks(
-        repositoryId, questionVectorStr, INTERVIEW_LIMITS.groundingDocLimit, DEFAULT_OPTIONS.docSimilarityThreshold,
+        repositoryId,
+        questionVectorStr,
+        INTERVIEW_LIMITS.groundingDocLimit,
+        DEFAULT_OPTIONS.docSimilarityThreshold,
       );
       groundingProfilePromise = repositoryMapService
         .getRepositoryProfile(repositoryId)
@@ -590,13 +686,18 @@ export class RepositoryRetrievalService {
 
       stayDocsPromise = stayDocVectorStr
         ? semanticRetrievalService.searchDocumentationChunks(
-            repositoryId, stayDocVectorStr, INTERVIEW_LIMITS.stayDocLimit, DEFAULT_OPTIONS.docSimilarityThreshold,
+            repositoryId,
+            stayDocVectorStr,
+            INTERVIEW_LIMITS.stayDocLimit,
+            DEFAULT_OPTIONS.docSimilarityThreshold,
           )
         : Promise.resolve([]);
 
-      narrowModules = this.unvisitedFirst(moduleInventory, visitedModules, (m) => m.module).slice(
-        0, INTERVIEW_LIMITS.narrowModuleLimit,
-      );
+      narrowModules = this.unvisitedFirst(
+        moduleInventory,
+        visitedModules,
+        (m) => m.module,
+      ).slice(0, INTERVIEW_LIMITS.narrowModuleLimit);
     }
 
     // FRONTIER — coverage. Unvisited-module names, ranked by fan-in (never
@@ -604,28 +705,43 @@ export class RepositoryRetrievalService {
     // one that merely resembles the current question). Feeds NEW_TOPIC.
     // Falls back to the full inventory once every module has been visited —
     // the interview should never structurally dead-end.
-    const unvisitedModules = moduleInventory.filter((m) => !visitedModules.has(m.module));
-    const frontierPool = unvisitedModules.length > 0 ? unvisitedModules : moduleInventory;
+    const unvisitedModules = moduleInventory.filter(
+      (m) => !visitedModules.has(m.module),
+    );
+    const frontierPool =
+      unvisitedModules.length > 0 ? unvisitedModules : moduleInventory;
     const frontierModules = frontierPool.slice(
-      0, wantsFrontierLarge ? INTERVIEW_LIMITS.frontierModuleLimitLarge : INTERVIEW_LIMITS.frontierModuleLimitSmall,
+      0,
+      wantsFrontierLarge
+        ? INTERVIEW_LIMITS.frontierModuleLimitLarge
+        : INTERVIEW_LIMITS.frontierModuleLimitSmall,
     );
 
     const [groundingDocs, groundingProfile, stayDocs] = await Promise.all([
-      groundingDocsPromise, groundingProfilePromise, stayDocsPromise,
+      groundingDocsPromise,
+      groundingProfilePromise,
+      stayDocsPromise,
     ]);
 
-    const contextPaths = Array.from(new Set([
-      ...groundingCode.map((c) => c.filePath),
-      ...stayCode.map((c) => c.filePath),
-      ...narrowFiles,
-    ]));
-    const contextModules = Array.from(new Set([
-      ...(focusModule ? [focusModule] : []),
-      ...narrowModules.map((m) => m.module),
-      ...frontierModules.map((m) => m.module),
-    ]));
+    const contextPaths = Array.from(
+      new Set([
+        ...groundingCode.map((c) => c.filePath),
+        ...stayCode.map((c) => c.filePath),
+        ...narrowFiles,
+      ]),
+    );
+    const contextModules = Array.from(
+      new Set([
+        ...(focusModule ? [focusModule] : []),
+        ...narrowModules.map((m) => m.module),
+        ...frontierModules.map((m) => m.module),
+      ]),
+    );
 
-    const usedFallback = granularity === "FILE" && groundingCode.length === 0 && stayCode.length === 0;
+    const usedFallback =
+      granularity === "FILE" &&
+      groundingCode.length === 0 &&
+      stayCode.length === 0;
 
     console.log(
       `[INTERVIEW-RETRIEVAL] follow-up repo=${repositoryId}: granularity=${granularity} ` +
@@ -640,11 +756,17 @@ export class RepositoryRetrievalService {
 
     return {
       granularity,
-      groundingCode, groundingDocs, groundingProfile,
-      stayCode, stayDocs,
-      narrowModules, narrowFiles,
+      groundingCode,
+      groundingDocs,
+      groundingProfile,
+      stayCode,
+      stayDocs,
+      narrowModules,
+      narrowFiles,
       frontierModules,
-      contextPaths, contextModules, usedFallback,
+      contextPaths,
+      contextModules,
+      usedFallback,
     };
   }
 
@@ -670,7 +792,11 @@ export class RepositoryRetrievalService {
     // default-branch changed_file chunk fetch; they still take part in
     // single-class assignment and graph expansion. Never pass partially
     // covered files here — their unmapped hunks would lose all context.
-    extra?: { skipSync?: boolean; fullyHeadCoveredFiles?: string[] },
+    extra?: {
+      skipSync?: boolean;
+      fullyHeadCoveredFiles?: string[];
+      onDiagnostic?: DiagnosticObserver;
+    },
   ): Promise<RetrievedContext> {
     const startTime = performance.now();
     const options = { ...DEFAULT_OPTIONS, ...opts };
@@ -688,7 +814,7 @@ export class RepositoryRetrievalService {
         semanticRetrieval: 0,
         mergeAndRerank: 0,
         budgetAllocation: 0,
-        total: 0
+        total: 0,
       },
       counts: {
         changedFile: 0,
@@ -698,21 +824,22 @@ export class RepositoryRetrievalService {
         semantic: 0,
         totalPreMerge: 0,
         totalPostMerge: 0,
-        finalAccepted: 0
+        finalAccepted: 0,
       },
       budget: {
         changedCodeTokens: 0,
         graphTokens: 0,
         testTokens: 0,
         semanticTokens: 0,
-        totalTokens: 0
+        totalTokens: 0,
       },
-      droppedCandidates: []
+      droppedCandidates: [],
     };
 
     const emptyContext = (): RetrievedContext => ({
       repositoryProfile: null,
-      codeChunks: [], docChunks: [],
+      codeChunks: [],
+      docChunks: [],
       metadata: { mode: "review", usedFallback: false, query, trace },
     });
 
@@ -721,7 +848,13 @@ export class RepositoryRetrievalService {
     // returns noise; returning nothing is correct.
     if (!changedFiles || changedFiles.length === 0) {
       trace.timingMs.total = performance.now() - startTime;
-      docRetrievalLog(`Review: no reviewable changed files — skipping retrieval entirely.`);
+      observe(extra?.onDiagnostic, "initial", {
+        codeChunks: [],
+        docChunks: [],
+      });
+      docRetrievalLog(
+        `Review: no reviewable changed files — skipping retrieval entirely.`,
+      );
       return emptyContext();
     }
 
@@ -747,7 +880,9 @@ export class RepositoryRetrievalService {
           `returning an arbitrary section.`,
       );
     } else if (docVectorStr) {
-      docRetrievalLog(`Review: documentation searched with its own query: "${docPreview(effectiveDocQuery!, 120)}"`);
+      docRetrievalLog(
+        `Review: documentation searched with its own query: "${docPreview(effectiveDocQuery!, 120)}"`,
+      );
     }
 
     // ---- STAGE A: resolve the structural file set (paths only, no content)
@@ -761,13 +896,22 @@ export class RepositoryRetrievalService {
 
     // A huge PR shouldn't fan out to hundreds of graph queries. This caps
     // EXPANSION only — every changed file still appears in the diff.
-    const expansionFiles = changedFiles.slice(0, REVIEW_LIMITS.maxChangedFilesForExpansion);
+    const expansionFiles = changedFiles.slice(
+      0,
+      REVIEW_LIMITS.maxChangedFilesForExpansion,
+    );
 
     // Batched across all expansion files (2 queries total) instead of one
     // deps+dependents round trip per file.
     const [depsByFile, dependentsByFile] = await Promise.all([
-      repositoryGraphService.getDirectDependenciesForFiles(repositoryId, expansionFiles),
-      repositoryGraphService.getDirectDependentsForFiles(repositoryId, expansionFiles),
+      repositoryGraphService.getDirectDependenciesForFiles(
+        repositoryId,
+        expansionFiles,
+      ),
+      repositoryGraphService.getDirectDependentsForFiles(
+        repositoryId,
+        expansionFiles,
+      ),
     ]);
 
     for (const file of expansionFiles) {
@@ -776,8 +920,12 @@ export class RepositoryRetrievalService {
 
       // Tests are derived from the dependents we already have, rather than
       // calling discoverTestsForFile (which would re-run the same query).
-      const tests = dependents.filter((d) => relatedTestDiscoveryService.isTestFile(d));
-      const nonTestDependents = dependents.filter((d) => !relatedTestDiscoveryService.isTestFile(d));
+      const tests = dependents.filter((d) =>
+        relatedTestDiscoveryService.isTestFile(d),
+      );
+      const nonTestDependents = dependents.filter(
+        (d) => !relatedTestDiscoveryService.isTestFile(d),
+      );
 
       for (const t of tests) testSet.add(t);
 
@@ -807,10 +955,17 @@ export class RepositoryRetrievalService {
     // second copy of the same code. They stay in changedSet above, so their
     // callers, dependencies and tests are still found exactly as before.
     const fullyHeadCovered = new Set(extra?.fullyHeadCoveredFiles ?? []);
-    const changedPathsForChunkFetch = changedPaths.filter((p) => !fullyHeadCovered.has(p));
+    const changedPathsForChunkFetch = changedPaths.filter(
+      (p) => !fullyHeadCovered.has(p),
+    );
     const testPaths = assign(testSet, changedSet);
     const dependentPaths = assign(dependentSet, changedSet, testSet);
-    const dependencyPaths = assign(dependencySet, changedSet, testSet, dependentSet);
+    const dependencyPaths = assign(
+      dependencySet,
+      changedSet,
+      testSet,
+      dependentSet,
+    );
 
     trace.fileSets = {
       changed: changedPaths.length,
@@ -827,34 +982,46 @@ export class RepositoryRetrievalService {
     // embed near the PR title. Recall is bounded by count and budget only.
     const inFiles = (paths: string[], total: number) =>
       semanticRetrievalService.searchCodeChunksInFiles(
-        repositoryId, queryVectorStr, paths, REVIEW_LIMITS.perFileChunkLimit, total, 0,
+        repositoryId,
+        queryVectorStr,
+        paths,
+        REVIEW_LIMITS.perFileChunkLimit,
+        total,
+        0,
       );
 
     // ---- STAGE C: global semantic, EXCLUDING changed files (already covered
     // by the changed class — they must not double-enter as semantic_chunk).
-    const [changedChunks, testChunks, dependentChunks, dependencyChunks, semanticChunks, reviewDocChunks] =
-      await Promise.all([
-        inFiles(changedPathsForChunkFetch, REVIEW_LIMITS.changedTotalLimit),
-        inFiles(testPaths, REVIEW_LIMITS.testTotalLimit),
-        inFiles(dependentPaths, REVIEW_LIMITS.dependentTotalLimit),
-        inFiles(dependencyPaths, REVIEW_LIMITS.dependencyTotalLimit),
-        semanticRetrievalService.searchCodeChunks(
-          repositoryId,
-          queryVectorStr,
-          { ...options, maxCodeChunks: REVIEW_LIMITS.semanticLimit },
-          undefined,
-          changedPaths,
-        ),
-        // ---- STAGE D: documentation, using its own vector (see above)
-        skipDocumentation
-          ? Promise.resolve([])
-          : semanticRetrievalService.searchDocumentationChunks(
-              repositoryId,
-              docVectorStr ?? queryVectorStr,
-              options.maxDocChunks ?? DEFAULT_OPTIONS.maxDocChunks,
-              options.docSimilarityThreshold ?? DEFAULT_OPTIONS.docSimilarityThreshold,
-            ),
-      ]);
+    const [
+      changedChunks,
+      testChunks,
+      dependentChunks,
+      dependencyChunks,
+      semanticChunks,
+      reviewDocChunks,
+    ] = await Promise.all([
+      inFiles(changedPathsForChunkFetch, REVIEW_LIMITS.changedTotalLimit),
+      inFiles(testPaths, REVIEW_LIMITS.testTotalLimit),
+      inFiles(dependentPaths, REVIEW_LIMITS.dependentTotalLimit),
+      inFiles(dependencyPaths, REVIEW_LIMITS.dependencyTotalLimit),
+      semanticRetrievalService.searchCodeChunks(
+        repositoryId,
+        queryVectorStr,
+        { ...options, maxCodeChunks: REVIEW_LIMITS.semanticLimit },
+        undefined,
+        changedPaths,
+      ),
+      // ---- STAGE D: documentation, using its own vector (see above)
+      skipDocumentation
+        ? Promise.resolve([])
+        : semanticRetrievalService.searchDocumentationChunks(
+            repositoryId,
+            docVectorStr ?? queryVectorStr,
+            options.maxDocChunks ?? DEFAULT_OPTIONS.maxDocChunks,
+            options.docSimilarityThreshold ??
+              DEFAULT_OPTIONS.docSimilarityThreshold,
+          ),
+    ]);
 
     for (const c of changedChunks) {
       rawCandidates.push(this.chunkToCandidate(c, "changed_file"));
@@ -917,6 +1084,22 @@ export class RepositoryRetrievalService {
 
     trace.counts.totalPreMerge = rawCandidates.length;
 
+    // These are search results before merge/ranking/budgeting, already subject
+    // to the SQL search thresholds and per-source limits above.
+    if (extra?.onDiagnostic)
+      observe(extra.onDiagnostic, "initial", {
+        codeChunks: rawCandidates.map((c) => ({
+          ...c.metadata,
+          filePath: c.metadata.filePath,
+          symbolName: c.metadata.symbolName,
+          content: c.content,
+          sources: c.sources,
+          lineStart: c.metadata.startLine,
+          lineEnd: c.metadata.endLine,
+        })),
+        docChunks: reviewDocChunks,
+      });
+
     trace.timingMs.semanticRetrieval = performance.now() - t0;
     t0 = performance.now();
 
@@ -933,9 +1116,12 @@ export class RepositoryRetrievalService {
     t0 = performance.now();
 
     // Stage 7: Context Budgeting
-    const budgetResult = contextBudgetService.allocateBudget(candidates, options.maxTokens || 15000);
+    const budgetResult = contextBudgetService.allocateBudget(
+      candidates,
+      options.maxTokens || 15000,
+    );
     const finalCandidates = budgetResult.accepted;
-    
+
     trace.droppedCandidates.push(...budgetResult.dropped);
     trace.counts.finalAccepted = finalCandidates.length;
     trace.budget = budgetResult.budget;
@@ -970,17 +1156,32 @@ export class RepositoryRetrievalService {
 
     // Repository-level orientation: the deterministic, SHA-keyed profile, so
     // it is present on every review and always describes the indexed revision.
-    context.repositoryProfile = (await repositoryMapService.getRepositoryProfile(repositoryId)).text || null;
+    context.repositoryProfile =
+      (await repositoryMapService.getRepositoryProfile(repositoryId)).text ||
+      null;
 
     return context;
   }
 
-  private chunkToCandidate(chunk: CodeChunkSearchResult, sourceType: keyof typeof RETRIEVAL_WEIGHTS): RetrievalCandidate {
+  private chunkToCandidate(
+    chunk: CodeChunkSearchResult,
+    sourceType: keyof typeof RETRIEVAL_WEIGHTS,
+  ): RetrievalCandidate {
     return {
-      identityKey: JSON.stringify([chunk.filePath, chunk.commitSha, chunk.contentHash]),
+      identityKey: JSON.stringify([
+        chunk.filePath,
+        chunk.commitSha,
+        chunk.contentHash,
+      ]),
       content: chunk.content,
       dataType: "code_chunk",
-      sources: [{ type: sourceType, weight: RETRIEVAL_WEIGHTS[sourceType], similarity: chunk.similarity }],
+      sources: [
+        {
+          type: sourceType,
+          weight: RETRIEVAL_WEIGHTS[sourceType],
+          similarity: chunk.similarity,
+        },
+      ],
       score: 0,
       metadata: {
         contentHash: chunk.contentHash,
@@ -988,8 +1189,8 @@ export class RepositoryRetrievalService {
         filePath: chunk.filePath,
         startLine: chunk.lineStart,
         endLine: chunk.lineEnd,
-        symbolName: chunk.symbolName
-      }
+        symbolName: chunk.symbolName,
+      },
     };
   }
 }

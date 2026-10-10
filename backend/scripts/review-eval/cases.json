@@ -1,0 +1,126 @@
+{
+  "version": 1,
+  "repositoryDirectory": "../parcel-shop-benchmark",
+  "baseBranch": "main",
+  "baseSha": "48f9459610c1a9735e4b5cfb651994dd769e61bd",
+  "expectedIndexSha": "48f9459610c1a9735e4b5cfb651994dd769e61bd",
+  "githubRepository": "aravindpulkam3/parcel-shop-benchmark",
+  "verification": {
+    "method": "Source inspection plus deterministic behavioral tests at base, branch head, and minimally corrected head",
+    "command": "node benchmark-verification/verify.mjs",
+    "evidence": "pilot-verification.json (copied from the executed Phase 1 report)",
+    "humanReview": "Pending owner review; expectations are executable-test-backed, not a model-only judgment"
+  },
+  "cases": [
+    {
+      "id": "stock-allocation",
+      "branch": "feature/stock-allocation",
+      "headSha": "896f080a29ce761855424117a27bb7902e25f6e2",
+      "pullNumber": 1,
+      "tags": [
+        "simple-bug"
+      ],
+      "prTitle": "Check available stock before calculating allocation",
+      "prDescription": "Move the availability check ahead of the stock subtraction and keep allocation updates together.",
+      "expectedFindings": [
+        {
+          "id": "stock-allocation-B1",
+          "file": "src/inventory.js",
+          "lineStart": 16,
+          "lineEnd": 16,
+          "symbol": "createInventory.allocate",
+          "trigger": "A positive requested quantity exactly equals the remaining stock",
+          "rootCause": "The >= comparison rejects an allocation that leaves zero units",
+          "consequence": "A customer cannot purchase all remaining units, including the last single unit",
+          "evidence": "Reserving eight notebooks from a stock of eight throws OUT_OF_STOCK at the branch head; base and the > correction succeed",
+          "acceptableAnchorPaths": [
+            "src/inventory.js"
+          ]
+        }
+      ],
+      "requiredContext": [],
+      "expectedTestFailures": [
+        "inventory supports complete allocation and replenishment"
+      ],
+      "verificationFix": {
+        "file": "src/inventory.js",
+        "before": "if (quantity >= currentStock)",
+        "after": "if (quantity > currentStock)"
+      },
+      "baseSha": "48f9459610c1a9735e4b5cfb651994dd769e61bd",
+      "snapshotHash": "58762b53b10372257256dc532e67f9a1df7615bbe06bd5812089996dc4f2c556"
+    },
+    {
+      "id": "reservation-window",
+      "branch": "feature/reservation-window",
+      "headSha": "2cab58a4f3e3de1a686e6c60a1ed886053e39d7c",
+      "pullNumber": 2,
+      "tags": [
+        "cross-file-bug"
+      ],
+      "prTitle": "Make the reservation window configurable",
+      "prDescription": "Read the reservation window from RESERVATION_TTL_SECONDS, validate its range, and document the configuration option.\n",
+      "expectedFindings": [
+        {
+          "id": "reservation-window-B1",
+          "file": "src/config.js",
+          "lineStart": 6,
+          "lineEnd": 6,
+          "symbol": "reservationLifetimeMs",
+          "trigger": "A reservation is created with the default or a valid configured lifetime",
+          "rootCause": "Configuration returns seconds while the reservation service adds that value directly to a millisecond timestamp",
+          "consequence": "Default reservations expire in 900 milliseconds rather than 15 minutes; checkout after two seconds fails and allocated stock is released prematurely",
+          "evidence": "Default expiry is 10900 instead of 910000 for a clock starting at 10000. Configured 120 seconds yields 10120 instead of 130000. Multiplying the returned value by 1000 restores both contracts",
+          "acceptableAnchorPaths": [
+            "src/config.js",
+            "src/reservations.js"
+          ]
+        }
+      ],
+      "requiredContext": [
+        {
+          "file": "src/reservations.js",
+          "symbol": "createReservations",
+          "requiredSource": [
+            "now = Date.now",
+            "const lifetime = reservationLifetimeMs();",
+            "expiresAt: timestamp + lifetime",
+            "timestamp >= reservation.expiresAt",
+            "inventory.release(reservation.productId, reservation.quantity)"
+          ],
+          "reason": "Establishes the millisecond clock, the unconverted lifetime addition, and the stock-release consequence"
+        }
+      ],
+      "expectedTestFailures": [
+        "reservations support checkout during their advertised lifetime",
+        "reservation availability follows the expiration instant"
+      ],
+      "configurationTests": true,
+      "verificationFix": {
+        "file": "src/config.js",
+        "before": "return seconds;",
+        "after": "return seconds * 1000;"
+      },
+      "baseSha": "48f9459610c1a9735e4b5cfb651994dd769e61bd",
+      "snapshotHash": "b80008bb65fdb02c9194e2d51e09cdfe0fbd49ae87ab9fbc8b82535da20e591b"
+    },
+    {
+      "id": "order-totals",
+      "branch": "refactor/order-totals",
+      "headSha": "b02326947b1a6dfdc973d9ad2a23ee6c8731e8a0",
+      "pullNumber": 3,
+      "tags": [
+        "safe-change"
+      ],
+      "prTitle": "Simplify merchandise subtotal calculation",
+      "prDescription": "Use an array reduction to calculate the merchandise subtotal while retaining the existing shipping calculation and order response.\n",
+      "expectedFindings": [],
+      "requiredContext": [],
+      "safeRationale": "For the dense arrays of integer-priced order lines produced by shop.checkout, both versions visit lines in order and add the same products starting at zero. The explicit initial value also preserves empty-array behavior. Shipping and response construction are unchanged; the calculation does not mutate inputs.",
+      "scope": "Behavioral correctness of this refactor for application-produced lines; arbitrary sparse arrays, hostile objects and pre-existing missing product features are outside the contract",
+      "expectedTestFailures": [],
+      "baseSha": "48f9459610c1a9735e4b5cfb651994dd769e61bd",
+      "snapshotHash": "7f62c741f6ecda3a395aba4b6cc3775f943ec7fcf28538bd5b8199891c821cc6"
+    }
+  ]
+}

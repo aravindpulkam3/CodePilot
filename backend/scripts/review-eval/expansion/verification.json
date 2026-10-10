@@ -1,0 +1,352 @@
+{
+  "baseSha": "48f9459610c1a9735e4b5cfb651994dd769e61bd",
+  "verifiedAt": "2026-10-10T12:41:41.884Z",
+  "node": "v25.5.0",
+  "oracleSha256": "fbc2c9905ae959086477c8296cf1e751c751cb86ca31138ad8aad65ff4264d2b",
+  "results": [
+    {
+      "id": "base",
+      "application": {
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "failures": [],
+        "tapSha256": "3578d777231f2dd87c9dbffe2d80bdebcfb89ae0f83bcbcd50532386f4f63726"
+      },
+      "behavioral": {
+        "tests": 9,
+        "passed": 9,
+        "failed": 0,
+        "failures": [],
+        "tapSha256": "5200e54eb089eb92114c480c4851643c6e4c1bb3e9a54774d34bf602fad678b2"
+      }
+    },
+    {
+      "id": "delivery-threshold",
+      "headSha": "9a97704b9530e9cf5b79cddeee85dbbe4079fae3",
+      "application": {
+        "tests": 10,
+        "passed": 8,
+        "failed": 2,
+        "failures": [
+          "delivery pricing follows the merchandise subtotal",
+          "large orders include delivery"
+        ],
+        "tapSha256": "0cd56868548c78622e03ca868d84ea7f7e0d1363f516a78c3d027214a20af5d3"
+      },
+      "behavioral": {
+        "tests": 9,
+        "passed": 6,
+        "failed": 3,
+        "failures": [
+          "checkout retains catalog monetary units",
+          "delivery amounts across the threshold",
+          "order totals across generated baskets"
+        ],
+        "tapSha256": "846b536bed78a1a9ea5523ef3fe039a68bc6702136f7c37690ee4eb8a511a010"
+      },
+      "corrected": {
+        "fix": {
+          "file": "src/pricing.js",
+          "before": "subtotalCents > 7500",
+          "after": "subtotalCents >= 7500"
+        },
+        "application": {
+          "tests": 10,
+          "passed": 10,
+          "failed": 0,
+          "failures": [],
+          "tapSha256": "73211f609e33395b878896b4b20e3749bfbbf3f1a72846d139938f4c01ed6aac"
+        },
+        "behavioral": {
+          "tests": 9,
+          "passed": 9,
+          "failed": 0,
+          "failures": [],
+          "tapSha256": "76809d071dcfe15362dc219be6d17acc26504f6edba97f0675ef3434874572af"
+        }
+      }
+    },
+    {
+      "id": "line-amounts",
+      "headSha": "b48790ae5a9680002a850fda41f888ce7de2a06d",
+      "application": {
+        "tests": 10,
+        "passed": 9,
+        "failed": 1,
+        "failures": [
+          "line amounts contribute to the order subtotal"
+        ],
+        "tapSha256": "640d26e76be9df4488afd7efe6c757c204aa39e9898d44039c6bc1aadf85f219"
+      },
+      "behavioral": {
+        "tests": 9,
+        "passed": 7,
+        "failed": 2,
+        "failures": [
+          "line amounts across multiple products",
+          "order totals across generated baskets"
+        ],
+        "tapSha256": "e22849c17934c04cd3daaf29a0befc293a26719d53901a68668fc58954260dcb"
+      },
+      "corrected": {
+        "fix": {
+          "file": "src/pricing.js",
+          "before": "subtotalCents = lineAmountCents;",
+          "after": "subtotalCents += lineAmountCents;"
+        },
+        "application": {
+          "tests": 10,
+          "passed": 10,
+          "failed": 0,
+          "failures": [],
+          "tapSha256": "51e5545c20d4f67b83bfa2a8d8a512631f51d306e42bae6b85197b42617557e7"
+        },
+        "behavioral": {
+          "tests": 9,
+          "passed": 9,
+          "failed": 0,
+          "failures": [],
+          "tapSha256": "412b8113b242b12f6d3728954028807dbe89ccb97394e8222debdcdb785bf823"
+        }
+      }
+    },
+    {
+      "id": "stock-replenishment",
+      "headSha": "630ac41cb85da8737323a559a023ef8c3f9f7a9a",
+      "application": {
+        "tests": 10,
+        "passed": 9,
+        "failed": 1,
+        "failures": [
+          "abandoned reservations return stock"
+        ],
+        "tapSha256": "e901edf9d15d406a5c98f90197de75da215f12e75e4c176f6431207a6c856160"
+      },
+      "behavioral": {
+        "tests": 9,
+        "passed": 6,
+        "failed": 3,
+        "failures": [
+          "availability after reservation cleanup",
+          "inventory movements preserve balances",
+          "shop factory uses its supplied clock"
+        ],
+        "tapSha256": "d11b784ed6be5564b96329aa86cab4513a7913d3b4bb8999fb8946c43cac9598"
+      },
+      "corrected": {
+        "fix": {
+          "file": "src/inventory.js",
+          "before": "const nextStock = quantity;",
+          "after": "const nextStock = available(productId) + quantity;"
+        },
+        "application": {
+          "tests": 10,
+          "passed": 10,
+          "failed": 0,
+          "failures": [],
+          "tapSha256": "11398ddd8fe5ffa9492796678a4727b03fdf12419bdd13e104e117786ce96ca3"
+        },
+        "behavioral": {
+          "tests": 9,
+          "passed": 9,
+          "failed": 0,
+          "failures": [],
+          "tapSha256": "68e033b6073571a66e7ab796ac238bff1c766de08ab58382b32eea4da016bced"
+        }
+      }
+    },
+    {
+      "id": "shop-clock",
+      "headSha": "c5f2aed17008eb8b77b813e4d27dc5bd745ddc55",
+      "application": {
+        "tests": 10,
+        "passed": 9,
+        "failed": 1,
+        "failures": [
+          "abandoned reservations return stock"
+        ],
+        "tapSha256": "43c214ff4cc9220fd3a0331dae22f197dc51abf3e71df462335c12cde6a60ad6"
+      },
+      "behavioral": {
+        "tests": 9,
+        "passed": 7,
+        "failed": 2,
+        "failures": [
+          "availability after reservation cleanup",
+          "shop factory uses its supplied clock"
+        ],
+        "tapSha256": "aae4492f1710371bcafd780858fb78e8bfbc4b73b4c460906ebee905543c8edd"
+      },
+      "corrected": {
+        "fix": {
+          "file": "src/shop.js",
+          "before": "createReservations(inventory);",
+          "after": "createReservations(inventory, now);"
+        },
+        "application": {
+          "tests": 10,
+          "passed": 10,
+          "failed": 0,
+          "failures": [],
+          "tapSha256": "18cb6eaa2865a0550a1f8d02efc5e8c01938bf7c48441f760fb557b6e953ee0b"
+        },
+        "behavioral": {
+          "tests": 9,
+          "passed": 9,
+          "failed": 0,
+          "failures": [],
+          "tapSha256": "c375d9c8458a68d69fb678d7dca46e7cacbc234aa6ee4d4af9b6982954d4089c"
+        }
+      }
+    },
+    {
+      "id": "checkout-units",
+      "headSha": "c80a1c2020bab2c247c31915be996cb14042afdc",
+      "application": {
+        "tests": 10,
+        "passed": 7,
+        "failed": 3,
+        "failures": [
+          "large orders include delivery",
+          "orders include merchandise and delivery amounts",
+          "returned reservation data does not change stored state"
+        ],
+        "tapSha256": "11a57efad977c31d710407409432682e19e9147efde4fa4c2eae7f178cfcdf8c"
+      },
+      "behavioral": {
+        "tests": 9,
+        "passed": 7,
+        "failed": 2,
+        "failures": [
+          "checkout retains catalog monetary units",
+          "checkout transports the reserved quantity"
+        ],
+        "tapSha256": "601ed5e6c5737279c6962d1d6ec9037f36efa68649657f4145a63113f1af69ce"
+      },
+      "corrected": {
+        "fix": {
+          "file": "src/reservations.js",
+          "before": "productId, units, expiresAt, status };",
+          "after": "productId, quantity: units, expiresAt, status };"
+        },
+        "application": {
+          "tests": 10,
+          "passed": 10,
+          "failed": 0,
+          "failures": [],
+          "tapSha256": "b7de09e749579548e718a275a76d3d0d0d7e5c41dbaa62dea4cdb36de0b840cb"
+        },
+        "behavioral": {
+          "tests": 9,
+          "passed": 9,
+          "failed": 0,
+          "failures": [],
+          "tapSha256": "929aa88006c747115ef89f352fc91701bc81437e0dd509503b0393c734d61ffe"
+        }
+      }
+    },
+    {
+      "id": "catalog-amounts",
+      "headSha": "93b6afc070b7e9a360392f255caaa938ed8b16ff",
+      "application": {
+        "tests": 10,
+        "passed": 8,
+        "failed": 2,
+        "failures": [
+          "large orders include delivery",
+          "orders include merchandise and delivery amounts"
+        ],
+        "tapSha256": "e0cc75d0f4d53ead3b547289d8f549507910f80da67472d3f3a0390fa080c3cd"
+      },
+      "behavioral": {
+        "tests": 9,
+        "passed": 7,
+        "failed": 2,
+        "failures": [
+          "checkout retains catalog monetary units",
+          "checkout transports the reserved quantity"
+        ],
+        "tapSha256": "b17fb9afebca0b6654d6aed702bf9feb7de61f045d362cf66db6e4c50fd778b3"
+      },
+      "corrected": {
+        "fix": {
+          "file": "src/shop.js",
+          "before": "const unitPrice = product.priceCents / 100;",
+          "after": "const unitPrice = product.priceCents;"
+        },
+        "application": {
+          "tests": 10,
+          "passed": 10,
+          "failed": 0,
+          "failures": [],
+          "tapSha256": "ee0eaff6e30ab1671c46d153a4f98c6a8257cd7fab40bce31492363a22c54acd"
+        },
+        "behavioral": {
+          "tests": 9,
+          "passed": 9,
+          "failed": 0,
+          "failures": [],
+          "tapSha256": "b39bdc054959f343bd35cc20b5e6b629fc304df11f632159dd5504c3eea46f52"
+        }
+      }
+    },
+    {
+      "id": "inventory-initialization",
+      "headSha": "35057e566b818ea91a132abd03956a9dce53c5a2",
+      "application": {
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "failures": [],
+        "tapSha256": "f4f779096e25a7c887620164773fd20b3240f47dbbf60db0f00d2b7e17b0fce9"
+      },
+      "behavioral": {
+        "tests": 9,
+        "passed": 9,
+        "failed": 0,
+        "failures": [],
+        "tapSha256": "7fa4ad8ea660c3529d250a81284fe8293a14878106e773c734e222fadbe3a542"
+      },
+      "corrected": null
+    },
+    {
+      "id": "checkout-line-helper",
+      "headSha": "82e5526589027675c5c57e639f66ea19ae00db03",
+      "application": {
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "failures": [],
+        "tapSha256": "ffe0fe70b3c8a59da26c39a9b23fb5bc230d0fd5a3a91d263c1364eb23a27a19"
+      },
+      "behavioral": {
+        "tests": 9,
+        "passed": 9,
+        "failed": 0,
+        "failures": [],
+        "tapSha256": "88df4b82bfe0562b8750d114701612b1d9bc83955e97f39ed55aaf741d456da4"
+      },
+      "corrected": null
+    },
+    {
+      "id": "reservation-sweep",
+      "headSha": "7299aadf8e3b4b527acd597adf208a4fea415d12",
+      "application": {
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "failures": [],
+        "tapSha256": "ed4957ae6bd344d2884f82ace9a258be6a624b9c8ea9d1b52bfb22483140c8f1"
+      },
+      "behavioral": {
+        "tests": 9,
+        "passed": 9,
+        "failed": 0,
+        "failures": [],
+        "tapSha256": "e5cbcb7814e3d67492dbae2997bcfa00aa1e49ec08d3849f2fbbc295dc45e178"
+      },
+      "corrected": null
+    }
+  ]
+}

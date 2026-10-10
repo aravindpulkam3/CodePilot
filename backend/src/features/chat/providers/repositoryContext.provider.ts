@@ -1,3 +1,4 @@
+import { observe } from "../../../shared/utils/diagnostics.js";
 import { ChatContextProvider, ChatContextPayload, ChatSessionRecord, ConversationContext } from "../chat.types.js";
 import { retrievalService } from "../../../infrastructure/retrieval/retreival.service.js";
 import { findRepositoryById } from "../../repository/repository.service.js";
@@ -70,6 +71,7 @@ export class RepositoryContextProvider implements ChatContextProvider {
     // ("that", "where is this implemented") — it is never itself rendered
     // into the returned context below. The repository row is only needed for
     // html_url (pinned source links), so a failed lookup never fails the turn.
+    const retrievalStarted = performance.now();
     const [retrieved, repo] = await Promise.all([
       retrievalService.retrieveQAContext(
         clerkUserId,
@@ -77,11 +79,13 @@ export class RepositoryContextProvider implements ChatContextProvider {
         userMessage,
         undefined,
         conversation
-          ? { isNewSession: conversation.isNewSession, recentHistory: conversation.recentHistory }
+          ? { isNewSession: conversation.isNewSession, recentHistory: conversation.recentHistory, skipSync: conversation.skipSync }
           : undefined
       ),
       findRepositoryById(session.repository_id).catch(() => null),
     ]);
+
+    observe(conversation?.onDiagnostic, "qa.retrieved", { ...retrieved, elapsedMs: performance.now() - retrievalStarted });
 
     const sim = retrieved.metadata.evidenceSimilarities ?? { doc: null, code: null };
 
@@ -114,6 +118,7 @@ export class RepositoryContextProvider implements ChatContextProvider {
       graphNeighbors: retrieved.graphNeighbors,
     });
     const { items } = qaContext;
+    observe(conversation?.onDiagnostic, "qa.budgeted", { ...qaContext, tiers: { docTier, codeTier: codeSectionTier, repositoryTier } });
 
     // Only numbered entries count as evidence: an overview-only context still
     // gets the "nothing matched" instruction (see buildQASystemPrompt).

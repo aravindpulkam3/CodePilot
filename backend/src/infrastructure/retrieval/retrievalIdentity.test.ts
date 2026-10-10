@@ -41,6 +41,22 @@ const { semanticRetrievalService } = await import("./semanticRetrieval.service.j
 hooks.deregister();
 after(() => { delete (globalThis as any).__identityBoundary; });
 
+test("QA frozen-index mode changes only readiness; conversational query and retrieval stay identical", async (t) => {
+  const readiness: string[] = [];
+  t.mock.method(retrievalService as any, "assertSearchable", async () => { readiness.push("assert"); });
+  t.mock.method(retrievalService as any, "ensureSearchable", async () => { readiness.push("ensure"); });
+  t.mock.method(semanticRetrievalService, "getQueryVectorStr", async () => "[0]");
+  t.mock.method(semanticRetrievalService, "searchDocumentationChunks", async () => []);
+  t.mock.method(semanticRetrievalService, "searchCodeChunks", async () => []);
+  const recentHistory = [{ role: "user" as const, content: "What happens to reserved notebook stock when the reservation expires?" }, { role: "assistant" as const, content: "Stock returns." }, { role: "user" as const, content: "Which function restores those units, and why only once?" }];
+  const plain = await retrievalService.retrieveQAContext("user", "repo", recentHistory[2].content, undefined, { isNewSession: true, recentHistory });
+  const frozen = await retrievalService.retrieveQAContext("user", "repo", recentHistory[2].content, undefined, { isNewSession: true, recentHistory, skipSync: true });
+  assert.deepEqual(frozen, plain);
+  assert.deepEqual(readiness, ["ensure", "assert"]);
+  assert.equal(frozen.metadata.usedConversationalBlend, true);
+  assert.match(frozen.metadata.embeddingQuery!, /referring back to: What happens to reserved/);
+});
+
 test("overlapping parts survive SQL mapping, merging, ranking, budgeting and final conversion", async (t) => {
   t.mock.method(retrievalService as any, "assertSearchable", async () => {});
   rows = [row("part1"), row("part2")];
@@ -75,4 +91,19 @@ test("documentation query also preserves stored hash and revision", async () => 
   rows = [{ ...row("doc", "doc-head", "README.md"), symbol_type: "documentation" }];
   const result = await semanticRetrievalService.searchDocumentationChunks("repo", "[0]");
   assert.equal(result[0].contentHash, "doc"); assert.equal(result[0].commitSha, "doc-head");
+});
+
+test("initial observations precede selection and cannot mutate ranked evidence", async (t) => {
+  t.mock.method(retrievalService as any, "assertSearchable", async () => {});
+  rows = [row("part1"), row("part2")];
+  const plain = await retrievalService.retrieveReviewContext("user", "repo", "change", ["changed.ts"], { maxTokens: 1000 }, null, { skipSync: true });
+  const observed: any[] = [];
+  const traced = await retrievalService.retrieveReviewContext("user", "repo", "change", ["changed.ts"], { maxTokens: 1000 }, null, {
+    skipSync: true, onDiagnostic: (event) => { observed.push(structuredClone(event)); event.data.codeChunks.length = 0; },
+  });
+  assert.equal(observed[0].stage, "initial");
+  assert.equal(observed[0].data.codeChunks.length, 4);
+  assert.deepEqual(traced.codeChunks, plain.codeChunks);
+  const dropped = await retrievalService.retrieveReviewContext("user", "repo", "change", ["changed.ts"], { maxTokens: 1 }, null, { skipSync: true });
+  assert.equal(dropped.codeChunks.length, 0);
 });

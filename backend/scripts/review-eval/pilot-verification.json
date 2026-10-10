@@ -1,0 +1,133 @@
+{
+  "verifiedAt": "2026-10-10T09:47:46.228Z",
+  "node": "v25.5.0",
+  "baseSha": "48f9459610c1a9735e4b5cfb651994dd769e61bd",
+  "method": "Independent checkout snapshots; deterministic clocks; corrections applied only to scratch copies",
+  "results": [
+    {
+      "id": "base",
+      "sourceSha": "48f9459610c1a9735e4b5cfb651994dd769e61bd",
+      "corrected": false,
+      "application": {
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "failures": []
+      },
+      "behavioral": {
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "failures": []
+      },
+      "configuration": null
+    },
+    {
+      "id": "stock-allocation",
+      "sourceSha": "896f080a29ce761855424117a27bb7902e25f6e2",
+      "corrected": false,
+      "application": {
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "failures": []
+      },
+      "behavioral": {
+        "tests": 4,
+        "passed": 3,
+        "failed": 1,
+        "failures": [
+          "inventory supports complete allocation and replenishment"
+        ]
+      },
+      "configuration": null
+    },
+    {
+      "id": "reservation-window",
+      "sourceSha": "2cab58a4f3e3de1a686e6c60a1ed886053e39d7c",
+      "corrected": false,
+      "application": {
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "failures": []
+      },
+      "behavioral": {
+        "tests": 4,
+        "passed": 2,
+        "failed": 2,
+        "failures": [
+          "reservation availability follows the expiration instant",
+          "reservations support checkout during their advertised lifetime"
+        ]
+      },
+      "configuration": {
+        "tests": 2,
+        "passed": 1,
+        "failed": 1,
+        "failures": [
+          "configured reservation windows are applied to checkout"
+        ]
+      }
+    },
+    {
+      "id": "order-totals",
+      "sourceSha": "b02326947b1a6dfdc973d9ad2a23ee6c8731e8a0",
+      "corrected": false,
+      "application": {
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "failures": []
+      },
+      "behavioral": {
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "failures": []
+      },
+      "configuration": null
+    },
+    {
+      "id": "stock-allocation-corrected",
+      "sourceSha": "896f080a29ce761855424117a27bb7902e25f6e2",
+      "corrected": true,
+      "application": {
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "failures": []
+      },
+      "behavioral": {
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "failures": []
+      },
+      "configuration": null
+    },
+    {
+      "id": "reservation-window-corrected",
+      "sourceSha": "2cab58a4f3e3de1a686e6c60a1ed886053e39d7c",
+      "corrected": true,
+      "application": {
+        "tests": 10,
+        "passed": 10,
+        "failed": 0,
+        "failures": []
+      },
+      "behavioral": {
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "failures": []
+      },
+      "configuration": {
+        "tests": 2,
+        "passed": 2,
+        "failed": 0,
+        "failures": []
+      }
+    }
+  ]
+}

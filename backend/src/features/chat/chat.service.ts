@@ -1,6 +1,6 @@
 import { assertOwnedContext } from "../../shared/utils/ownership.js";
 import { pool } from "../../config/db.js";
-import { llmService, LLMMessage, ollamaService } from "../../infrastructure/llm/llm.service.js";
+import { llmService, ollamaService, repositoryQALLM } from "../../infrastructure/llm/llm.service.js";
 import {
   ChatSessionRecord,
   ChatSessionType,
@@ -10,8 +10,8 @@ import { RepositoryContextProvider } from "./providers/repositoryContext.provide
 import { ReviewContextProvider } from "./providers/reviewContext.provider.js";
 import { IssueContextProvider } from "./providers/issueContext.provider.js";
 import { activityLogService } from "../dashboard/activityLog.service.js";
-import { ConversationTurn } from "../../shared/utils/conversationalQuery.js";
-import { SourceRef, normalizeMessageSources, toDisplaySources } from "../../shared/prompts/sourceRefs.js";
+import { generateChatResponse } from "./chatGeneration.js";
+import { SourceRef, normalizeMessageSources } from "../../shared/prompts/sourceRefs.js";
 
 export type StreamChunk =
   | { type: "sources"; data: SourceRef[] }
@@ -282,50 +282,10 @@ export class ChatService {
     );
     const orderedHistory = historyRows.reverse();
 
-    const conversationHistory: LLMMessage[] = orderedHistory.map((row) => ({
-      role: row.role === "assistant" ? "assistant" : "user",
-      content: row.content,
-    }));
-    // Same rows, narrower role union — chat_messages never actually stores
-    // "system" rows, but LLMMessage's type allows one, so the two arrays
-    // can't share a single mapped value without widening ConversationTurn.
-    const recentHistory: ConversationTurn[] = orderedHistory.map((row) => ({
-      role: row.role === "assistant" ? "assistant" : "user",
-      content: row.content,
-    }));
-
-    // 3. Fetch context from the registered provider
-    const context = await provider.buildContext(session, userMessage, clerkUserId, {
-      isNewSession,
-      recentHistory,
-    });
-
-    // Sent before any text so citations can be resolved as the answer
-    // streams. Derived from the same snapshot persisted below.
-    const displaySources = toDisplaySources(context.promptContext);
-    if (displaySources.length > 0) {
-      onChunk({ type: "sources", data: displaySources });
-    }
-    if (context.metadata) {
-      onChunk({ type: "metadata", data: context.metadata });
-    }
-
-    // 4. Build prompt
-    const messages: LLMMessage[] = [
-      { role: "system", content: context.systemPrompt },
-      ...conversationHistory,
-    ];
-
-    // 5. Stream LLM tokens
-    let fullAiResponse = "";
-    const stream = ollamaService.stream(messages);
-
-    for await (const chunk of stream) {
-      if (chunk.text) {
-        fullAiResponse += chunk.text;
-        onChunk({ type: "text", data: chunk.text });
-      }
-    }
+    const { context, fullAiResponse } = await generateChatResponse(
+      provider, this.normalizeType(session.type) === "REPO_QA" ? repositoryQALLM : ollamaService, session, userMessage, clerkUserId,
+      orderedHistory, onChunk, { isNewSession },
+    );
 
     // 6. Save assistant turn — the prompt-context snapshot is persisted with
     // it, so a reload (or a later re-index) still shows exactly the context

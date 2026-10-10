@@ -16,6 +16,19 @@ const fits = (result: ReturnType<typeof build>) => {
   assert.equal(result.reviewInput.budget.estimatedInputTokens, estimateRequestTokens(result.messages, CodeReviewPromptBuilder.getReviewSchema()));
 };
 
+test("final evidence manifest reports only selected snippets and deduplicated indices", () => {
+  const huge = "OMITTED_SUPPORT".repeat(20000);
+  const small = "const usefulContext = true;";
+  const doc = "Configuration supports this behavior.";
+  const result = build([file()], 12000, [huge, small, small], [doc, doc]);
+  assert.deepEqual(result.selection.codeIndices, [1]);
+  assert.deepEqual(result.selection.documentIndices, [0]);
+  assert.ok(result.messages.some((m) => m.content.includes(small)));
+  assert.ok(!result.messages.some((m) => m.content.includes("OMITTED_SUPPORT")));
+  assert.equal(result.selection.files.length, 1);
+  fits(result);
+});
+
 describe("deterministic review output validation", () => {
   const valid = (): any => ({ summary: "Assessment", overall_score: 80, risk_level: "Low", findings: [{
     severity: "Major", category: "correctness", file_path: "a.ts", title: "Bug",

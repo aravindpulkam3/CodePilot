@@ -38,6 +38,9 @@ export interface ChatContextPayload {
 }
 
 export interface ConversationContext {
+  /** Local evaluations use an already validated frozen index; never enqueue sync. */
+  skipSync?: boolean;
+  onDiagnostic?: import("../../shared/utils/diagnostics.js").DiagnosticObserver;
   // True when this is the first turn of a brand-new session — lets a
   // provider that calls retrieveQAContext use the cheap assertSearchable
   // readiness check on follow-up turns instead of the full sync-enqueue

@@ -85,9 +85,15 @@ CLAUDE.md
 # ===========================
 graphify-out/
 
+# Local review evaluation outputs (prompts, source and raw model responses)
+backend/scripts/review-eval-out/
+
 # ===========================
 # Agent instructions (local only)
 # ===========================
 AGENTS.md
 
 docs
+
+# Local Q&A evaluation source snapshots and model outputs
+backend/scripts/qa-eval-out/

@@ -33,7 +33,7 @@ export function createRequestBudget(contextTokens: number, maxOutputTokens = 409
 export function ollamaRequestBudget(info: Record<string, unknown>, parameters: string, configured?: string): LLMRequestBudget {
   const architecture = info["general.architecture"];
   const nativeLimit = Number(info[`${architecture}.context_length`]);
-  const modelWindow = parameters.match(/^\s*num_ctx\s+(\d+)\s*$/m)?.[1];
+  const modelWindow = (parameters ?? "").match(/^\s*num_ctx\s+(\d+)\s*$/m)?.[1];
   const contextTokens = Number(configured ?? modelWindow ?? nativeLimit);
   if (!Number.isSafeInteger(nativeLimit) || nativeLimit < 1 || contextTokens > nativeLimit) {
     throw new Error("REVIEW_CONTEXT_UNAVAILABLE");

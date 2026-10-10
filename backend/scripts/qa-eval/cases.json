@@ -1,0 +1,459 @@
+{
+  "version": 1,
+  "dataset": "parcel-shop-qa-v1",
+  "githubRepository": "aravindpulkam3/parcel-shop-benchmark",
+  "expectedIndexSha": "48f9459610c1a9735e4b5cfb651994dd769e61bd",
+  "historyPolicy": "Fixed prefix + current user, oldest first, last 10 messages; no generated prior turns.",
+  "cases": [
+    {
+      "id": "quantity-validation",
+      "question": "Which quantities can I reserve, and what happens for zero, a fractional quantity, or more units than are available?",
+      "facts": [
+        {
+          "id": "valid",
+          "text": "Only positive safe integers are accepted."
+        },
+        {
+          "id": "invalid",
+          "text": "Zero/fractional quantities throw INVALID_QUANTITY without allocating stock."
+        },
+        {
+          "id": "stock",
+          "text": "Excess demand throws OUT_OF_STOCK and leaves stock unchanged."
+        }
+      ],
+      "requiredContext": [
+        {
+          "id": "allocation",
+          "path": "src/inventory.js",
+          "fragments": [
+            "!Number.isSafeInteger(quantity) || quantity <= 0",
+            "throw new Error('INVALID_QUANTITY')",
+            "available(productId) - quantity",
+            "if (remaining < 0) throw new Error('OUT_OF_STOCK')",
+            "stock.set(productId, remaining)"
+          ]
+        }
+      ],
+      "verification": {
+        "test": "quantity-validation",
+        "sourceInspection": [
+          "src/inventory.js"
+        ],
+        "scope": "Independent executable assertions at the frozen commit."
+      }
+    },
+    {
+      "id": "shipping-boundary",
+      "question": "What are shipping and total charges for merchandise subtotals of 7499 cents and exactly 7500 cents? What units are the amounts in?",
+      "facts": [
+        {
+          "id": "below",
+          "text": "7499 cents subtotal: shipping 499, total 7998 cents."
+        },
+        {
+          "id": "at",
+          "text": "7500 cents subtotal: shipping 0, total 7500 cents; threshold is inclusive."
+        },
+        {
+          "id": "units",
+          "text": "Amounts are integer cents, not dollars."
+        }
+      ],
+      "requiredContext": [
+        {
+          "id": "pricing",
+          "path": "src/pricing.js",
+          "fragments": [
+            "subtotalCents += line.priceCents * line.quantity",
+            "subtotalCents >= 7500 ? 0 : 499",
+            "totalCents: subtotalCents + shippingCents"
+          ]
+        }
+      ],
+      "verification": {
+        "test": "shipping-boundary",
+        "sourceInspection": [
+          "src/pricing.js"
+        ],
+        "scope": "Independent executable assertions at the frozen commit."
+      }
+    },
+    {
+      "id": "reservation-deadline",
+      "question": "If I pass a clock returning 1000 to createShop and reserve a notebook, what expiresAt is returned and where is that deadline computed?",
+      "facts": [
+        {
+          "id": "deadline",
+          "text": "expiresAt is 901000 milliseconds; lifetime is 900000 milliseconds."
+        },
+        {
+          "id": "clock",
+          "text": "createShop forwards the injected clock to createReservations; reserve adds the lifetime to now()."
+        }
+      ],
+      "requiredContext": [
+        {
+          "id": "policy",
+          "path": "src/config.js",
+          "fragments": [
+            "return 15 * 60 * 1000"
+          ]
+        },
+        {
+          "id": "clock-forwarding",
+          "path": "src/shop.js",
+          "fragments": [
+            "createReservations(createInventory(catalog), now)"
+          ]
+        },
+        {
+          "id": "deadline",
+          "path": "src/reservations.js",
+          "fragments": [
+            "const timestamp = now()",
+            "const lifetime = reservationLifetimeMs()",
+            "expiresAt: timestamp + lifetime"
+          ]
+        }
+      ],
+      "verification": {
+        "test": "reservation-deadline",
+        "sourceInspection": [
+          "src/config.js",
+          "src/shop.js",
+          "src/reservations.js"
+        ],
+        "scope": "Independent executable assertions at the frozen commit."
+      }
+    },
+    {
+      "id": "expiration-cleanup",
+      "question": "When does an expired reservation return stock? Does cleanup happen at the exact deadline, which operations trigger it, and can repeated stock reads release the same units twice?",
+      "facts": [
+        {
+          "id": "boundary",
+          "text": "At or after expiresAt, active reservations expire."
+        },
+        {
+          "id": "operations",
+          "text": "reserve, checkout, and available trigger lazy cleanup; there is no background timer."
+        },
+        {
+          "id": "once",
+          "text": "Status becomes expired before inventory.release; only active entries are processed, preventing repeated release."
+        }
+      ],
+      "requiredContext": [
+        {
+          "id": "expiry",
+          "path": "src/reservations.js",
+          "fragments": [
+            "reservation.status === 'active' && timestamp >= reservation.expiresAt",
+            "reservation.status = 'expired'",
+            "inventory.release(reservation.productId, reservation.quantity)",
+            "expireAt(timestamp)",
+            "expireAt(now())"
+          ]
+        },
+        {
+          "id": "release",
+          "path": "src/inventory.js",
+          "fragments": [
+            "stock.set(productId, available(productId) + quantity)"
+          ]
+        }
+      ],
+      "verification": {
+        "test": "expiration-cleanup",
+        "sourceInspection": [
+          "src/reservations.js",
+          "src/inventory.js"
+        ],
+        "scope": "Independent executable assertions at the frozen commit."
+      }
+    },
+    {
+      "id": "checkout-totals",
+      "question": "Trace checkout of a reservation for two notebooks from the shop API to its receipt. Which modules supply the quantity, unit price, subtotal, shipping, and total, and what are the amounts?",
+      "facts": [
+        {
+          "id": "flow",
+          "text": "Shop calls reservations.checkout then looks up the catalog product and makes lines with the reservation quantity."
+        },
+        {
+          "id": "amounts",
+          "text": "Notebook unit price 1500 cents; quantity 2; subtotal 3000; shipping 499; total 3499 cents."
+        },
+        {
+          "id": "pricing",
+          "text": "Shop passes lines to calculateOrder in pricing.js and returns its totals with reservationId and lines."
+        }
+      ],
+      "requiredContext": [
+        {
+          "id": "shop",
+          "path": "src/shop.js",
+          "fragments": [
+            "reservations.checkout(reservationId)",
+            "products.get(reservation.productId)",
+            "priceCents: product.priceCents",
+            "quantity: reservation.quantity",
+            "...calculateOrder(lines)"
+          ]
+        },
+        {
+          "id": "catalog",
+          "path": "src/catalog.js",
+          "fragments": [
+            "id: 'notebook'",
+            "priceCents: 1500"
+          ]
+        },
+        {
+          "id": "pricing",
+          "path": "src/pricing.js",
+          "fragments": [
+            "subtotalCents += line.priceCents * line.quantity",
+            "subtotalCents >= 7500 ? 0 : 499"
+          ]
+        },
+        {
+          "id": "checkout",
+          "path": "src/reservations.js",
+          "fragments": [
+            "reservation.status = 'checked-out'",
+            "return { ...reservation }"
+          ]
+        }
+      ],
+      "verification": {
+        "test": "checkout-totals",
+        "sourceInspection": [
+          "src/shop.js",
+          "src/catalog.js",
+          "src/pricing.js",
+          "src/reservations.js"
+        ],
+        "scope": "Independent executable assertions at the frozen commit."
+      }
+    },
+    {
+      "id": "repeated-checkout",
+      "question": "What happens if I check out the same reservation twice? If I later advance the clock past its deadline, does its stock come back?",
+      "facts": [
+        {
+          "id": "repeat",
+          "text": "Second checkout throws ALREADY_CHECKED_OUT after the first changes status to checked-out."
+        },
+        {
+          "id": "stock",
+          "text": "Checked-out reservations never expire/release stock, since cleanup requires active status."
+        }
+      ],
+      "requiredContext": [
+        {
+          "id": "state",
+          "path": "src/reservations.js",
+          "fragments": [
+            "reservation.status !== 'active'",
+            "throw new Error('ALREADY_CHECKED_OUT')",
+            "reservation.status = 'checked-out'",
+            "reservation.status === 'active' && timestamp >= reservation.expiresAt"
+          ]
+        }
+      ],
+      "verification": {
+        "test": "repeated-checkout",
+        "sourceInspection": [
+          "src/reservations.js"
+        ],
+        "scope": "Independent executable assertions at the frozen commit."
+      }
+    },
+    {
+      "id": "returned-copy",
+      "question": "Can changing quantity, status, or expiresAt on the object returned by reserve alter the stored reservation or the quantity charged at checkout? Explain the mechanism.",
+      "facts": [
+        {
+          "id": "copy",
+          "text": "reserve returns a shallow spread copy, while the original object is stored in its Map."
+        },
+        {
+          "id": "isolation",
+          "text": "These fields are primitive values; changing them on the returned object does not change the stored reservation or checkout quantity. This is not a general deep-copy guarantee."
+        }
+      ],
+      "requiredContext": [
+        {
+          "id": "copy",
+          "path": "src/reservations.js",
+          "fragments": [
+            "reservations.set(reservation.id, reservation)",
+            "return { ...reservation }",
+            "const reservation = reservations.get(id)"
+          ]
+        },
+        {
+          "id": "quantity",
+          "path": "src/shop.js",
+          "fragments": [
+            "quantity: reservation.quantity"
+          ]
+        }
+      ],
+      "verification": {
+        "test": "returned-copy",
+        "sourceInspection": [
+          "src/reservations.js",
+          "src/shop.js"
+        ],
+        "scope": "Independent executable assertions at the frozen commit."
+      }
+    },
+    {
+      "id": "environment-configuration",
+      "negativeCapability": true,
+      "question": "Can I change the reservation lifetime with an environment variable in this revision? If so, what variable and units should I use?",
+      "facts": [
+        {
+          "id": "no-env",
+          "text": "No environment variable configures reservation lifetime at this frozen revision; do not invent a variable name."
+        },
+        {
+          "id": "constant",
+          "text": "reservationLifetimeMs returns a hardcoded 15 * 60 * 1000 milliseconds, consumed by reserve; changing the policy requires a code change."
+        }
+      ],
+      "requiredContext": [
+        {
+          "id": "policy",
+          "path": "src/config.js",
+          "fragments": [
+            "export function reservationLifetimeMs()",
+            "return 15 * 60 * 1000"
+          ]
+        },
+        {
+          "id": "consumer",
+          "path": "src/reservations.js",
+          "fragments": [
+            "import { reservationLifetimeMs } from './config.js'",
+            "const lifetime = reservationLifetimeMs()",
+            "expiresAt: timestamp + lifetime"
+          ]
+        }
+      ],
+      "verification": {
+        "test": "environment-configuration",
+        "sourceInspection": [
+          "src/config.js",
+          "src/reservations.js"
+        ],
+        "scope": "Inspected every tracked source module and manifest; targeted fresh-process tests establish behavior. Missing retrieval is never proof of absence."
+      }
+    },
+    {
+      "id": "inventory-persistence",
+      "negativeCapability": true,
+      "question": "After restarting the process, will a new shop recover reduced inventory and outstanding reservation IDs? Where is that state persisted?",
+      "facts": [
+        {
+          "id": "memory",
+          "text": "There is no persistence/recovery in this repository; inventory and reservations are per-instance Maps."
+        },
+        {
+          "id": "reset",
+          "text": "New shop constructs inventory from catalog and a fresh reservation Map; stock resets, old IDs yield RESERVATION_NOT_FOUND."
+        },
+        {
+          "id": "scope",
+          "text": "External durable storage would need to be implemented by the caller; no database or storage file is configured here."
+        }
+      ],
+      "requiredContext": [
+        {
+          "id": "inventory",
+          "path": "src/inventory.js",
+          "fragments": [
+            "const stock = new Map(products.map((product) => [product.id, product.stock]))"
+          ]
+        },
+        {
+          "id": "reservation-store",
+          "path": "src/reservations.js",
+          "fragments": [
+            "const reservations = new Map()",
+            "throw new Error('RESERVATION_NOT_FOUND')"
+          ]
+        },
+        {
+          "id": "construction",
+          "path": "src/shop.js",
+          "fragments": [
+            "createReservations(createInventory(catalog), now)"
+          ]
+        }
+      ],
+      "verification": {
+        "test": "inventory-persistence",
+        "sourceInspection": [
+          "src/inventory.js",
+          "src/reservations.js",
+          "src/shop.js"
+        ],
+        "scope": "Inspected every tracked source module and manifest; targeted fresh-process tests establish behavior. Missing retrieval is never proof of absence."
+      }
+    },
+    {
+      "id": "conversational-followup",
+      "history": [
+        {
+          "role": "user",
+          "content": "What happens to reserved notebook stock when the reservation expires?"
+        },
+        {
+          "role": "assistant",
+          "content": "Expired active reservations return their allocated units to available inventory when cleanup runs."
+        }
+      ],
+      "question": "Which function restores those units, and why only once?",
+      "facts": [
+        {
+          "id": "function",
+          "text": "createReservations.expireAt calls inventory.release(productId, quantity); release adds quantity to available stock."
+        },
+        {
+          "id": "guard",
+          "text": "Only active reservations at/past the deadline qualify; setting status to expired prevents repeated release."
+        }
+      ],
+      "requiredContext": [
+        {
+          "id": "expiry",
+          "path": "src/reservations.js",
+          "fragments": [
+            "reservation.status === 'active' && timestamp >= reservation.expiresAt",
+            "reservation.status = 'expired'",
+            "inventory.release(reservation.productId, reservation.quantity)"
+          ]
+        },
+        {
+          "id": "release",
+          "path": "src/inventory.js",
+          "fragments": [
+            "stock.set(productId, available(productId) + quantity)"
+          ]
+        }
+      ],
+      "verification": {
+        "test": "conversational-followup",
+        "sourceInspection": [
+          "src/reservations.js",
+          "src/inventory.js"
+        ],
+        "scope": "Independent executable assertions at the frozen commit."
+      }
+    }
+  ]
+}

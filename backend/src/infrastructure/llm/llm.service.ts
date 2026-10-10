@@ -1,7 +1,17 @@
 import { GoogleGenAI, Type, Schema } from "@google/genai";
 import ollama from "ollama";
 import dotenv from "dotenv";
-import { createRequestBudget, ollamaRequestBudget, requestFits, type LLMRequestBudget } from "./requestBudget.js";
+import { retryGeneration, retryGenerationStream } from "./providerRetry.js";
+import {
+  observe,
+  type DiagnosticObserver,
+} from "../../shared/utils/diagnostics.js";
+import {
+  createRequestBudget,
+  ollamaRequestBudget,
+  requestFits,
+  type LLMRequestBudget,
+} from "./requestBudget.js";
 dotenv.config();
 
 export interface LLMMessage {
@@ -14,23 +24,36 @@ export interface LLMService {
   readonly modelName: string;
   getReviewBudget(): Promise<LLMRequestBudget>;
   generate(messages: LLMMessage[]): Promise<string>;
-  generateStructured<T>(messages: LLMMessage[], schema: Schema, budget?: LLMRequestBudget): Promise<T>;
+  generateStructured<T>(
+    messages: LLMMessage[],
+    schema: Schema,
+    budget?: LLMRequestBudget,
+    onDiagnostic?: DiagnosticObserver,
+  ): Promise<T>;
   stream(
     messages: LLMMessage[],
+    onDiagnostic?: DiagnosticObserver,
   ): AsyncGenerator<{ text: string }, void, unknown>;
 }
 
 export class GeminiLLMService implements LLMService {
   private ai: GoogleGenAI;
-  public readonly modelName = "gemini-3.6-flash";
+  public readonly modelName = "gemini-3.1-flash-lite";
 
   constructor() {
     this.ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
   }
 
   async getReviewBudget(): Promise<LLMRequestBudget> {
-    const model = await this.ai.models.get({ model: this.modelName }).catch(() => { throw new Error("REVIEW_CONTEXT_UNAVAILABLE"); });
-    return createRequestBudget(Number(model.inputTokenLimit), Math.min(4096, Number(model.outputTokenLimit)));
+    const model = await this.ai.models
+      .get({ model: this.modelName })
+      .catch(() => {
+        throw new Error("REVIEW_CONTEXT_UNAVAILABLE");
+      });
+    return createRequestBudget(
+      Number(model.inputTokenLimit),
+      Math.min(4096, Number(model.outputTokenLimit)),
+    );
   }
 
   /**
@@ -70,13 +93,15 @@ export class GeminiLLMService implements LLMService {
     messages: LLMMessage[],
     schema: Schema,
     budget?: LLMRequestBudget,
+    onDiagnostic?: DiagnosticObserver,
   ): Promise<T> {
-    if (budget && !requestFits(messages, schema, budget)) throw new Error("REVIEW_CONTEXT_TOO_SMALL");
+    if (budget && !requestFits(messages, schema, budget))
+      throw new Error("REVIEW_CONTEXT_TOO_SMALL");
     const { systemInstruction, contents } = this.formatMessages(messages);
 
     console.log("came to generate ai response");
 
-    const response = await this.ai.models.generateContent({
+    const response = await retryGeneration(() => this.ai.models.generateContent({
       model: this.modelName,
       contents,
       config: {
@@ -84,15 +109,36 @@ export class GeminiLLMService implements LLMService {
         temperature: 0.1,
         responseMimeType: "application/json",
         responseSchema: schema,
+        // Our observable retry loop owns the five-attempt limit.
+        httpOptions: { retryOptions: { attempts: 1 } },
         ...(budget ? { maxOutputTokens: budget.outputTokens } : {}),
       },
-    });
+    }), onDiagnostic);
 
-    if (budget && response.candidates?.some((candidate) => candidate.finishReason === "MAX_TOKENS")) {
+    observe(onDiagnostic, "provider", {
+      provider: "gemini",
+      model: this.modelName,
+      rawText: response.text ?? null,
+      usage: {
+        inputTokens: response.usageMetadata?.promptTokenCount ?? null,
+        outputTokens: response.usageMetadata?.candidatesTokenCount ?? null,
+        metadata: response.usageMetadata ?? null,
+      },
+      settings: {
+        temperature: 0.1,
+        maxOutputTokens: budget?.outputTokens ?? null,
+      },
+      finishReason: response.candidates?.map((c) => c.finishReason) ?? null,
+    });
+    if (
+      budget &&
+      response.candidates?.some(
+        (candidate) => candidate.finishReason === "MAX_TOKENS",
+      )
+    ) {
       throw new Error("REVIEW_OUTPUT_INCOMPLETE");
     }
     const textResult = response.text;
-    console.log(textResult);
     if (!textResult) throw new Error("LLM returned an empty response.");
 
     return JSON.parse(textResult) as T;
@@ -100,25 +146,34 @@ export class GeminiLLMService implements LLMService {
 
   async *stream(
     messages: LLMMessage[],
+    onDiagnostic?: DiagnosticObserver,
   ): AsyncGenerator<{ text: string }, void, unknown> {
     const { systemInstruction, contents } = this.formatMessages(messages);
-
-    // Use generateContentStream instead of generateContent
-    const responseStream = await this.ai.models.generateContentStream({
-      model: this.modelName,
-      contents,
-      config: {
-        systemInstruction,
-        temperature: 0.2,
-      },
-    });
-
-    // Iterate over the stream and yield each chunk as it arrives
-    for await (const chunk of responseStream) {
-      if (chunk.text) {
-        yield { text: chunk.text };
+    const ai = this.ai, model = this.modelName;
+    yield* retryGenerationStream(async function* () {
+      const responseStream = await ai.models.generateContentStream({
+        model, contents,
+        config: { systemInstruction, temperature: 0.2,
+          httpOptions: { retryOptions: { attempts: 1 } } },
+      });
+      let usage: any = null;
+      let finishReason: string | null = null;
+      let modelVersion: string | null = null;
+      for await (const chunk of responseStream) {
+        if (chunk.usageMetadata) usage = { ...usage, ...chunk.usageMetadata };
+        finishReason = chunk.candidates?.[0]?.finishReason ?? finishReason;
+        modelVersion = chunk.modelVersion ?? modelVersion;
+        if (chunk.text) yield { text: chunk.text };
       }
-    }
+      observe(onDiagnostic, "qa.usage", {
+        provider: "gemini", model, modelVersion, settings: { temperature: 0.2 },
+        inputTokens: usage?.promptTokenCount ?? null,
+        outputTokens: usage?.candidatesTokenCount ?? null,
+        thinkingTokens: usage?.thoughtsTokenCount ?? null,
+        metadata: usage, doneReason: finishReason,
+      });
+      if (finishReason !== "STOP") throw new Error("LLM_OUTPUT_INCOMPLETE");
+    }, onDiagnostic);
   }
 }
 
@@ -126,12 +181,25 @@ export class OllamaLLMService implements LLMService {
   public readonly modelName = "qwen2.5-coder:7b";
 
   async getReviewBudget(): Promise<LLMRequestBudget> {
-    const model = await ollama.show({ model: this.modelName }).catch(() => { throw new Error("REVIEW_CONTEXT_UNAVAILABLE"); });
+    const model = await ollama.show({ model: this.modelName }).catch(() => {
+      throw new Error("REVIEW_CONTEXT_UNAVAILABLE");
+    });
     // Ollama's JSON is an object; the installed SDK incorrectly declares a Map.
     const info = model.model_info as unknown as Record<string, unknown>;
-    const budget = ollamaRequestBudget(info, model.parameters, process.env.OLLAMA_CONTEXT_LENGTH);
+    const budget = ollamaRequestBudget(
+      info,
+      model.parameters,
+      process.env.OLLAMA_CONTEXT_LENGTH,
+    );
     // Account conservatively for the model's own template/default instructions too.
-    budget.safetyTokens += Buffer.byteLength(JSON.stringify({ template: model.template, system: model.system, messages: model.messages }), "utf8");
+    budget.safetyTokens += Buffer.byteLength(
+      JSON.stringify({
+        template: model.template,
+        system: model.system,
+        messages: model.messages,
+      }),
+      "utf8",
+    );
     return budget;
   }
 
@@ -178,8 +246,10 @@ export class OllamaLLMService implements LLMService {
     messages: LLMMessage[],
     schema: Schema,
     budget?: LLMRequestBudget,
+    onDiagnostic?: DiagnosticObserver,
   ): Promise<T> {
-    if (budget && !requestFits(messages, schema, budget)) throw new Error("REVIEW_CONTEXT_TOO_SMALL");
+    if (budget && !requestFits(messages, schema, budget))
+      throw new Error("REVIEW_CONTEXT_TOO_SMALL");
     console.log("came to generate Ollama structured response");
 
     const standardSchema = this.convertToStandardJsonSchema(schema);
@@ -193,12 +263,39 @@ export class OllamaLLMService implements LLMService {
       format: standardSchema as any,
       options: {
         temperature: 0.1,
-        ...(budget ? { num_ctx: budget.contextTokens, num_predict: budget.outputTokens } : {}),
+        ...(budget
+          ? { num_ctx: budget.contextTokens, num_predict: budget.outputTokens }
+          : {}),
       },
     });
 
-    if (budget && (!response.done || response.done_reason === "length" ||
-      response.prompt_eval_count + response.eval_count > budget.contextTokens)) {
+    observe(onDiagnostic, "provider", {
+      provider: "ollama",
+      model: this.modelName,
+      rawText: response.message.content ?? null,
+      usage: {
+        inputTokens: response.prompt_eval_count ?? null,
+        outputTokens: response.eval_count ?? null,
+      },
+      settings: {
+        temperature: 0.1,
+        num_ctx: budget?.contextTokens ?? null,
+        num_predict: budget?.outputTokens ?? null,
+      },
+      finishReason: response.done_reason ?? null,
+      durationsNs: {
+        total: response.total_duration ?? null,
+        load: response.load_duration ?? null,
+        prompt: response.prompt_eval_duration ?? null,
+        generation: response.eval_duration ?? null,
+      },
+    });
+    if (
+      budget &&
+      (!response.done ||
+        response.done_reason === "length" ||
+        response.prompt_eval_count + response.eval_count > budget.contextTokens)
+    ) {
       throw new Error("REVIEW_OUTPUT_INCOMPLETE");
     }
     const textResult = response.message.content;
@@ -209,6 +306,7 @@ export class OllamaLLMService implements LLMService {
 
   async *stream(
     messages: LLMMessage[],
+    onDiagnostic?: DiagnosticObserver,
   ): AsyncGenerator<{ text: string }, void, unknown> {
     const responseStream = await ollama.chat({
       model: this.modelName,
@@ -219,8 +317,15 @@ export class OllamaLLMService implements LLMService {
       },
     });
 
-    // Iterate over the async iterable stream returned by Ollama
+    // Observation is optional and does not alter requests or yielded text.
     for await (const chunk of responseStream) {
+      if (chunk.done) observe(onDiagnostic, "qa.usage", {
+        provider: "ollama", model: this.modelName, settings: { temperature: 0.2 },
+        inputTokens: chunk.prompt_eval_count ?? null, outputTokens: chunk.eval_count ?? null,
+        totalDurationNs: chunk.total_duration ?? null, loadDurationNs: chunk.load_duration ?? null,
+        promptEvalDurationNs: chunk.prompt_eval_duration ?? null, evalDurationNs: chunk.eval_duration ?? null,
+        doneReason: chunk.done_reason ?? null,
+      });
       if (chunk.message?.content) {
         yield { text: chunk.message.content };
       }
@@ -230,3 +335,6 @@ export class OllamaLLMService implements LLMService {
 
 export const llmService = new GeminiLLMService();
 export const ollamaService = new OllamaLLMService();
+
+/** One production/evaluation selection for repository Q&A. */
+export const repositoryQALLM = llmService;
