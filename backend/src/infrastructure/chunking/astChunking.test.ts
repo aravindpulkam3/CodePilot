@@ -1,4 +1,5 @@
 import { test, describe } from "node:test";
+import { stripChunkHeader } from "../../shared/prompts/sourceRefs.js";
 import assert from "node:assert/strict";
 import { astChunker, AstChunkingService } from "./astChunking.service.js";
 import { Parser, Language, Query } from "web-tree-sitter";
@@ -758,5 +759,36 @@ describe("astChunker - member packing and lead-in absorption", () => {
     const outside = chunks.find((c) => sourcePayload(c.content).includes("saveResults()"));
     assert.ok(outside && !/^\/\/ Context:/m.test(outside.content));
     assert.ok(chunks.every((c) => c.content.length <= 6000));
+  });
+});
+
+
+describe("transient original-source spans", () => {
+  test("ordinary and same-line split chunks cite exactly copied Unicode/CRLF source", async () => {
+    const source = 'export function huge() { return "' + "\u{1f680}".repeat(15000) + '"; }\r\n';
+    const chunks = await astChunker.chunkFile("unicode.ts", source);
+    assert.ok(chunks.length > 4);
+    for (const chunk of chunks) {
+      assert.equal(chunk.source_spans?.length, 1);
+      const span = chunk.source_spans![0];
+      assert.equal(stripChunkHeader(chunk.content), source.slice(span.start, span.end));
+    }
+  });
+
+  test("skeletons have no original spans and member groups omit intervening fields", async () => {
+    const source = buildLargeClassSource().replace("  updateUser()", "  secret = 42;\n  updateUser()");
+    const chunks = await astChunker.chunkFile("group.ts", source);
+    const groups = chunks.filter((chunk) => chunk.symbol_type === "class_member_group");
+    assert.ok(groups.length > 0);
+    for (const chunk of chunks) {
+      if (chunk.symbol_type === "class_skeleton") assert.deepEqual(chunk.source_spans, []);
+      else {
+        const copied = chunk.source_spans!.map((span) => source.slice(span.start, span.end)).join("\n\n");
+        assert.equal(copied, stripChunkHeader(chunk.content));
+        assert.ok(!copied.includes("secret = 42"));
+      }
+    }
+    const field = source.indexOf("secret = 42");
+    assert.ok(!groups.some((chunk) => chunk.source_spans!.some((span) => span.start <= field && span.end > field)));
   });
 });

@@ -1,6 +1,7 @@
 import { pool } from "../../config/db.js";
 import { safeErrorDetails } from "../../shared/utils/safeErrorDetails.js";
 import { astChunker } from "../../infrastructure/chunking/astChunking.service.js";
+import type { ChunkMetadata } from "../../infrastructure/chunking/astChunking.service.js";
 import { documentationChunker } from "../../infrastructure/chunking/documentationChunking.service.js";
 import { isConfigFile, isDocumentationFile, isExcludedPath } from "../../shared/utils/documentationPaths.js";
 import { embedder } from "../../infrastructure/embedding/embedding.service.js";
@@ -93,8 +94,7 @@ export class RepositoryIndexingService {
 
     const chunksToDelete: { filePath: string; contentHashes: string[] }[] = [];
     const chunksToInsert: any[] = [];
-    const hashesToKeepUpdate: { filePath: string; contentHashes: string[] }[] =
-      [];
+    const chunksToRefresh: ChunkMetadata[] = [];
 
     // Import-graph changes, applied inside the stage 2 transaction.
     const removedPaths: string[] = [];
@@ -128,7 +128,17 @@ export class RepositoryIndexingService {
         renames.push({ oldPath: file.previousPath, newPath: file.path });
       }
 
-      if (!file.content) continue;
+      // Sync intentionally omits content when an indexed file is renamed to
+      // an excluded path. Its old-path cleanup/retargeting still applies.
+      if (file.status === "renamed" && file.previousPath && !isIndexableFile(file.path)) continue;
+      if (typeof file.content !== "string") {
+        throw new Error(`Source content unavailable for ${file.path}`);
+      }
+      if (file.content === "") {
+        chunksToDelete.push({ filePath: file.path, contentHashes: [] });
+        importsByFile.set(file.path, []); // Replace outgoing imports; keep incoming imports.
+        continue;
+      }
 
       // Documentation (README) is chunked by Markdown structure rather than by AST — but into the SAME table, in this SAME transaction, stamped
       // with this SAME commitSha as the code chunks around it. That is what
@@ -173,13 +183,7 @@ export class RepositoryIndexingService {
         chunksToInsert.push(...embeddedChunks);
       }
 
-      const hashesToKeep = [...existingHashes].filter((h) => newHashes.has(h));
-      if (hashesToKeep.length > 0) {
-        hashesToKeepUpdate.push({
-          filePath: file.path,
-          contentHashes: hashesToKeep,
-        });
-      }
+      chunksToRefresh.push(...newChunks.filter((chunk) => existingHashes.has(chunk.content_hash)));
 
       // Import graph (Review's graph expansion, Q&A's graph augmentation and
       // Interview's neighbours read repository_imports). Skipped for
@@ -200,7 +204,7 @@ export class RepositoryIndexingService {
     }
 
     console.log(
-      `[Index] Generation complete for ${repositoryId}: ${chunksToInsert.length} chunk(s) to insert, ${chunksToDelete.length} file(s) with deletions, ${hashesToKeepUpdate.length} file(s) unchanged.`,
+      `[Index] Generation complete for ${repositoryId}: ${chunksToInsert.length} chunk(s) to insert, ${chunksToDelete.length} file(s) with deletions, ${chunksToRefresh.length} chunk(s) reused.`,
     );
 
     // --- STAGE 2: SHORT TRANSACTION (Persistence) ---
@@ -265,11 +269,19 @@ export class RepositoryIndexingService {
         );
       }
 
-      for (const update of hashesToKeepUpdate) {
+      // Hashes describe the embedded text, not its current source position.
+      // Reuse the vector and identity, but refresh every persisted source field.
+      for (const chunk of chunksToRefresh) {
         await client.query(
-          `UPDATE repository_embeddings SET commit_sha = $1
-                     WHERE repository_id = $2 AND file_path = $3 AND content_hash = ANY($4)`,
-          [commitSha, repositoryId, update.filePath, update.contentHashes],
+          `UPDATE repository_embeddings
+           SET commit_sha = $1, start_line = $5, end_line = $6,
+               symbol_type = $7, symbol_name = $8, qualified_name = $9,
+               parent_symbol = $10, is_exported = $11, chunk_index = $12, chunk_total = $13
+           WHERE repository_id = $2 AND file_path = $3 AND content_hash = $4`,
+          [commitSha, repositoryId, chunk.file_path, chunk.content_hash,
+            chunk.start_line, chunk.end_line, chunk.symbol_type, chunk.symbol_name,
+            chunk.qualified_name ?? null, chunk.parent_symbol ?? null,
+            chunk.is_exported ?? null, chunk.chunk_index ?? null, chunk.chunk_total ?? null],
         );
       }
 

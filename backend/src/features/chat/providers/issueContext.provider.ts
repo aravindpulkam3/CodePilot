@@ -38,6 +38,7 @@ export class IssueContextProvider implements ChatContextProvider {
 Scoped Finding Context:
 - Repository: ${finding.repo_owner}/${finding.repo_name} (PR #${finding.pull_number})
 - Target File: ${finding.file_path}
+- Reviewed Commit: ${finding.head_sha}. This is a saved finding, not evidence about a newer PR revision.
 - Target Line: ${finding.line_number ?? "N/A"}
 - Severity: ${finding.severity}
 - Category: ${finding.category}

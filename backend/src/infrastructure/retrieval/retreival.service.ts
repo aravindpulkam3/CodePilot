@@ -960,6 +960,8 @@ export class RepositoryRetrievalService {
         symbolName: c.metadata.symbolName!,
         symbolType: primarySource(c)?.type ?? "unknown",
         content: c.content,
+        contentHash: c.metadata.contentHash!,
+        commitSha: c.metadata.commitSha!,
         lineStart: c.metadata.startLine!,
         lineEnd: c.metadata.endLine!,
         similarity: c.score,
@@ -975,12 +977,14 @@ export class RepositoryRetrievalService {
 
   private chunkToCandidate(chunk: CodeChunkSearchResult, sourceType: keyof typeof RETRIEVAL_WEIGHTS): RetrievalCandidate {
     return {
-      identityKey: `${chunk.filePath}#${chunk.lineStart}-${chunk.lineEnd}`,
+      identityKey: JSON.stringify([chunk.filePath, chunk.commitSha, chunk.contentHash]),
       content: chunk.content,
       dataType: "code_chunk",
       sources: [{ type: sourceType, weight: RETRIEVAL_WEIGHTS[sourceType], similarity: chunk.similarity }],
       score: 0,
       metadata: {
+        contentHash: chunk.contentHash,
+        commitSha: chunk.commitSha,
         filePath: chunk.filePath,
         startLine: chunk.lineStart,
         endLine: chunk.lineEnd,

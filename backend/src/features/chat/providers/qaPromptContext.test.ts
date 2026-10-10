@@ -13,6 +13,7 @@ const code = (name: string, body: string, overrides: Partial<CodeChunkSearchResu
   lineEnd: 20,
   similarity: 0.8,
   commitSha: "sha-code",
+  contentHash: `hash-${name}`,
   ...overrides,
 });
 
@@ -26,6 +27,7 @@ const doc = (section: string, body: string): DocChunkSearchResult => ({
   lineEnd: 5,
   similarity: 0.7,
   commitSha: "sha-doc",
+  contentHash: `hash-${section}`,
 });
 
 const base = (overrides: Partial<QAPromptContextInput> = {}): QAPromptContextInput => ({

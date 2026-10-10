@@ -22,10 +22,12 @@ export interface Finding {
 
 export interface Review {
   id: string;
-  overall_score: number;
+  overall_score: number | null;
   risk_level: string | null;
   summary: string;
   head_sha: string;
+  base_sha?: string | null;
+  review_input?: ReviewInputMetadata | null;
   created_at: string;
   findings: Finding[];
 }
@@ -33,8 +35,30 @@ export interface Review {
 export interface ReviewHistoryItem {
   id: string;
   summary: string;
-  overall_score: number;
+  overall_score: number | null;
   created_at: string;
+}
+
+export interface ReviewInputMetadata {
+  version: 1;
+  headSha: string;
+  baseSha: string;
+  acquisition: { complete: boolean; expectedFiles: number; fetchedFiles: number };
+  coverage: "complete" | "partial";
+  files: Array<{
+    filename: string;
+    status: "available" | "excluded" | "unavailable";
+    inclusion: "full" | "partial" | "none";
+    reason?: string;
+    hunks: Array<{ header: string; included: boolean }>;
+    enclosing?: {
+      status: "complete" | "partial" | "unavailable" | "not-applicable";
+      uncovered: string[];
+      reason?: string;
+      split: boolean;
+    };
+  }>;
+  excludedEvidence: Array<{ filename: string; reason: string }>;
 }
 
 export interface PullRequestReviews {

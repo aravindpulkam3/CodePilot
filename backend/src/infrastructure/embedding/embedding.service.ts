@@ -4,6 +4,9 @@ import { ChunkMetadata } from "../chunking/astChunking.service.js";
 import { withCache } from "../../shared/utils/cache.js";
 
 const EMBEDDING_MODEL = "gemini-embedding-001";
+// Existing rows have no model-version column. Changing this model/task or
+// dimensionality requires a full reindex; content hashes alone cannot detect it.
+const EMBEDDING_DIMENSIONS = 3072;
 
 export class EmbeddingService {
   private ai: GoogleGenAI;
@@ -21,8 +24,6 @@ export class EmbeddingService {
 
     console.log(`[Embedding] Embedding ${chunks.length} chunk(s) as RETRIEVAL_DOCUMENT.`);
 
-    const enrichedChunks: (ChunkMetadata & { embedding: number[] })[] = [];
-
     const textsToEmbed = chunks.map((chunk) => chunk.content);
 
     try {
@@ -34,33 +35,25 @@ export class EmbeddingService {
         },
       });
 
-      // 1. Check if embeddings array exists
-      if (!response || !response.embeddings) {
-        console.warn(
-          "Warning: Embedding API returned an empty or undefined embeddings array.",
-        );
-        return [];
+      const embeddings = response?.embeddings;
+      if (!Array.isArray(embeddings) || embeddings.length !== chunks.length) {
+        throw new Error("Embedding response count does not match requested chunks");
       }
-
-      // 2. Safely map the response back to our chunks
-      response.embeddings.forEach((emb, index) => {
-        // Safely extract values. If undefined or null, fallback to an empty array.
-        const vectorValues = emb.values || [];
-
-        // 3. Ensure the vector actually contains data before pushing
-        if (vectorValues.length > 0) {
-          enrichedChunks.push({
-            ...chunks[index],
-            embedding: vectorValues,
-          });
-        } else {
-          console.warn(
-            `Warning: Vector generation failed for chunk at index ${index}`,
-          );
+      // Gemini batchEmbedContents (and EmbedContentResponse in this SDK)
+      // guarantees response order matches input order: https://ai.google.dev/api/embeddings
+      // Map the requested chunks, so a missing array entry cannot be skipped.
+      return chunks.map((chunk, index) => {
+        const values = embeddings[index]?.values;
+        if (!Array.isArray(values) || values.length !== EMBEDDING_DIMENSIONS) {
+          throw new Error(`Invalid embedding dimensions for chunk ${index}`);
         }
+        for (const value of values) {
+          if (typeof value !== "number" || !Number.isFinite(value)) {
+            throw new Error(`Invalid embedding value for chunk ${index}`);
+          }
+        }
+        return { ...chunk, embedding: values };
       });
-
-      return enrichedChunks;
     } catch (error) {
       console.error("Error generating embeddings:", error);
       throw error;

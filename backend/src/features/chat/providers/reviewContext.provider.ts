@@ -55,9 +55,11 @@ ${f.code_suggestion ? `Suggested Fix:\n\`\`\`\n${f.code_suggestion}\n\`\`\`` : '
 You are discussing the overall AI Code Review for Pull Request #${review.pull_number}.
 
 Review Overview:
-- Overall Score: ${review.overall_score}/100
-- Risk Level: ${review.risk_level}
+- Overall Score: ${review.overall_score == null ? "Not assigned: partial review input" : `${review.overall_score}/100`}
+- Risk Level: ${review.risk_level ?? "Not assigned: partial review input"}
 - Target Commit: ${review.head_sha?.slice(0, 7) || 'N/A'}
+- Base Commit: ${review.raw_response?.review_input?.baseSha || 'Not recorded'}
+- Scope: ${review.raw_response?.review_input?.coverage || 'Legacy review; coverage not recorded'}. Discuss only this saved revision and supplied changes, not the current PR.
 - Review Summary: ${review.summary || 'No summary available'}
 
 Total Findings Identified (${findings.length}):

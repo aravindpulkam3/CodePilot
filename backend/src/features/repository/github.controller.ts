@@ -10,6 +10,12 @@ import { userService } from '../user/user.service.js';
 import { withCache } from '../../shared/utils/cache.js';
 
 const handleGitHubError = (res: Response, error: any) => {
+  if (error?.message === 'PR_REVISION_CHANGED') {
+    return res.status(409).json({ error: 'The pull request changed while loading. Please retry.', code: error.message, retryable: true });
+  }
+  if (['GITHUB_PR_FILES_INCOMPLETE', 'GITHUB_PR_FILE_LIMIT'].includes(error?.message)) {
+    return res.status(422).json({ error: 'GitHub did not provide a complete PR file list (maximum 3,000 files).', code: error.message });
+  }
   if (error?.message === 'REPO_NOT_FOUND' || error?.message === 'GITHUB_NOT_FOUND') {
     return res.status(404).json({ error: 'GitHub repository or resource not found.' });
   }
@@ -111,9 +117,8 @@ export const getPullRequestDetail = async (req: Request, res: Response) => {
     if (!await findOwnedRepositoryById(repoId, req.dbUser!.id)) {
       return res.status(404).json({ error: "Repository not found." });
     }
-    const prDetail = await withCache(`repo:${repoId}:pr:${pullNumber}:details`, 90, () =>
-      getPullRequestDetails(clerkUserId, repoId, pullNumber),
-    );
+    // Current diff and review anchor validity must come from the same fresh snapshot.
+    const prDetail = await getPullRequestDetails(clerkUserId, repoId, pullNumber);
     return res.status(200).json(prDetail);
   } catch (error: any) {
     console.error("[GitHub] getPullRequestDetail failed:", { repositoryId: req.params.repositoryId, ...safeErrorDetails(error) });

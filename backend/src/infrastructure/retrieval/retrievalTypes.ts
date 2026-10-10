@@ -5,15 +5,15 @@ export interface CodeChunkSearchResult {
   symbolName: string;
   symbolType: string;
   content: string;
+  contentHash: string;
   lineStart: number;
   lineEnd: number;
   similarity: number;
   /**
    * repository_embeddings.commit_sha — the revision this chunk was indexed
    * at. Lets Q&A sources link to a pinned blob instead of mutable HEAD.
-   * Optional because Review builds these objects from candidates without it.
    */
-  commitSha?: string;
+  commitSha: string;
 }
 
 /**
@@ -232,7 +232,7 @@ export interface CandidateSource {
 export interface RetrievalCandidate {
   // Identity key for deduplication. 
   // For files/summaries: The file path or component name
-  // For chunks: The file_path#content_hash or file_path#start_line
+  // For chunks: JSON tuple [filePath, commitSha, contentHash].
   identityKey: string;
   
   // The retrieved text content
@@ -252,6 +252,8 @@ export interface RetrievalCandidate {
   
   // Metadata for rendering/attribution
   metadata: {
+    contentHash?: string;
+    commitSha?: string;
     filePath?: string;
     componentName?: string;
     startLine?: number;

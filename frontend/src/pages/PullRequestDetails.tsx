@@ -14,6 +14,7 @@ import { DiffViewer } from "@/components/review/DiffViewer";
 import { FindingDiscussion } from "@/components/review/FindingDiscussion";
 import { ChangedFile, Finding } from "@/types/reviewTypes";
 import { findingMatchesFile, orderFindings, resolveLayout, stepThrough } from "@/utils/reviewNavigation";
+import { reviewCoverageLabel, reviewRevisionState } from "@/utils/reviewCoverage";
 
 const NAVIGATOR_PREF = "review-navigator-open";
 const DISCUSSION_PREF = "review-discussion-open";
@@ -80,7 +81,9 @@ export default function PullRequestDetails() {
   const history = reviews?.history ?? EMPTY;
   const findings: Finding[] = latest?.findings ?? EMPTY;
   const files: ChangedFile[] = pr?.files ?? EMPTY;
-  const isOutdated = !!latest && !!pr && pr.head_sha !== latest.head_sha;
+  const revisionState = reviewRevisionState(latest, pr);
+  const isOutdated = revisionState === "outdated";
+  const canAnchorFindings = revisionState === "current";
   const ordered = useMemo(() => orderFindings(files, findings), [files, findings]);
 
   const fileParam = searchParams.get("file");
@@ -116,6 +119,12 @@ export default function PullRequestDetails() {
   const fileOf = (finding: Finding) => ordered.find((o) => o.finding.id === finding.id)?.filename ?? null;
 
   const selectFinding = (finding: Finding, filename: string | null = fileOf(finding)) => {
+    if (!canAnchorFindings) {
+      select(null, finding.id);
+      setDiscussionFindingId(finding.id);
+      setDiscussionOpen(true);
+      return;
+    }
     select(filename, finding.id);
     if (discussionOpen) setDiscussionFindingId(finding.id);
   };
@@ -232,7 +241,7 @@ export default function PullRequestDetails() {
     onCollapse: () => setNavigator(false),
     filterInputRef,
   };
-  const currentFindings = currentFile ? ordered.filter((o) => o.filename === currentFile.filename).map((o) => o.finding) : [];
+  const currentFindings = currentFile && canAnchorFindings ? ordered.filter((o) => o.filename === currentFile.filename).map((o) => o.finding) : [];
 
   return (
     <div className="review-ws flex h-full min-h-0 flex-col bg-rv-code font-sans text-rv-ink">
@@ -249,6 +258,19 @@ export default function PullRequestDetails() {
         compact={workspaceWidth < 1150}
       />
 
+      {latest?.review_input && (
+        <div className="border-b border-rv-hair px-4 py-2 text-xs text-rv-mute">
+          <span className={latest.review_input.coverage === "partial" ? "text-rv-warn" : undefined}>
+            {reviewCoverageLabel(latest.review_input)}
+          </span>{" "}Inclusion does not guarantee analysis. Findings apply only to supplied changes.
+        </div>
+      )}
+      {latest && !canAnchorFindings && (
+        <div className="border-b border-rv-hair px-4 py-2 text-xs text-rv-warn">
+          {isOutdated ? "This review describes an earlier PR revision." : "This older review has no recorded base revision; input coverage is unknown."}
+          {" "}Findings are available in the overview; inline anchors and current-diff attachments are disabled.
+        </div>
+      )}
       <div ref={workspaceRef} className="relative flex min-h-0 flex-1">
         {layout.navigator === "docked" ? (
           <ReviewNavigator {...navigatorProps} />
@@ -300,7 +322,7 @@ export default function PullRequestDetails() {
             repositoryId={repositoryId!}
             reviewId={latest?.id ?? null}
             finding={discussionFinding}
-            file={discussionFinding ? files.find((f) => findingMatchesFile(discussionFinding.file_path, f)) ?? null : null}
+            file={discussionFinding && canAnchorFindings ? files.find((f) => findingMatchesFile(discussionFinding.file_path, f)) ?? null : null}
             mode={layout.discussion}
             width={discussionWidth}
             resizeHandleProps={discussionResizeProps}

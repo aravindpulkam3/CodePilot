@@ -72,6 +72,7 @@ export function usePullRequestDetail(repositoryId: string, pullNumber: string) {
     queryKey: ["repository", repositoryId, "pulls", pullNumber],
     queryFn: () => getPullRequestDetails(repositoryId,pullNumber),
     enabled: !!repositoryId && !!pullNumber,
+    refetchOnWindowFocus: true,
   });
 }
 

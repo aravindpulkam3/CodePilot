@@ -1,6 +1,7 @@
 import { GoogleGenAI, Type, Schema } from "@google/genai";
 import ollama from "ollama";
 import dotenv from "dotenv";
+import { createRequestBudget, ollamaRequestBudget, requestFits, type LLMRequestBudget } from "./requestBudget.js";
 dotenv.config();
 
 export interface LLMMessage {
@@ -11,8 +12,9 @@ export interface LLMMessage {
 export interface LLMService {
   /** The model this service calls — persisted as review audit metadata. */
   readonly modelName: string;
+  getReviewBudget(): Promise<LLMRequestBudget>;
   generate(messages: LLMMessage[]): Promise<string>;
-  generateStructured<T>(messages: LLMMessage[], schema: Schema): Promise<T>;
+  generateStructured<T>(messages: LLMMessage[], schema: Schema, budget?: LLMRequestBudget): Promise<T>;
   stream(
     messages: LLMMessage[],
   ): AsyncGenerator<{ text: string }, void, unknown>;
@@ -24,6 +26,11 @@ export class GeminiLLMService implements LLMService {
 
   constructor() {
     this.ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  }
+
+  async getReviewBudget(): Promise<LLMRequestBudget> {
+    const model = await this.ai.models.get({ model: this.modelName }).catch(() => { throw new Error("REVIEW_CONTEXT_UNAVAILABLE"); });
+    return createRequestBudget(Number(model.inputTokenLimit), Math.min(4096, Number(model.outputTokenLimit)));
   }
 
   /**
@@ -62,7 +69,9 @@ export class GeminiLLMService implements LLMService {
   async generateStructured<T>(
     messages: LLMMessage[],
     schema: Schema,
+    budget?: LLMRequestBudget,
   ): Promise<T> {
+    if (budget && !requestFits(messages, schema, budget)) throw new Error("REVIEW_CONTEXT_TOO_SMALL");
     const { systemInstruction, contents } = this.formatMessages(messages);
 
     console.log("came to generate ai response");
@@ -75,9 +84,13 @@ export class GeminiLLMService implements LLMService {
         temperature: 0.1,
         responseMimeType: "application/json",
         responseSchema: schema,
+        ...(budget ? { maxOutputTokens: budget.outputTokens } : {}),
       },
     });
 
+    if (budget && response.candidates?.some((candidate) => candidate.finishReason === "MAX_TOKENS")) {
+      throw new Error("REVIEW_OUTPUT_INCOMPLETE");
+    }
     const textResult = response.text;
     console.log(textResult);
     if (!textResult) throw new Error("LLM returned an empty response.");
@@ -111,6 +124,16 @@ export class GeminiLLMService implements LLMService {
 
 export class OllamaLLMService implements LLMService {
   public readonly modelName = "qwen2.5-coder:7b";
+
+  async getReviewBudget(): Promise<LLMRequestBudget> {
+    const model = await ollama.show({ model: this.modelName }).catch(() => { throw new Error("REVIEW_CONTEXT_UNAVAILABLE"); });
+    // Ollama's JSON is an object; the installed SDK incorrectly declares a Map.
+    const info = model.model_info as unknown as Record<string, unknown>;
+    const budget = ollamaRequestBudget(info, model.parameters, process.env.OLLAMA_CONTEXT_LENGTH);
+    // Account conservatively for the model's own template/default instructions too.
+    budget.safetyTokens += Buffer.byteLength(JSON.stringify({ template: model.template, system: model.system, messages: model.messages }), "utf8");
+    return budget;
+  }
 
   private convertToStandardJsonSchema(googleSchema: any): any {
     if (!googleSchema || typeof googleSchema !== "object") return googleSchema;
@@ -154,7 +177,9 @@ export class OllamaLLMService implements LLMService {
   async generateStructured<T>(
     messages: LLMMessage[],
     schema: Schema,
+    budget?: LLMRequestBudget,
   ): Promise<T> {
+    if (budget && !requestFits(messages, schema, budget)) throw new Error("REVIEW_CONTEXT_TOO_SMALL");
     console.log("came to generate Ollama structured response");
 
     const standardSchema = this.convertToStandardJsonSchema(schema);
@@ -168,9 +193,14 @@ export class OllamaLLMService implements LLMService {
       format: standardSchema as any,
       options: {
         temperature: 0.1,
+        ...(budget ? { num_ctx: budget.contextTokens, num_predict: budget.outputTokens } : {}),
       },
     });
 
+    if (budget && (!response.done || response.done_reason === "length" ||
+      response.prompt_eval_count + response.eval_count > budget.contextTokens)) {
+      throw new Error("REVIEW_OUTPUT_INCOMPLETE");
+    }
     const textResult = response.message.content;
     if (!textResult) throw new Error("Ollama returned an empty response.");
 

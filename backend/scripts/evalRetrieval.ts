@@ -9,6 +9,8 @@
  * Needs Postgres and both Redis instances running, and GEMINI_API_KEY for
  * query embeddings. Never enqueues a sync (skipSync / isNewSession:false)
  * and never calls a generation LLM — it records what WOULD be sent.
+ * Review prompt cases must record both headSha and baseSha. Budget metadata
+ * comes from the installed provider unless the fixture supplies contextTokens.
  *
  * Evidence matching uses repository-relative paths (exact, or as a path
  * suffix), never bare basenames, so index.ts / config.ts can't false-match.
@@ -19,6 +21,7 @@ import { fileURLToPath } from "url";
 import { pool } from "../src/config/db.js";
 import { RepositoryContextProvider } from "../src/features/chat/providers/repositoryContext.provider.js";
 import { reviewService } from "../src/features/review/review.service.js";
+import { createRequestBudget } from "../src/infrastructure/llm/requestBudget.js";
 import { findRepositoryById } from "../src/features/repository/repository.service.js";
 import { retrievalService } from "../src/infrastructure/retrieval/retreival.service.js";
 import { interviewPromptBuilder } from "../src/features/interview/interviewPromptBuilder.js";
@@ -138,6 +141,7 @@ async function runReview(c: Case, repositoryId: string) {
     title: c.title,
     description: null,
     head_sha: c.headSha,
+    base_sha: c.baseSha,
     files: c.files.map((f: any) => ({
       filename: f.filename,
       status: f.status,
@@ -164,6 +168,7 @@ async function runReview(c: Case, repositoryId: string) {
     return { changedCode, enclosing: checkEnclosing(c, changedCode) };
   }
 
+  if (!c.baseSha) return { skipped: "Review fixture needs its original PR baseSha; do not substitute the current default branch." };
   const repoDetails = await findRepositoryById(repositoryId);
   if (!repoDetails) throw new Error(`repository ${repositoryId} not found`);
   const out: any = await reviewService.buildReviewMessages(
@@ -171,7 +176,7 @@ async function runReview(c: Case, repositoryId: string) {
     repositoryId,
     repoDetails,
     prInput as any,
-    { skipSync: true, githubToken: undefined } as any,
+    { skipSync: true, githubToken: undefined, budget: c.contextTokens ? createRequestBudget(c.contextTokens) : undefined } as any,
   );
   const chunks = out.retrievedContext.codeChunks;
   return {
@@ -185,6 +190,7 @@ async function runReview(c: Case, repositoryId: string) {
       (d: any) => `${d.filePath} § ${d.sectionPath}`,
     ),
     changedCode: out.changedCode ?? null,
+    reviewInput: out.reviewInput,
     enclosing: checkEnclosing(c, out.changedCode),
     hit: hitRate(
       c.expectedEvidence,

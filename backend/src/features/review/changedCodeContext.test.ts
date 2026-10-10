@@ -1,4 +1,5 @@
 import { test, describe } from "node:test";
+import type { EnclosingChunk } from "./changedCodeContext.js";
 import assert from "node:assert/strict";
 import type { ChunkMetadata } from "../../infrastructure/chunking/astChunking.service.js";
 import {
@@ -7,6 +8,9 @@ import {
   parseChangedLines,
   selectEnclosingChunks,
   unmappedTargets,
+  changedSourceTargets,
+  uncoveredTargets,
+  includedTargets,
   verifyPatchAgainstContent,
   type ChangedCodeDeps,
 } from "./changedCodeContext.js";
@@ -21,6 +25,7 @@ const chunk = (start: number, end: number, name: string, symbolType = "function"
   end_line: end,
   content: `// File: f.ts\n// Type: ${symbolType}\n// Name: ${name}\n${body}`,
   content_hash: `${name}-${start}`,
+  source_spans: symbolType === "class_skeleton" ? [] : [{ start: DB_HEAD.split("\n").slice(0, start - 1).join("\n").length + (start > 1 ? 1 : 0), end: DB_HEAD.split("\n").slice(0, end).join("\n").length }],
 });
 
 // url-shortener@708fcdbf config/db.js — the real GitHub patch.
@@ -176,25 +181,23 @@ describe("selectEnclosingChunks / unmappedTargets", () => {
     assert.deepEqual(selectEnclosingChunks(fileChunks, inside).map((c) => c.symbol_name), ["alpha"]);
     const between = { ...patchAdding([]), deletionAnchors: [12] }; // lines 11 and 12 straddle alpha/beta
     assert.deepEqual(selectEnclosingChunks(fileChunks, between), []);
-    assert.deepEqual(unmappedTargets(fileChunks, between, []), ["deletion before line 12"]);
+    assert.deepEqual(unmappedTargets(fileChunks, between, [], DB_HEAD), ["deletion before line 12"]);
   });
 
   test("a class skeleton never stands in for the method that actually contains the change", () => {
     const cls = [chunk(1, 100, "Big", "class_skeleton"), chunk(10, 20, "Big.method", "method"), chunk(30, 40, "Big.other", "method")];
-    assert.deepEqual(selectEnclosingChunks(cls, patchAdding([15])).map((c) => c.symbol_name), ["Big.method"]);
+    assert.deepEqual(selectEnclosingChunks(cls, patchAdding([15])).map((c) => c.symbol_name), ["Big.method", "Big"]);
     // A field line no member covers maps to the skeleton.
     assert.deepEqual(selectEnclosingChunks(cls, patchAdding([5])).map((c) => c.symbol_name), ["Big"]);
     // If the method chunk is not kept, the skeleton does NOT count as covering its lines.
-    assert.deepEqual(unmappedTargets(cls, patchAdding([15]), [cls[0]]), ["added lines 15-15"]);
+    assert.deepEqual(unmappedTargets(cls, patchAdding([15]), [cls[0]], DB_HEAD), ["added lines 15-15"]);
   });
 
-  test("the per-file cap holds, and a run whose only chunk was dropped is reported unmapped", () => {
-    const many = Array.from({ length: 6 }, (_, i) => chunk(i * 10 + 1, i * 10 + 9, `fn${i}`));
-    const p = patchAdding([5, 15, 25, 35, 45, 55]);
-    const sel = selectEnclosingChunks(many, p);
-    assert.equal(sel.length, CHANGED_CODE_LIMITS.chunksPerFile);
-    assert.deepEqual(unmappedTargets(many, p, sel), ["added lines 45-45", "added lines 55-55"]);
+  test("more than four relevant chunks remain candidates", () => {
+    const many = Array.from({ length: 6 }, (_, i) => chunk(i * 10 + 1, i * 10 + 9, 'fn' + i));
+    assert.equal(selectEnclosingChunks(many, patchAdding([5, 15, 25, 35, 45, 55])).length, 6);
   });
+
 });
 
 const stubDeps = (files: Record<string, string | Error | null>, chunksFor: (path: string) => ChunkMetadata[] | Error): ChangedCodeDeps => ({
@@ -221,7 +224,7 @@ describe("buildChangedCodeContext", () => {
     );
     assert.equal(ctx.files[0].coverage, "guaranteed");
     assert.deepEqual(ctx.files[0].chunks.map((c) => c.qualifiedName), ["connectDB"]);
-    assert.equal(ctx.files[0].chunks[0].content, "connectDB body");
+    assert.equal(ctx.files[0].chunks[0].content, DB_HEAD.split("\n").slice(2, 11).join("\n"));
     assert.deepEqual(ctx.fullyHeadCoveredFiles, ["config/db.js"]);
   });
 
@@ -282,16 +285,13 @@ describe("buildChangedCodeContext", () => {
     assert.deepEqual(ctx.fullyHeadCoveredFiles, ["config/db.js"]);
   });
 
-  test("the total character cap is applied in PR file order before coverage is final", async () => {
-    const big = "x".repeat(CHANGED_CODE_LIMITS.maxTotalChars - 10);
+  test("candidate resource ceilings are explicit and do not block a later small candidate", async () => {
     const patch = "@@ -1 +1 @@\n-a\n+b";
-    const ctx = await buildChangedCodeContext(
-      { headSha: "h", files: [{ filename: "first.ts", status: "modified", patch }, { filename: "second.ts", status: "modified", patch }] },
-      stubDeps({ "first.ts": "b\n", "second.ts": "b\n" }, (path) => [chunk(1, 1, path, "function", path === "first.ts" ? big : "y".repeat(100))]),
-    );
-    assert.equal(ctx.files[0].coverage, "guaranteed");
-    assert.equal(ctx.files[1].coverage, "fallback:over-char-cap");
-    assert.deepEqual(ctx.fullyHeadCoveredFiles, ["first.ts"]);
+    const huge = chunk(1, 1, "huge", "function", "x".repeat(CHANGED_CODE_LIMITS.maxCandidateCharsPerFile + 1));
+    const ctx = await buildChangedCodeContext({ headSha: "h", files: [{ filename: "f.ts", status: "modified", patch }] },
+      stubDeps({ "f.ts": "b\n" }, () => [huge, chunk(1, 1, "small")]));
+    assert.equal(ctx.files[0].candidateLimitReached, true);
+    assert.deepEqual(ctx.files[0].chunks.map((c) => c.symbolName), ["small"]);
   });
 
   test("files beyond the file cap fall back", async () => {
@@ -300,5 +300,71 @@ describe("buildChangedCodeContext", () => {
     const ctx = await buildChangedCodeContext({ headSha: "h", files }, stubDeps(contents, (p) => [chunk(1, 1, p)]));
     assert.equal(ctx.files[CHANGED_CODE_LIMITS.maxFiles].coverage, "fallback:over-file-cap");
     assert.equal(ctx.fullyHeadCoveredFiles.length, CHANGED_CODE_LIMITS.maxFiles);
+  });
+});
+
+const sourceChunk = (start: number, end: number): EnclosingChunk => ({
+  qualifiedName: "fn", symbolName: "fn", symbolType: "function", startLine: 1, endLine: 100,
+  content: "source", sourceSpans: [{ start, end }],
+});
+
+describe("actual retained source coverage", () => {
+  test("a contiguous six-line run is not covered by its first four enclosing chunks", () => {
+    const source = "a\nb\nc\nd\ne\nf";
+    const patch = "@@ -0,0 +1,6 @@\n+a\n+b\n+c\n+d\n+e\n+f";
+    const targets = changedSourceTargets(parseChangedLines(patch), source);
+    const chunks = Array.from({ length: 6 }, (_, i) => sourceChunk(i * 2, i * 2 + 1));
+    assert.deepEqual(uncoveredTargets(targets, chunks.slice(0, 4)), ["added lines 1-6"]);
+    assert.deepEqual(uncoveredTargets(targets, chunks), []);
+  });
+
+  test("one contiguous run spanning six parts is incomplete with four or one retained", () => {
+    const source = "abcdef";
+    const targets = changedSourceTargets(parseChangedLines("@@ -0,0 +1 @@\n+abcdef"), source);
+    const chunks = Array.from({ length: 6 }, (_, i) => sourceChunk(i, i + 1));
+    assert.deepEqual(uncoveredTargets(targets, chunks.slice(0, 4)), ["added lines 1-1"]);
+    assert.deepEqual(uncoveredTargets(targets, chunks.slice(0, 1)), ["added lines 1-1"]);
+    assert.deepEqual(uncoveredTargets(targets, chunks), []);
+  });
+
+  test("overlap and adjacency cover a target; a one-character gap does not", () => {
+    const targets = changedSourceTargets(parseChangedLines("@@ -0,0 +1 @@\n+abcdef"), "abcdef");
+    assert.deepEqual(uncoveredTargets(targets, [sourceChunk(0, 4), sourceChunk(2, 6)]), []);
+    assert.deepEqual(uncoveredTargets(targets, [sourceChunk(0, 3), sourceChunk(3, 6)]), []);
+    assert.deepEqual(uncoveredTargets(targets, [sourceChunk(0, 3), sourceChunk(4, 6)]), ["added lines 1-1"]);
+  });
+
+  test("synthetic skeleton and noncontiguous member ranges cannot fill source gaps", () => {
+    const targets = changedSourceTargets(parseChangedLines("@@ -0,0 +1 @@\n+abcdef"), "abcdef");
+    const group = { ...sourceChunk(0, 6), symbolType: "class_member_group", sourceSpans: [{ start: 0, end: 2 }, { start: 4, end: 6 }] };
+    const skeleton = { ...sourceChunk(0, 6), symbolType: "class_skeleton", sourceSpans: [] };
+    assert.deepEqual(uncoveredTargets(targets, [group, skeleton]), ["added lines 1-1"]);
+  });
+
+  test("deletion requires one source interval enclosing both sides", () => {
+    const targets = changedSourceTargets(parseChangedLines("@@ -1,3 +1,2 @@\n a\n-gone\n b"), "a\nb");
+    assert.deepEqual(uncoveredTargets(targets, [sourceChunk(0, 2), sourceChunk(2, 3)]), ["deletion before line 2"]);
+    assert.deepEqual(uncoveredTargets(targets, [sourceChunk(0, 3)]), []);
+  });
+
+  test("Unicode and CRLF map to UTF-16 offsets and omitted hunks are excluded", () => {
+    const patch = "@@ -1 +1 @@\n-old\n+\u{1f680}\n@@ -3 +3 @@\n-old\n+tail";
+    const targets = changedSourceTargets(parseChangedLines(patch), "\u{1f680}\r\nkeep\r\ntail");
+    assert.deepEqual(targets[0].spans, [{ start: 0, end: 2 }]);
+    assert.deepEqual(targets[1].spans, [{ start: 10, end: 14 }]);
+    const included = includedTargets(targets, "@@ -1 +1 @@\n-old\n+\u{1f680}");
+    assert.equal(included.length, 1);
+    assert.deepEqual(uncoveredTargets(included, [sourceChunk(0, 2)]), []);
+  });
+
+  test("candidate count is bounded and missing source remains explicit", async () => {
+    const count = CHANGED_CODE_LIMITS.maxCandidateChunksPerFile + 3;
+    const source = "x".repeat(count);
+    const patch = "@@ -0,0 +1 @@\n+" + source;
+    const candidates = Array.from({ length: count }, (_, i) => ({ ...chunk(1, 1, "part" + i), source_spans: [{ start: i, end: i + 1 }] }));
+    const result = await buildChangedCodeContext({ headSha: "head", files: [{ filename: "f.ts", status: "added", patch }] }, stubDeps({ "f.ts": source }, () => candidates));
+    assert.equal(result.files[0].chunks.length, CHANGED_CODE_LIMITS.maxCandidateChunksPerFile);
+    assert.equal(result.files[0].candidateLimitReached, true);
+    assert.equal(result.files[0].coverage, "partial");
   });
 });

@@ -134,6 +134,25 @@ CREATE TABLE IF NOT EXISTS reviews (
 
 CREATE INDEX IF NOT EXISTS idx_reviews_repo_pr ON reviews (repository_id, pull_number);
 
+-- C12: apply with review writers drained. Lock cleanup and constraint creation
+-- together so no concurrent insert can recreate duplicates between them.
+-- Only flags change; historical reviews, findings and discussions remain intact.
+DO $$
+BEGIN
+    LOCK TABLE reviews IN SHARE ROW EXCLUSIVE MODE;
+    WITH ranked AS (
+        SELECT id, ROW_NUMBER() OVER (
+            PARTITION BY repository_id, pull_number
+            ORDER BY created_at DESC, id DESC
+        ) AS position
+        FROM reviews WHERE is_latest = TRUE
+    )
+    UPDATE reviews SET is_latest = FALSE
+    FROM ranked WHERE reviews.id = ranked.id AND ranked.position > 1;
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_reviews_latest
+        ON reviews (repository_id, pull_number) WHERE is_latest = TRUE;
+END $$;
+
 
 CREATE TABLE IF NOT EXISTS review_findings (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

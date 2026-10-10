@@ -10,8 +10,8 @@ import { PullRequestReviews } from "@/types/reviewTypes";
 interface AIReviewResponse {
   reviewId: string;
   summary: string;
-  overall_score: number;
-  risk_level: string;
+  overall_score: number | null;
+  risk_level: string | null;
   findings: Array<{
     severity: string;
     category: string;
@@ -38,6 +38,10 @@ export function useTriggerAiReview() {
       queryClient.invalidateQueries({
         queryKey: ["reviews", data.repositoryId, String(data.pullNumber)],
       });
+    },
+    onSettled: (_data, _error, payload) => {
+      // A push can invalidate acquisition even when generation fails.
+      queryClient.invalidateQueries({ queryKey: ["repository", payload.repositoryId, "pulls", String(payload.pullNumber)] });
     },
   });
 }

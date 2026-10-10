@@ -70,10 +70,10 @@ export function ReviewOverview({
           {latest ? (
             <>
               <div className="flex flex-wrap items-baseline gap-x-3.5 gap-y-1 text-xs text-rv-mute">
-                <span className="text-[22px] font-semibold leading-7 tracking-tight text-rv-ink [font-variant-numeric:tabular-nums]">
+                {latest.overall_score !== null && <span className="text-[22px] font-semibold leading-7 tracking-tight text-rv-ink [font-variant-numeric:tabular-nums]">
                   {latest.overall_score}
                   <span className="text-[13px] font-normal tracking-normal text-rv-mute"> /100</span>
-                </span>
+                </span>}
                 {latest.risk_level && (
                   <span className="text-[13px] text-rv-ink2">
                     {latest.risk_level.charAt(0).toUpperCase() + latest.risk_level.slice(1).toLowerCase()} risk
@@ -86,7 +86,7 @@ export function ReviewOverview({
               {isOutdated && (
                 <p className="mt-1.5 flex items-center gap-1.5 text-xs text-rv-warn">
                   <Clock className="h-3.5 w-3.5" />
-                  Outdated — the pull request has new commits since this review.
+                  Outdated — the pull request head or base changed since this review.
                 </p>
               )}
             </>
@@ -118,6 +118,34 @@ export function ReviewOverview({
               <MarkdownRenderer content={latest.summary} tone="review" />
             </div>
           </section>
+        )}
+
+        {latest?.review_input && (
+          <details className="mt-5 text-xs text-rv-mute">
+            <summary className="cursor-pointer text-rv-ink2">Review input coverage</summary>
+            <p className="mt-2">Fetched {latest.review_input.acquisition.fetchedFiles} of {latest.review_input.acquisition.expectedFiles} changed files. Reviewed head {latest.head_sha.slice(0, 7)}, base {latest.review_input.baseSha.slice(0, 7)}.</p>
+            <ul className="mt-2 space-y-2">
+              {latest.review_input.files.map((file) => (
+                <li key={file.filename}>
+                  <span className="font-mono">{file.filename}</span>: {file.status === "available" ? file.inclusion === "full" ? "fully included" : file.inclusion === "partial" ? "partially included" : "not included" : file.status}
+                  {file.reason && <> — {file.reason}</>}
+                  {file.hunks.some((hunk) => !hunk.included) && (
+                    <div className="mt-1 font-mono">Omitted: {file.hunks.filter((hunk) => !hunk.included).map((hunk) => hunk.header).join("; ")}</div>
+                  )}
+                  {file.enclosing && (
+                    <div className="mt-1">
+                      Enclosing source for supplied hunks: {file.enclosing.status}.
+                      {file.enclosing.reason && ` ${file.enclosing.reason}.`}
+                      {file.enclosing.uncovered.length > 0 && ` Uncovered: ${file.enclosing.uncovered.join("; ")}.`}
+                      {file.enclosing.split && " Split symbols may omit other parts of the function."}
+                      {file.enclosing.status === "complete" && " Source coverage does not guarantee full functional understanding."}
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+            {latest.review_input.excludedEvidence.length > 0 && <p className="mt-2">Additional repository evidence unavailable at this revision: {latest.review_input.excludedEvidence.map((item) => `${item.filename} (${item.reason})`).join("; ")}</p>}
+          </details>
         )}
 
         {latest && (
@@ -224,7 +252,7 @@ export function ReviewOverview({
                 key={h.id}
                 className="grid h-[30px] grid-cols-[36px_72px_minmax(0,1fr)] items-center gap-2 border-b border-rv-hair text-xs text-rv-mute"
               >
-                <span className="font-mono text-rv-ink2">{h.overall_score}</span>
+                <span className="font-mono text-rv-ink2">{h.overall_score ?? "Partial"}</span>
                 <span>{new Date(h.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</span>
                 <span className="truncate" title={h.summary}>
                   {h.summary}

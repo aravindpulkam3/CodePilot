@@ -3,7 +3,14 @@ import crypto from "crypto";
 import path from "path";
 import fs from "fs";
 
+/** Transient UTF-16 offsets into the original source; never persisted or hashed. */
+export interface SourceSpan {
+  start: number;
+  end: number;
+}
+
 export interface ChunkMetadata {
+  source_spans?: SourceSpan[];
   file_path: string;
   language: string;
   symbol_type: string;
@@ -537,6 +544,10 @@ export class AstChunkingService {
       end_line: endLine,
       content,
       content_hash: this.generateHash(content),
+      source_spans: [{
+        start: rangeStart,
+        end: rangeStart + sourceCode.slice(rangeStart, rangeEnd).trimEnd().length,
+      }],
       chunk_index: partInfo?.index,
       chunk_total: partInfo?.total,
     };
@@ -828,6 +839,14 @@ export class AstChunkingService {
     );
     const first = this.resolveLeadingContext(members[0].node).boundaryNode;
     const last = members[members.length - 1].node;
+    const sourceSpans = members.map((m) => {
+      const start = this.resolveLeadingContext(m.node).boundaryNode.startIndex;
+      const source = sourceCode.slice(start, m.node.endIndex);
+      return {
+        start: start + source.length - source.trimStart().length,
+        end: start + source.trimEnd().length,
+      };
+    });
     return {
       file_path: filePath,
       language: config.name,
@@ -841,6 +860,7 @@ export class AstChunkingService {
       end_line: last.endPosition.row + 1,
       content,
       content_hash: this.generateHash(content),
+      source_spans: sourceSpans,
     };
   }
 
@@ -913,6 +933,7 @@ export class AstChunkingService {
     );
     // Synthetic skeleton ranges cite the original class, not generated lines.
     for (const chunk of skeleton) {
+      chunk.source_spans = []; // Generated skeleton offsets are not original source offsets.
       chunk.start_line = boundaryNode.startPosition.row + 1;
       chunk.end_line = classNode.endPosition.row + 1;
     }

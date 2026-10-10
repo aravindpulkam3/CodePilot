@@ -83,7 +83,7 @@ export function ReviewContextBar({
       <div className="flex shrink-0 items-center gap-3">
         {latest && (
           <span>
-            Review <b className="font-mono font-semibold text-rv-ink">{latest.overall_score}</b>
+            {latest.overall_score === null ? "Partial review" : <>Review <b className="font-mono font-semibold text-rv-ink">{latest.overall_score}</b></>}
             {!compact && latest.risk_level && <> · {latest.risk_level.toLowerCase()} risk</>}
           </span>
         )}

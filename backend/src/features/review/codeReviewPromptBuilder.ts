@@ -1,13 +1,28 @@
 import { Type, Schema } from "@google/genai";
-import { LLMMessage } from "../../infrastructure/llm/llm.service.js"; // Adjust path if needed
-import type { ChangedCodeContext, EnclosingChunk } from "./changedCodeContext.js";
+import type { LLMMessage } from "../../infrastructure/llm/llm.service.js"; // Adjust path if needed
+import type {
+  ChangedCodeContext,
+  EnclosingChunk,
+} from "./changedCodeContext.js";
+import { chunkMatchesTargets, includedTargets, uncoveredTargets } from "./changedCodeContext.js";
+import {
+  estimateRequestTokens,
+  requestFits,
+  type LLMRequestBudget,
+} from "../../infrastructure/llm/requestBudget.js";
+import {
+  reviewCoverageMessage,
+  REVIEW_SEVERITIES,
+  REVIEW_RISKS,
+  REVIEW_CATEGORIES,
+  splitReviewPatch,
+  type ReviewInputMetadata,
+} from "./reviewInput.js";
+import type { PullRequestFile } from "../../infrastructure/github/pullRequestSnapshot.js";
+import { isDocumentationFile } from "../../shared/utils/documentationPaths.js";
 
-interface PRFile {
-  filename: string;
-  status: string;
-  patch?: string;
-  additions?: number;
-  deletions?: number;
+export interface PRFile extends PullRequestFile {
+  reviewInclusion?: "full" | "partial" | "none";
 }
 
 export class CodeReviewPromptBuilder {
@@ -20,6 +35,7 @@ export class CodeReviewPromptBuilder {
     /^coverage\//,
     /\.min\.(js|css)$/,
     /\.(jpg|jpeg|png|gif|svg|webp|ico|mp4|webm|wav|mp3|eot|ttf|woff|woff2)$/i,
+    /\.(pdf|zip|gz|tar|7z|exe|dll|so|dylib|wasm|bin|class|jar|pyc)$/i,
   ];
 
   /** Lockfiles, build output, minified and binary assets are never reviewed. */
@@ -27,18 +43,238 @@ export class CodeReviewPromptBuilder {
     return !this.IGNORED_PATTERNS.some((pattern) => pattern.test(filename));
   }
 
-  private static readonly MAX_TOTAL_PATCH_LENGTH = 80000;
+  /** One budget for the actual messages and schema, with whole-hunk inclusion. */
+  public static buildBudgetedReviewPrompt(input: {
+    repoName: string;
+    title: string;
+    description: string;
+    headSha: string;
+    baseSha: string;
+    files: PRFile[];
+    expectedFiles: number;
+    budget: LLMRequestBudget;
+    codeContext: string[];
+    documentation: string[];
+    changedCode: ChangedCodeContext | null;
+    excludedEvidence?: ReviewInputMetadata["excludedEvidence"];
+  }): { messages: LLMMessage[]; reviewInput: ReviewInputMetadata } {
+    const parsed = input.files.map((file) => splitReviewPatch(file));
+    const reviewInput: ReviewInputMetadata = {
+      version: 1,
+      headSha: input.headSha,
+      baseSha: input.baseSha,
+      acquisition: {
+        complete: input.expectedFiles === input.files.length,
+        expectedFiles: input.expectedFiles,
+        fetchedFiles: input.files.length,
+      },
+      coverage: "partial",
+      files: input.files.map((file, i) => {
+        const excluded = !this.isReviewableFile(file.filename);
+        const metadataOnly =
+          file.status === "renamed" &&
+          !!file.previous_filename &&
+          !file.patch &&
+          file.additions === 0 &&
+          file.deletions === 0;
+        return {
+          filename: file.filename,
+          previousFilename: file.previous_filename,
+          status: excluded
+            ? "excluded"
+            : parsed[i] || metadataOnly
+              ? "available"
+              : "unavailable",
+          inclusion: "none",
+          reason: excluded
+            ? "Excluded by review file policy"
+            : parsed[i] || metadataOnly
+              ? undefined
+              : "Patch unavailable or incomplete",
+          hunks: parsed[i]?.map((part) => part.hunk) ?? [],
+        };
+      }),
+      excludedEvidence: input.excludedEvidence ?? [],
+      budget: {
+        ...input.budget,
+        estimatedInputTokens: 0,
+        method: "utf8-bytes",
+      },
+    };
+    if (!reviewInput.acquisition.complete)
+      throw new Error("GITHUB_PR_FILES_INCOMPLETE");
+    const selected = new Map<number, PRFile>();
+    const code: string[] = [];
+    const rankedCode = [...new Set(input.codeContext)];
+    const codeRank = new Map(rankedCode.map((item, index) => [item, index]));
+    const docs: string[] = [];
+    const enclosing: ChangedCodeContext = {
+      headSha: input.headSha,
+      files: [],
+      fullyHeadCoveredFiles: [],
+    };
+    const schema = this.getReviewSchema();
+    const extracted = new Map(input.changedCode?.files.map((file) => [file.filename, file]) ?? []);
+    const updateEnclosingCoverage = () => {
+      for (const [index, file] of selected) {
+        const original = extracted.get(file.filename);
+        const accepted = enclosing.files.find((entry) => entry.filename === file.filename);
+        const targets = includedTargets(original?.targets ?? [], file.patch ?? "");
+        const chunks = accepted?.chunks ?? [];
+        const uncovered = uncoveredTargets(targets, chunks);
+        const notApplicable = file.status === "removed" || !parsed[index]?.length;
+        reviewInput.files[index].enclosing = {
+          status: notApplicable ? "not-applicable" : !chunks.length || !targets.length ? "unavailable"
+            : uncovered.length ? "partial" : "complete",
+          uncovered,
+          split: chunks.some((chunk) => chunk.split),
+          reason: notApplicable ? undefined : original?.coverage.startsWith("fallback:")
+            ? original.coverage.slice("fallback:".length)
+            : original?.candidateLimitReached ? "Candidate resource limit; coverage refers only to retained source"
+            : !original?.targets ? "Enclosing source unavailable"
+            : !chunks.length ? "Context budget"
+            : uncovered.length ? "Context budget or source absent from enclosing snippets" : undefined,
+        };
+      }
+      for (const [index] of input.files.entries()) {
+        if (!selected.has(index)) delete reviewInput.files[index].enclosing;
+      }
+    };
+    const render = () => {
+      updateEnclosingCoverage();
+      reviewInput.coverage = reviewInput.files.every(
+        (file) => file.status === "excluded" || file.inclusion === "full",
+      )
+        ? "complete"
+        : "partial";
+      const messages = this.buildReviewPrompt(
+        input.repoName,
+        input.title,
+        input.description,
+        [...selected.entries()].map(([index, file]) => ({
+          ...file,
+          reviewInclusion: reviewInput.files[index].inclusion,
+        })),
+        code.join("\n\n"),
+        docs.join("\n\n"),
+        { headSha: input.headSha, baseSha: input.baseSha },
+        "",
+        enclosing,
+      );
+      messages[0].content += `\n${reviewCoverageMessage(reviewInput)}\nScore, risk and summary apply only to the supplied changes. Never claim omitted changes are safe. ${reviewInput.excludedEvidence.length} repository evidence item(s) could not be verified at PR head; absence of evidence is not proof of a bug.`;
+      const support = reviewInput.files.filter((file) => file.enclosing && file.enclosing.status !== "not-applicable");
+      messages[0].content += `\nEnclosing source: ${support.filter((file) => file.enclosing?.status === "complete").length} of ${support.length} included files have all changed-source targets represented in enclosing snippets. Other files have partial or unavailable enclosing source. This is separate from diff coverage. Even complete source-span coverage does not establish full function context or functional understanding; split symbols may omit guards, initialization or other control flow. Structural hints are not verbatim source.`;
+      return messages;
+    };
+    const fits = () => requestFits(render(), schema, input.budget);
+    if (!fits()) throw new Error("REVIEW_CONTEXT_TOO_SMALL");
 
-  // Documentation gets its own, much smaller budget so a long README section
-  // can never crowd out diff content. Reviewing the diff remains the job.
-  private static readonly MAX_DOCUMENTATION_LENGTH = 6000;
+    for (const [index, file] of input.files.entries()) {
+      const coverage = reviewInput.files[index];
+      if (coverage.status !== "available") continue;
+      const parts = parsed[index] ?? [];
+      const fullPatch =
+        file.patch ||
+        `Metadata-only change: ${file.status}${file.previous_filename ? ` from ${file.previous_filename}` : ""}; no textual additions or deletions.`;
+      selected.set(index, { ...file, patch: fullPatch });
+      coverage.inclusion = "full";
+      if (fits()) {
+        coverage.hunks.forEach((hunk) => {
+          hunk.included = true;
+        });
+        continue;
+      }
+      selected.delete(index);
+      coverage.inclusion = "none";
+      const included: string[] = [];
+      for (const part of parts) {
+        selected.set(index, {
+          ...file,
+          patch: [...included, part.text].join("\n"),
+        });
+        coverage.inclusion = "partial";
+        if (fits()) {
+          included.push(part.text);
+          part.hunk.included = true;
+        } else {
+          if (included.length)
+            selected.set(index, { ...file, patch: included.join("\n") });
+          else {
+            selected.delete(index);
+            coverage.inclusion = "none";
+          }
+        }
+      }
+      if (parts.length && parts.every((part) => part.hunk.included))
+        coverage.inclusion = "full";
+      else coverage.reason = "Context budget; omitted hunks were not sent";
+    }
+    if (!selected.size) throw new Error("REVIEW_NO_USABLE_CHANGES");
 
-  /**
-   * Where the retrieved repository context came from. Review context is read
-   * from the index, which tracks the DEFAULT BRANCH tip — not the PR's base —
-   * so it never contains this PR's changes and may even be ahead of what the
-   * author branched from. Passing it through lets the prompt say so.
-   */
+    // Diffs are fixed first. Share the remaining code allowance, then redistribute
+    // unused space. Retrieval order is already ranked; never reorder that lane.
+    const candidateFiles: Array<{ accepted: ChangedCodeContext["files"][number]; candidates: EnclosingChunk[] }> = [];
+    for (const file of input.changedCode?.files ?? []) {
+      const selectedFile = Array.from(selected.values()).find((entry) => entry.filename === file.filename);
+      if (!selectedFile) continue;
+      const targets = includedTargets(file.targets ?? [], selectedFile.patch ?? "");
+      const accepted = { ...file, chunks: [] as EnclosingChunk[] };
+      enclosing.files.push(accepted);
+      candidateFiles.push({ accepted, candidates: file.chunks.filter((chunk) => chunkMatchesTargets(chunk, targets)) });
+    }
+    const enclosingCandidates = [] as Array<{ accepted: ChangedCodeContext["files"][number]; chunk: EnclosingChunk }>;
+    // Round-robin only among relevant candidates. Real source precedes skeletons.
+    for (const synthetic of [false, true]) {
+      const queues = candidateFiles.map((file) => ({ ...file, candidates: file.candidates.filter((c) => (c.symbolType === "class_skeleton") === synthetic) }));
+      const max = Math.max(0, ...queues.map((file) => file.candidates.length));
+      for (let i = 0; i < max; i++) for (const file of queues) {
+        if (file.candidates[i]) enclosingCandidates.push({ accepted: file.accepted, chunk: file.candidates[i] });
+      }
+    }
+    const maxInput = input.budget.contextTokens - input.budget.outputTokens - input.budget.safetyTokens;
+    const size = () => estimateRequestTokens(render(), schema);
+    const baseSize = size();
+    let currentSize = baseSize;
+    const share = Math.max(0, Math.floor((maxInput - baseSize) / 2));
+    const tryEnclosing = (item: typeof enclosingCandidates[number], ceiling: number) => {
+      if (Buffer.byteLength(item.chunk.content, "utf8") > ceiling - currentSize) return false;
+      item.accepted.chunks.push(item.chunk);
+      const nextSize = size();
+      if (nextSize <= ceiling) { currentSize = nextSize; return true; }
+      item.accepted.chunks.pop();
+      return false;
+    };
+    const tryCode = (item: string, ceiling: number) => {
+      if (Buffer.byteLength(item, "utf8") > ceiling - currentSize) return false;
+      code.push(item);
+      code.sort((a, b) => codeRank.get(a)! - codeRank.get(b)!);
+      const nextSize = size();
+      if (nextSize <= ceiling) { currentSize = nextSize; return true; }
+      code.splice(code.indexOf(item), 1);
+      return false;
+    };
+    const deferredEnclosing = enclosingCandidates.filter((item) => !tryEnclosing(item, baseSize + share));
+    const codeStart = currentSize;
+    const deferredCode = rankedCode.filter((item) => !tryCode(item, Math.min(maxInput, codeStart + share)));
+    // Ranked repository evidence gets first opportunity at redistributed space;
+    // an oversized item never blocks a later fitting candidate in either lane.
+    for (const item of deferredCode) tryCode(item, maxInput);
+    for (const item of deferredEnclosing) tryEnclosing(item, maxInput);
+    for (const item of new Set(input.documentation)) {
+      docs.push(item);
+      if (!fits()) docs.pop();
+    }
+    const messages = render();
+    if (!requestFits(messages, schema, input.budget))
+      throw new Error("REVIEW_CONTEXT_TOO_SMALL");
+    reviewInput.budget.estimatedInputTokens = estimateRequestTokens(
+      messages,
+      schema,
+    );
+    return { messages, reviewInput };
+  }
+
+  /** Pure renderer. Generation uses buildBudgetedReviewPrompt and validates again at the provider. */
   public static buildReviewPrompt(
     repoName: string,
     prTitle: string,
@@ -46,17 +282,29 @@ export class CodeReviewPromptBuilder {
     files: PRFile[],
     codebaseContext: string,
     documentationContext: string = "",
-    provenance?: { branch?: string; sha?: string },
+    provenance?: {
+      branch?: string;
+      sha?: string;
+      headSha?: string;
+      baseSha?: string;
+    },
     repositoryOverview: string = "",
     // Post-change enclosing code per changed file, from the PR head. See
     // changedCodeContext.ts — already capped, rendered in full here.
     changedCode: ChangedCodeContext | null = null,
   ): LLMMessage[] {
-    const hasEnclosingCode = Boolean(changedCode?.files.some((f) => f.chunks.length > 0));
+    const hasEnclosingCode = Boolean(
+      changedCode?.files.some((f) => f.chunks.length > 0),
+    );
     return [
       {
         role: "system",
-        content: this.buildSystemPrompt(repoName, Boolean(documentationContext), hasEnclosingCode),
+        content: this.buildSystemPrompt(
+          repoName,
+          Boolean(documentationContext) ||
+            files.some((file) => isDocumentationFile(file.filename)),
+          hasEnclosingCode,
+        ),
       },
       {
         role: "user",
@@ -75,13 +323,17 @@ export class CodeReviewPromptBuilder {
   }
 
   private static readonly ENCLOSING_CODE_RULE = `
-- Code under "ENCLOSING CODE AT PR HEAD" inside <PullRequestDiff> is the post-change version of the functions, methods or classes that contain the changed lines, from the same revision as the patch. Use it to understand each change in its enclosing scope. <RepositoryContext> is pre-change default-branch code and may show older versions of the same files.`;
+- Code under "ENCLOSING CODE AT PR HEAD" inside <PullRequestDiff> is the post-change version of the functions, methods or classes that contain the changed lines, from the same revision as the patch. Use it to understand each change in its enclosing scope. Repository context, when supplied, is verified at the recorded PR head.`;
 
   private static renderEnclosingChunk(chunk: EnclosingChunk): string {
-    return `// Symbol: ${chunk.qualifiedName} (${chunk.symbolType}, lines ${chunk.startLine}-${chunk.endLine})\n${chunk.content}`;
+    return `// Symbol: ${chunk.qualifiedName} (${chunk.symbolType}, lines ${chunk.startLine}-${chunk.endLine})${chunk.split ? " — partial symbol" : ""}\n${chunk.structuralContext ? `Structural hints (not verbatim source):\n${chunk.structuralContext}\n` : ""}${chunk.content}`;
   }
 
-  private static buildSystemPrompt(repoName: string, hasDocumentation: boolean, hasEnclosingCode: boolean = false): string {
+  private static buildSystemPrompt(
+    repoName: string,
+    hasDocumentation: boolean,
+    hasEnclosingCode: boolean = false,
+  ): string {
     return `
 You are a Senior Software Engineer performing a pull request review.
 
@@ -91,6 +343,8 @@ ${repoName}
 Your goal is to provide accurate, actionable, production-quality feedback.
 
 Review priorities (highest to lowest):
+
+Finding category values must be exactly one of: ${REVIEW_CATEGORIES.join(", ")}.
 
 1. Correctness
    - Logic bugs
@@ -178,8 +432,8 @@ Return ONLY valid JSON matching the provided schema.
   private static readonly DOCUMENTATION_RULES = `
 Documentation Consistency
 
-The <Documentation> block contains sections of the repository's README that
-are relevant to this pull request.
+When supplied, the <Documentation> block contains repository documentation
+relevant to this pull request. Changed documentation can also appear in the diff.
 
 - README documents INTENDED behaviour, setup steps and project description.
   The code is authoritative for ACTUAL current behaviour.
@@ -199,16 +453,25 @@ are relevant to this pull request.
     files: PRFile[],
     codebaseContext: string,
     documentationContext: string = "",
-    provenance?: { branch?: string; sha?: string },
+    provenance?: {
+      branch?: string;
+      sha?: string;
+      headSha?: string;
+      baseSha?: string;
+    },
     repositoryOverview: string = "",
     changedCode: ChangedCodeContext | null = null,
   ): string {
     const enclosingByFile = new Map(
-      (changedCode?.files ?? []).filter((f) => f.chunks.length > 0).map((f) => [f.filename, f.chunks]),
+      (changedCode?.files ?? [])
+        .filter((f) => f.chunks.length > 0)
+        .map((f) => [f.filename, f.chunks]),
     );
     const enclosingHeader = `ENCLOSING CODE AT PR HEAD (${(changedCode?.headSha ?? "").slice(0, 7)}) — same revision as this patch's + lines`;
 
-    const validFiles = files.filter((file) => file.patch && this.isReviewableFile(file.filename));
+    const validFiles = files.filter(
+      (file) => file.patch && this.isReviewableFile(file.filename),
+    );
 
     let prompt = "";
 
@@ -235,14 +498,14 @@ ${repositoryOverview}
 <RepositoryContext>
 The following code chunks are pulled from the existing repository to give you architectural context. This code is NOT part of the PR diff, but it is related to the files being changed.
 
-PROVENANCE: this context is indexed from ${origin} and does NOT include this pull request's changes. Do NOT report a finding whose only basis is that this context has not been updated to match the diff — that is expected.
+PROVENANCE: ${provenance?.headSha ? `Source verified at PR head ${provenance.headSha}. PR base tip: ${provenance.baseSha ?? "unknown"}; patches use GitHub PR diff semantics (merge base to head).` : `Discovery context from ${origin}; revision unverified. Do not use it as factual evidence.`}
 
-Each chunk is labelled with how it was retrieved:
-- changed_file: pre-change code from the default branch, for a modified file whose post-change enclosing code could not be fully attached; up to 3 chunks, chosen by similarity
-- graph_dependent: a CALLER of a changed file — check whether this change breaks it
-- graph_dependency: something a changed file imports
-- related_test: a test covering a changed file
-- semantic_chunk: a general similarity match, the weakest signal
+Retrieval labels describe candidate discovery, not verified relationships:
+- changed_file: a changed file
+- graph_dependent: an indexed importer, not proof of a call
+- graph_dependency: an indexed import target
+- related_test: a candidate test, not proof of coverage
+- semantic_chunk: a similarity match
 
 ${codebaseContext || "No relevant repository context found."}
 </RepositoryContext>
@@ -251,17 +514,11 @@ ${codebaseContext || "No relevant repository context found."}
     // Omitted entirely when nothing relevant matched — the README is never
     // attached to a review just because the repository has one.
     if (documentationContext) {
-      const truncated =
-        documentationContext.length > this.MAX_DOCUMENTATION_LENGTH
-          ? documentationContext.substring(0, this.MAX_DOCUMENTATION_LENGTH) +
-            "\n\n...[DOCUMENTATION TRUNCATED]"
-          : documentationContext;
-
       prompt += `
 <Documentation>
 README sections relevant to this pull request. These describe INTENDED behaviour and are not part of the diff:
 
-${truncated}
+${documentationContext}
 </Documentation>
 `;
     }
@@ -281,38 +538,24 @@ ${validFiles.length}
 
 `;
 
-    let remainingBudget = this.MAX_TOTAL_PATCH_LENGTH;
-
     for (const file of validFiles) {
-      if (remainingBudget <= 0) break;
-
-      let patch = file.patch ?? "";
-
-      if (patch.length > remainingBudget) {
-        patch =
-          patch.substring(0, remainingBudget) +
-          "\n\n...[PATCH TRUNCATED DUE TO TOKEN LIMITS]\nReview only the available portion.";
-      }
-
-      remainingBudget -= patch.length;
-
       prompt += `
 ==================================================
 FILE: ${file.filename}
 
 Status: ${file.status}
-Additions: ${file.additions ?? 0}
-Deletions: ${file.deletions ?? 0}
+Previous path: ${file.previous_filename ?? "unchanged"}
+Input coverage: ${file.reviewInclusion === "partial" ? "PARTIAL; only the hunks shown were supplied, other hunks are omitted" : "supplied patch"}
+Additions (whole file): ${file.additions ?? 0}
+Deletions (whole file): ${file.deletions ?? 0}
 
 PATCH
 
-${patch}
+${file.patch}
 
 `;
 
-      // Not charged against remainingBudget: the enclosing code was already
-      // capped before retrieval ran, and retrieval may have skipped this
-      // file's default-branch chunks on the strength of it being present.
+      // Accounted for in the complete request budget.
       const enclosing = enclosingByFile.get(file.filename);
       if (enclosing) {
         prompt += `${enclosingHeader}
@@ -322,32 +565,6 @@ ${enclosing.map((c) => this.renderEnclosingChunk(c)).join("\n\n")}
 `;
         enclosingByFile.delete(file.filename);
       }
-    }
-
-    // Enclosing code for files whose patch the size budget cut above. Still
-    // rendered, for the same reason as above — as context only.
-    if (enclosingByFile.size > 0) {
-      prompt += `
-==================================================
-${enclosingHeader}
-For files whose patches were omitted above for size. Context only — do not report findings on these files.
-
-${Array.from(enclosingByFile.entries())
-  .map(([filename, chunks]) => `FILE: ${filename}\n\n${chunks.map((c) => this.renderEnclosingChunk(c)).join("\n\n")}`)
-  .join("\n\n")}
-
-`;
-    }
-
-    if (remainingBudget <= 0) {
-      prompt += `
-NOTE
-
-Some patches were omitted because the maximum prompt size was reached.
-
-Focus only on the files shown above.
-Do not speculate about omitted files.
-`;
     }
 
     prompt += `</PullRequestDiff>`;
@@ -366,10 +583,13 @@ Do not speculate about omitted files.
         },
         overall_score: {
           type: Type.INTEGER,
+          minimum: 1,
+          maximum: 100,
           description: "Score from 1 to 100 based on overall quality.",
         },
         risk_level: {
           type: Type.STRING,
+          enum: REVIEW_RISKS,
           description: "Must be 'Low', 'Medium', 'High', or 'Critical'.",
         },
         findings: {
@@ -379,12 +599,14 @@ Do not speculate about omitted files.
             properties: {
               severity: {
                 type: Type.STRING,
+                enum: REVIEW_SEVERITIES,
                 description: "'Info', 'Minor', 'Major', or 'Critical'",
               },
               category: {
                 type: Type.STRING,
+                enum: REVIEW_CATEGORIES,
                 description:
-                  "Must match one of the defined system prompt categories, or 'documentation' for a README/code contradiction.",
+                  "Use the exact lowercase category value; documentation covers README/code contradictions.",
               },
               file_path: { type: Type.STRING },
               line_number: { type: Type.INTEGER, nullable: true },

@@ -48,6 +48,7 @@ export class SemanticRetrievalService {
           start_line,
           end_line,
           content,
+          content_hash,
           commit_sha,
           1 - (embedding <=> $1::vector) AS similarity_score
         FROM repository_embeddings
@@ -92,8 +93,9 @@ export class SemanticRetrievalService {
         lineStart: r.start_line,
         lineEnd: r.end_line,
         content: r.content,
+        contentHash: r.content_hash,
         similarity: r.similarity_score,
-        commitSha: r.commit_sha ?? undefined,
+        commitSha: r.commit_sha,
       }));
     } finally {
       client.release();
@@ -133,7 +135,7 @@ export class SemanticRetrievalService {
       // excludes it: a README-editing PR would otherwise get its README in
       // <RepositoryContext> as "code", in <Documentation>, AND in the diff.
       const query = `
-        SELECT file_path, symbol_type, symbol_name, start_line, end_line, content, commit_sha, similarity_score
+        SELECT file_path, symbol_type, symbol_name, start_line, end_line, content, content_hash, commit_sha, similarity_score
         FROM (
           SELECT
             file_path,
@@ -142,6 +144,7 @@ export class SemanticRetrievalService {
             start_line,
             end_line,
             content,
+            content_hash,
             commit_sha,
             1 - (embedding <=> $1::vector) AS similarity_score,
             ROW_NUMBER() OVER (
@@ -175,8 +178,9 @@ export class SemanticRetrievalService {
         lineStart: r.start_line,
         lineEnd: r.end_line,
         content: r.content,
+        contentHash: r.content_hash,
         similarity: r.similarity_score,
-        commitSha: r.commit_sha ?? undefined,
+        commitSha: r.commit_sha,
       }));
     } finally {
       client.release();
@@ -211,6 +215,7 @@ export class SemanticRetrievalService {
           start_line,
           end_line,
           content,
+          content_hash,
           commit_sha,
           1 - (embedding <=> $1::vector) AS similarity_score
         FROM repository_embeddings
@@ -245,8 +250,9 @@ export class SemanticRetrievalService {
         lineStart: r.start_line,
         lineEnd: r.end_line,
         content: r.content,
+        contentHash: r.content_hash,
         similarity: r.similarity_score,
-        commitSha: r.commit_sha ?? undefined,
+        commitSha: r.commit_sha,
       }));
     } finally {
       client.release();

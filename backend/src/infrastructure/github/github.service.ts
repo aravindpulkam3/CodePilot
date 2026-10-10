@@ -6,6 +6,7 @@ import { FileChange } from '../../features/repository/repositoryIndex.service.js
 import { logActivity } from '../../features/dashboard/dashboard.service.js';
 import { LogActivityType } from '../../features/dashboard/dashboardTypes.js';
 import { withCache } from '../../shared/utils/cache.js';
+import { fetchPullRequestSnapshot } from './pullRequestSnapshot.js';
 
 /**
  * Retrieves the GitHub OAuth access token from Clerk for a given user.
@@ -149,6 +150,31 @@ export const getRepositoryPullRequests = async (clerkUserId: string, repoId: str
   }
 };
 
+/** Fresh revision check for publication; intentionally does not fetch files or use cache. */
+export const getPullRequestRevision = async (
+  clerkUserId: string,
+  repo: Pick<repositoryService.RepositoryRow, "owner" | "name">,
+  pullNumber: number,
+) => {
+  const token = await getGitHubAccessToken(clerkUserId);
+  try {
+    const { data } = await axios.get(
+      `https://api.github.com/repos/${repo.owner}/${repo.name}/pulls/${pullNumber}`,
+      { headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github.v3+json" } },
+    );
+    if (typeof data?.head?.sha !== "string" || !data.head.sha ||
+        typeof data?.base?.sha !== "string" || !data.base.sha) {
+      throw new Error("PR_REVISION_UNAVAILABLE");
+    }
+    return { head_sha: data.head.sha, base_sha: data.base.sha };
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      throw new Error(error.response?.status === 404 ? "GITHUB_NOT_FOUND" : "GITHUB_API_FAILURE");
+    }
+    throw error;
+  }
+};
+
 export const getPullRequestDetails = async (
   clerkUserId: string,
   repositoryId: string,
@@ -165,27 +191,18 @@ export const getPullRequestDetails = async (
   }
 
   try {
-    const prResponse = await axios.get(
-      `https://api.github.com/repos/${repo.owner}/${repo.name}/pulls/${pullNumber}`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: "application/vnd.github.v3+json",
-        },
-      }
+    const url = `https://api.github.com/repos/${repo.owner}/${repo.name}/pulls/${pullNumber}`;
+    const headers = {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github.v3+json",
+    };
+    const { metadata: prData, files } = await fetchPullRequestSnapshot(
+      async () => (await axios.get(url, { headers })).data,
+      async (page) => {
+        const response = await axios.get(`${url}/files`, { headers, params: { per_page: 100, page } });
+        return { files: response.data, hasNext: /rel="next"/.test(response.headers.link ?? "") };
+      },
     );
-
-    const filesResponse = await axios.get(
-      `https://api.github.com/repos/${repo.owner}/${repo.name}/pulls/${pullNumber}/files`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: "application/vnd.github.v3+json",
-        },
-      }
-    );
-
-    const prData = prResponse.data;
 
     return {
       number: prData.number,
@@ -206,7 +223,8 @@ export const getPullRequestDetails = async (
       commits_count: prData.commits,
       created_at: prData.created_at,
       updated_at: prData.updated_at,
-      files: filesResponse.data.map((file: any) => ({
+      acquisition: { complete: true, expectedFiles: prData.changed_files, fetchedFiles: files.length },
+      files: files.map((file) => ({
         filename: file.filename,
         // Present only for renames. The index holds the OLD path, so review
         // retrieval needs this to find a renamed file's callers and tests.
@@ -235,7 +253,8 @@ export async function fetchRawFileContent(token: string | undefined, owner: stri
     const cacheKey = `github:repo:${owner}:${repo}:file:${ref}:${path}`;
     
     return await withCache(cacheKey, 900, async () => {
-        const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${ref}`;
+        const encodedPath = path.split('/').map(encodeURIComponent).join('/');
+        const url = `https://api.github.com/repos/${owner}/${repo}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`;
         
         const headers: Record<string, string> = {
             'Accept': 'application/vnd.github.v3.raw' // Crucial: gets the raw text, not the base64 JSON
@@ -335,6 +354,7 @@ export async function getChangedFilesBetweenCommits(
         // Only fetch content if the file still exists and will be indexed
         if (status !== 'removed' && indexable) {
             content = await fetchRawFileContent(token, owner, repo, file.filename, headSha);
+            if (content === null) throw new Error(`Source content unavailable for ${file.filename}`);
         }
 
         // For a rename, GitHub lists the entry under its NEW name only. Without
@@ -399,13 +419,12 @@ export async function fetchAllRepositoryFiles(
 
         const content = await fetchRawFileContent(token, owner, repo, blob.path, sha);
         
-        if (content) {
-            fileChanges.push({
-                path: blob.path,
-                content,
-                status: 'added'
-            });
-        }
+        if (content === null) throw new Error(`Source content unavailable for ${blob.path}`);
+        fileChanges.push({
+            path: blob.path,
+            content,
+            status: 'added'
+        });
     }
 
     return fileChanges;

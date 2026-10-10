@@ -12,15 +12,15 @@
  * I/O is injected (ChangedCodeDeps), so this module has no network or database
  * imports and every rule below is unit-testable.
  */
-import type { ChunkMetadata } from "../../infrastructure/chunking/astChunking.service.js";
+import type { ChunkMetadata, SourceSpan } from "../../infrastructure/chunking/astChunking.service.js";
 import { stripChunkHeader } from "../../shared/prompts/sourceRefs.js";
 
 export const CHANGED_CODE_LIMITS = {
   /** Mirrors REVIEW_LIMITS.maxChangedFilesForExpansion. */
   maxFiles: 20,
-  chunksPerFile: 4,
-  /** Total enclosing-code characters across all files, in PR file order. */
-  maxTotalChars: 40_000,
+  /** Resource ceilings for candidates, not prompt allocations. */
+  maxCandidateChunksPerFile: 256,
+  maxCandidateCharsPerFile: 512_000,
 };
 
 export type HunkCoverage = "guaranteed" | "partial" | `fallback:${string}`;
@@ -33,6 +33,9 @@ export interface EnclosingChunk {
   endLine: number;
   /** Chunk body with the synthetic // File: … header removed. */
   content: string;
+  sourceSpans?: SourceSpan[];
+  structuralContext?: string;
+  split?: boolean;
 }
 
 export interface ChangedFileContext {
@@ -41,14 +44,16 @@ export interface ChangedFileContext {
   chunks: EnclosingChunk[];
   /** Human-readable changed runs / deletion points that no attached chunk covers. */
   unmapped: string[];
+  targets?: EnclosingTarget[];
+  candidateLimitReached?: boolean;
 }
 
 export interface ChangedCodeContext {
   headSha: string;
   files: ChangedFileContext[];
   /**
-   * Files whose coverage is EXACTLY "guaranteed". Only these may skip the
-   * default-branch changed_file retrieval; partial and fallback files keep it.
+   * Extraction-only coverage. The review service does NOT use this to suppress
+   * retrieval; final prompt coverage is calculated after budget packing.
    */
   fullyHeadCoveredFiles: string[];
 }
@@ -192,73 +197,114 @@ export function verifyPatchAgainstContent(
 
 // ---------------------------------------------------------------- chunk selection
 
-interface Target {
+export interface EnclosingTarget {
   label: string;
-  /** Preferred matching chunks, computed against ALL head chunks. */
-  matches: ChunkMetadata[];
+  startLine: number;
+  endLine: number;
+  /** One original-source span per line; deletion anchors require one enclosing span. */
+  spans: SourceSpan[];
+  deletion?: boolean;
 }
 
-/**
- * The chunks containing a line range. A class too large to stay one chunk gets
- * a class_skeleton row whose line range spans the whole class but whose body
- * is signatures only — it "overlaps" every method edit without containing the
- * method's code. So a specific chunk always wins, and the skeleton counts only
- * when nothing more specific contains the line (e.g. a field declaration).
- */
-function preferredMatches(
-  chunks: ChunkMetadata[],
-  contains: (c: ChunkMetadata) => boolean,
-): ChunkMetadata[] {
-  const hits = chunks.filter(contains);
-  const specific = hits.filter((c) => c.symbol_type !== "class_skeleton");
-  return specific.length > 0 ? specific : hits;
-}
-
-function targetsFor(chunks: ChunkMetadata[], parsed: ParsedPatch): Target[] {
+export function changedSourceTargets(parsed: ParsedPatch, content: string): EnclosingTarget[] {
+  const lines = content.split("\n");
+  const offsets: number[] = [];
+  let offset = 0;
+  for (const line of lines) {
+    offsets.push(offset);
+    offset += line.length + 1;
+  }
+  const span = (line: number): SourceSpan => ({
+    start: offsets[line - 1] ?? content.length,
+    end: (offsets[line - 1] ?? content.length) + (lines[line - 1]?.replace(/\r$/, "").length ?? 0),
+  });
   return [
-    ...parsed.addedRuns.map((r) => ({
-      label: `added lines ${r.start}-${r.end}`,
-      matches: preferredMatches(
-        chunks,
-        (c) => c.start_line <= r.end && c.end_line >= r.start,
-      ),
+    ...parsed.addedRuns.map((run) => ({
+      label: `added lines ${run.start}-${run.end}`, startLine: run.start, endLine: run.end,
+      spans: Array.from({ length: run.end - run.start + 1 }, (_, i) => span(run.start + i)),
     })),
-    // A deletion is enclosed only by a chunk containing BOTH head lines around
-    // the deletion point; a deletion that removed a whole symbol sits between
-    // two symbols and matches nothing.
-    ...parsed.deletionAnchors.map((a) => ({
-      label: `deletion before line ${a}`,
-      matches: preferredMatches(
-        chunks,
-        (c) => c.start_line <= a - 1 && c.end_line >= a,
-      ),
+    ...parsed.deletionAnchors.map((line) => ({
+      label: `deletion before line ${line}`, startLine: line - 1, endLine: line, deletion: true,
+      spans: line > 1 && line <= lines.length ? [{ start: span(line - 1).start, end: span(line).end }] : [],
     })),
   ];
 }
 
-/** Candidate chunks for a file, ordered by start_line and capped per file. */
-export function selectEnclosingChunks(
-  chunks: ChunkMetadata[],
-  parsed: ParsedPatch,
-): ChunkMetadata[] {
-  const selected = new Set<ChunkMetadata>();
-  for (const t of targetsFor(chunks, parsed))
-    for (const m of t.matches) selected.add(m);
-  return [...selected]
-    .sort((a, b) => a.start_line - b.start_line || a.end_line - b.end_line)
-    .slice(0, CHANGED_CODE_LIMITS.chunksPerFile);
+/** Original source only: synthetic headers and broad citation ranges prove nothing. */
+export function uncoveredTargets(targets: EnclosingTarget[], chunks: EnclosingChunk[]): string[] {
+  const spans = chunks.flatMap((c) => c.sourceSpans ?? []).sort((a, b) => a.start - b.start || a.end - b.end);
+  const merged: SourceSpan[] = [];
+  for (const span of spans) {
+    const last = merged[merged.length - 1];
+    if (last && span.start <= last.end) last.end = Math.max(last.end, span.end);
+    else merged.push({ ...span });
+  }
+  return targets.filter((target) => {
+    const available = target.deletion ? spans : merged;
+    return !target.spans.length || target.spans.some((required) =>
+      !available.some((s) => s.start <= required.start && s.end >= required.end));
+  }).map((target) => target.label);
 }
 
-/** Targets not covered by any KEPT chunk (after both caps). */
+/** Only targets of supplied hunks participate in final enclosing coverage. */
+export function includedTargets(targets: EnclosingTarget[], patch: string): EnclosingTarget[] {
+  const parsed = parseChangedLines(patch);
+  const lines = new Set(parsed.added.map((line) => line.line));
+  const anchors = new Set(parsed.deletionAnchors);
+  return targets.flatMap((target) => {
+    if (target.deletion) return anchors.has(target.endLine) ? [target] : [];
+    const result: EnclosingTarget[] = [];
+    for (let line = target.startLine; line <= target.endLine; line++) {
+      if (!lines.has(line)) continue;
+      const last = result[result.length - 1];
+      const sourceSpan = target.spans[line - target.startLine];
+      if (last && last.endLine + 1 === line) {
+        last.endLine = line;
+        last.label = `added lines ${last.startLine}-${line}`;
+        last.spans.push(sourceSpan);
+      } else result.push({ label: `added lines ${line}-${line}`, startLine: line, endLine: line, spans: [sourceSpan] });
+    }
+    return result;
+  });
+}
+
+export function chunkMatchesTargets(chunk: EnclosingChunk, targets: EnclosingTarget[]): boolean {
+  if (chunk.sourceSpans?.length) return targets.some((target) => target.spans.some((required) =>
+    chunk.sourceSpans!.some((span) => target.deletion
+      ? span.start <= required.start && span.end >= required.end
+      : span.start <= required.end && span.end >= required.start)));
+  // Skeletons can still provide declarations, but never prove source coverage.
+  return chunk.symbolType === "class_skeleton" && targets.some((t) =>
+    chunk.startLine <= t.endLine && chunk.endLine >= t.startLine);
+}
+
+/** Candidates only; prompt packing owns final selection. Resource bounds apply below. */
+export function selectEnclosingChunks(chunks: ChunkMetadata[], parsed: ParsedPatch): ChunkMetadata[] {
+  return chunks.filter((c) => parsed.addedRuns.some((r) => c.start_line <= r.end && c.end_line >= r.start)
+    || parsed.deletionAnchors.some((a) => c.start_line <= a - 1 && c.end_line >= a))
+    .sort((a, b) => Number(a.symbol_type === "class_skeleton") - Number(b.symbol_type === "class_skeleton")
+      || a.start_line - b.start_line || a.end_line - b.end_line);
+}
+
 export function unmappedTargets(
-  chunks: ChunkMetadata[],
-  parsed: ParsedPatch,
-  kept: ChunkMetadata[],
+  _chunks: ChunkMetadata[], parsed: ParsedPatch, kept: ChunkMetadata[], content: string,
 ): string[] {
-  const keptSet = new Set(kept);
-  return targetsFor(chunks, parsed)
-    .filter((t) => !t.matches.some((m) => keptSet.has(m)))
-    .map((t) => t.label);
+  return uncoveredTargets(changedSourceTargets(parsed, content), kept.map((chunk) => toEnclosingChunk(chunk, content)));
+}
+
+function toEnclosingChunk(c: ChunkMetadata, source: string): EnclosingChunk {
+  const body = stripChunkHeader(c.content);
+  const header = c.content.slice(0, c.content.length - body.length);
+  return {
+    qualifiedName: c.qualified_name ?? c.symbol_name, symbolName: c.symbol_name,
+    symbolType: c.symbol_type, startLine: c.start_line, endLine: c.end_line,
+    // Reuse the exact copied intervals. Header stripping also strips blank lines
+    // and header-like source comments; those must not silently disappear here.
+    content: c.source_spans?.length ? c.source_spans.map((span) => source.slice(span.start, span.end)).join("\n\n") : body,
+    sourceSpans: c.source_spans ?? [],
+    structuralContext: header.split("\n").filter((line) => /^\/\/ (Signature|Context): /.test(line)).join("\n"),
+    split: (c.chunk_total ?? 1) > 1,
+  };
 }
 
 // ---------------------------------------------------------------- orchestration
@@ -271,9 +317,9 @@ const fallback = (filename: string, reason: string): ChangedFileContext => ({
 });
 
 /**
- * Per-file coverage, computed after the revision guard, the per-file cap and
- * the total-characters cap, so it is final before retrieval runs:
- *  - guaranteed: every added run and deletion anchor mapped to a kept chunk
+ * Extraction coverage after revision verification and candidate resource bounds.
+ * Prompt packing recalculates coverage using only accepted snippets:
+ *  - guaranteed: retained source spans cover every required changed target
  *  - partial:    verified and at least one chunk kept, but something unmapped
  *  - fallback:*: nothing attached
  * Every step is isolated per file — one file's failure never affects another,
@@ -284,7 +330,6 @@ export async function buildChangedCodeContext(
   deps: ChangedCodeDeps,
 ): Promise<ChangedCodeContext> {
   const files: ChangedFileContext[] = [];
-  let remainingChars = CHANGED_CODE_LIMITS.maxTotalChars;
   let attempted = 0;
 
   for (const f of input.files) {
@@ -334,42 +379,26 @@ export async function buildChangedCodeContext(
       continue;
     }
 
+    const targets = changedSourceTargets(parsed, content);
     const candidates = selectEnclosingChunks(headChunks, parsed);
-    const kept: ChunkMetadata[] = [];
+    const kept: EnclosingChunk[] = [];
+    let candidateChars = 0;
+    let candidateLimitReached = false;
     for (const c of candidates) {
-      const body = stripChunkHeader(c.content);
-      if (body.length > remainingChars) break;
-      remainingChars -= body.length;
-      kept.push(c);
+      if (kept.length >= CHANGED_CODE_LIMITS.maxCandidateChunksPerFile ||
+          candidateChars + c.content.length > CHANGED_CODE_LIMITS.maxCandidateCharsPerFile) {
+        candidateLimitReached = true;
+        continue;
+      }
+      candidateChars += c.content.length;
+      kept.push(toEnclosingChunk(c, content));
     }
-
-    if (kept.length === 0) {
-      const reason =
-        candidates.length > 0
-          ? "over-char-cap"
-          : parsed.addedRuns.length === 0
-            ? "deletion-only"
-            : "unmapped";
-      files.push({
-        ...fallback(f.filename, reason),
-        unmapped: unmappedTargets(headChunks, parsed, kept),
-      });
-      continue;
-    }
-
-    const unmapped = unmappedTargets(headChunks, parsed, kept);
+    const unmapped = uncoveredTargets(targets, kept);
     files.push({
       filename: f.filename,
-      coverage: unmapped.length === 0 ? "guaranteed" : "partial",
-      unmapped,
-      chunks: kept.map((c) => ({
-        qualifiedName: c.qualified_name ?? c.symbol_name,
-        symbolName: c.symbol_name,
-        symbolType: c.symbol_type,
-        startLine: c.start_line,
-        endLine: c.end_line,
-        content: stripChunkHeader(c.content),
-      })),
+      coverage: !kept.length ? (candidateLimitReached ? "fallback:candidate-limit" : "fallback:unmapped")
+        : unmapped.length ? "partial" : "guaranteed",
+      unmapped, chunks: kept, targets, candidateLimitReached,
     });
   }
 
