@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { Copy, Check } from "lucide-react";
 
-type Tone = "dark" | "auto";
+type Tone = "dark" | "auto" | "review";
 
 interface MarkdownRendererProps {
   content: string;
@@ -11,7 +11,9 @@ interface MarkdownRendererProps {
    * rendering that Q&A/Interview/Review chat bubbles already rely on.
    * "auto" renders on the app's light/dark design tokens instead — opt in
    * only where the surrounding surface isn't a dedicated dark bubble (e.g.
-   * the PR Review AI panel and inline diff annotations).
+   * the PR Review AI panel and inline diff annotations). "review" is the
+   * PR Review discussion's quiet variant on the workspace's `rv-*` tokens:
+   * 13px text, flat code blocks styled like the diff.
    */
   tone?: Tone;
   /**
@@ -23,6 +25,7 @@ interface MarkdownRendererProps {
 }
 
 const TONE_CLASSES: Record<Tone, {
+  wrapper: string;
   heading: string;
   paragraph: string;
   listItem: string;
@@ -37,6 +40,7 @@ const TONE_CLASSES: Record<Tone, {
   codeBlockPre: string;
 }> = {
   dark: {
+    wrapper: "text-sm",
     heading: "text-slate-100",
     paragraph: "text-slate-200",
     listItem: "text-slate-300",
@@ -44,13 +48,14 @@ const TONE_CLASSES: Record<Tone, {
     inlineCode: "bg-slate-800 text-teal-300 border border-slate-700/80",
     bold: "text-slate-100",
     italic: "text-slate-200",
-    codeBlockContainer: "border-slate-700/60 bg-slate-950",
+    codeBlockContainer: "rounded-lg shadow-md border-slate-700/60 bg-slate-950",
     codeBlockHeader: "bg-slate-900/90 border-slate-800 text-slate-400",
-    codeBlockHeaderLabel: "text-slate-300",
+    codeBlockHeaderLabel: "font-semibold uppercase tracking-wider text-slate-300",
     codeBlockCopyBtn: "bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white",
-    codeBlockPre: "text-slate-100",
+    codeBlockPre: "p-3.5 text-xs leading-relaxed text-slate-100",
   },
   auto: {
+    wrapper: "text-sm",
     heading: "text-ink-light dark:text-ink-dark",
     paragraph: "text-ink-light dark:text-ink-dark",
     listItem: "text-ink-light dark:text-ink-dark",
@@ -58,11 +63,26 @@ const TONE_CLASSES: Record<Tone, {
     inlineCode: "bg-black/[.04] dark:bg-white/[.06] text-signal-700 dark:text-signal-300 border border-border-light dark:border-border-dark",
     bold: "text-ink-light dark:text-ink-dark",
     italic: "text-ink-light dark:text-ink-dark",
-    codeBlockContainer: "border-border-light dark:border-slate-700/60 bg-slate-50 dark:bg-slate-950",
+    codeBlockContainer: "rounded-lg shadow-md border-border-light dark:border-slate-700/60 bg-slate-50 dark:bg-slate-950",
     codeBlockHeader: "bg-black/[.03] dark:bg-slate-900/90 border-border-light dark:border-slate-800 text-muted-light dark:text-slate-400",
-    codeBlockHeaderLabel: "text-ink-light dark:text-slate-300",
+    codeBlockHeaderLabel: "font-semibold uppercase tracking-wider text-ink-light dark:text-slate-300",
     codeBlockCopyBtn: "bg-black/[.05] hover:bg-black/[.08] dark:bg-slate-800 dark:hover:bg-slate-700 text-muted-light hover:text-ink-light dark:text-slate-300 dark:hover:text-white",
-    codeBlockPre: "text-ink-light dark:text-slate-100",
+    codeBlockPre: "p-3.5 text-xs leading-relaxed text-ink-light dark:text-slate-100",
+  },
+  review: {
+    wrapper: "text-[13px]",
+    heading: "text-rv-ink",
+    paragraph: "text-rv-ink2",
+    listItem: "text-rv-ink2",
+    blockquote: "text-rv-ink2 border-rv-bd",
+    inlineCode: "bg-rv-rec text-rv-ink !font-normal",
+    bold: "text-rv-ink",
+    italic: "text-rv-ink2",
+    codeBlockContainer: "rounded border-rv-hair bg-rv-code",
+    codeBlockHeader: "border-rv-hair text-rv-mute",
+    codeBlockHeaderLabel: "font-normal text-rv-mute",
+    codeBlockCopyBtn: "text-rv-mute hover:text-rv-ink",
+    codeBlockPre: "px-2.5 py-2 text-xs leading-[19px] text-rv-ink",
   },
 };
 
@@ -80,7 +100,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
   const parts = content.split(/(```[\s\S]*?```)/g);
 
   return (
-    <div className={`space-y-3 leading-relaxed text-sm ${className}`}>
+    <div className={`space-y-3 leading-relaxed ${t.wrapper} ${className}`}>
       {parts.map((part, index) => {
         if (part.startsWith("```")) {
           return <CodeBlock key={index} rawBlock={part} t={t} />;
@@ -113,10 +133,10 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ rawBlock, t }) => {
   };
 
   return (
-    <div className={`relative group my-3 rounded-lg overflow-hidden border shadow-md ${t.codeBlockContainer}`}>
+    <div className={`relative group my-3 overflow-hidden border ${t.codeBlockContainer}`}>
       {/* Code Header */}
       <div className={`flex items-center justify-between px-3.5 py-1.5 border-b text-[11px] font-mono ${t.codeBlockHeader}`}>
-        <span className={`font-semibold uppercase tracking-wider ${t.codeBlockHeaderLabel}`}>
+        <span className={t.codeBlockHeaderLabel}>
           {language}
         </span>
         <button
@@ -140,7 +160,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ rawBlock, t }) => {
       </div>
 
       {/* Code Content */}
-      <pre className={`p-3.5 text-xs font-mono overflow-x-auto leading-relaxed thin-scrollbar ${t.codeBlockPre}`}>
+      <pre className={`font-mono overflow-x-auto thin-scrollbar ${t.codeBlockPre}`}>
         <code>{code}</code>
       </pre>
     </div>

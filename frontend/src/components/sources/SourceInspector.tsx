@@ -28,7 +28,7 @@ interface SourceInspectorProps {
 
 /**
  * Right-side inspector for one answer's sources. Docked beside the chat on
- * wide screens (resizable, width persisted like ReviewAIPanel), an overlay
+ * wide screens (resizable, width persisted via useResizableWidth), an overlay
  * drawer below the xl breakpoint so the chat layout isn't squeezed.
  */
 export function SourceInspector({

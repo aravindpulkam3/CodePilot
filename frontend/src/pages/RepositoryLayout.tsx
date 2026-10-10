@@ -53,8 +53,8 @@ export default function RepositoryLayout() {
   const isWorkspaceRoute = isChatRoute || isInterviewRoute;
   // PR *details* only (a segment after /pulls/) — the /pulls list itself
   // keeps the standard repo header/sub-nav. The review workspace owns
-  // 100% of its own chrome (its own compact PullRequestBar), so no header,
-  // sub-nav, or workspace bar is rendered here at all.
+  // 100% of its own chrome (ReviewContextBar), so no header, sub-nav, or
+  // workspace bar is rendered here at all.
   const isPrDetailsRoute = new RegExp(`^${base}/pulls/[^/]+`).test(location.pathname);
 
   return (

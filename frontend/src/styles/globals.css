@@ -65,6 +65,97 @@
   .dark .thin-scrollbar::-webkit-scrollbar-thumb {
     background-color: theme("colors.border.dark");
   }
+
+  /* PR Review workspace tokens (consumed as `rv-*` Tailwind colors). Light
+     first; the dark set is designed separately rather than inverted. */
+  .review-ws {
+    --rv-chrome: #f6f7f9;
+    --rv-code: #ffffff;
+    --rv-rec: #f3f5f8;
+    --rv-raised: #fafbfc;
+    --rv-hair: #e4e7ec;
+    --rv-bd: #dde1e7;
+    --rv-ink: #12161f;
+    --rv-ink2: #3f4654;
+    --rv-mute: #646b78;
+    --rv-lnc: #a0a7b4;
+    --rv-hover: rgba(0, 0, 0, 0.03);
+    --rv-sel: #e9edf3;
+    --rv-teal: #0d9488;
+    --rv-tealbd: rgba(13, 148, 136, 0.45);
+    --rv-act: rgba(20, 184, 166, 0.08);
+    --rv-add: #f0fbf4;
+    --rv-addg: #e0f5e7;
+    --rv-del: #fff5f6;
+    --rv-delg: #fce6e9;
+    --rv-crit: #dc2626;
+    --rv-major: #b45309;
+    --rv-minor: #2563eb;
+    --rv-info: #6b7280;
+    --rv-open: #1a7f37;
+    --rv-merged: #8250df;
+    --rv-warn: #b45309;
+  }
+  .dark .review-ws {
+    --rv-chrome: #0b0e14;
+    --rv-code: #10141b;
+    --rv-rec: #0d1016;
+    --rv-raised: #161b24;
+    --rv-hair: #1c2130;
+    --rv-bd: #272d3b;
+    --rv-ink: #e6e8ec;
+    --rv-ink2: #a9b0c0;
+    --rv-mute: #7a8299;
+    --rv-lnc: #5a6276;
+    --rv-hover: rgba(255, 255, 255, 0.035);
+    --rv-sel: #182032;
+    --rv-teal: #2dd4bf;
+    --rv-tealbd: rgba(45, 212, 191, 0.45);
+    --rv-act: rgba(45, 212, 191, 0.09);
+    --rv-add: rgba(52, 211, 153, 0.07);
+    --rv-addg: rgba(52, 211, 153, 0.13);
+    --rv-del: rgba(251, 113, 133, 0.07);
+    --rv-delg: rgba(251, 113, 133, 0.13);
+    --rv-crit: #f87171;
+    --rv-major: #f5a524;
+    --rv-minor: #60a5fa;
+    --rv-info: #8b93a7;
+    --rv-open: #3fb950;
+    --rv-merged: #a78bfa;
+    --rv-warn: #f5a524;
+  }
+
+  /* The flagged/active diff line: a teal wash over whatever add/del tint
+     the row already has, plus a 2px inset at the code's left edge. */
+  .rv-active-line {
+    background-image: linear-gradient(var(--rv-act), var(--rv-act));
+  }
+  .rv-active-code {
+    box-shadow: inset 2px 0 0 var(--rv-teal);
+  }
+
+  /* Truncate from the left so the end of a long directory path stays
+     visible ("…/semanticRetrieval/providers/"). */
+  .rv-truncate-start {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    direction: rtl;
+    text-align: left;
+  }
+  .rv-truncate-start > * {
+    direction: ltr;
+    unicode-bidi: isolate;
+  }
+
+  /* Indeterminate progress line on the context bar while a review runs. */
+  .rv-progress {
+    animation: rv-indeterminate 1.4s ease-in-out infinite;
+  }
+  @keyframes rv-indeterminate {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(400%); }
+  }
 }
 
 /* Prism token colors, mapped to the app's design tokens rather than an

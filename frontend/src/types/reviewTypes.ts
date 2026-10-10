@@ -3,6 +3,8 @@
 // useReview.ts, and repositoryTypes.ts — see review data model investigation
 // notes in the PR Review redesign plan.
 
+import { findingMatchesFile } from "@/utils/reviewNavigation";
+
 export type Severity = "Critical" | "Major" | "Minor" | "Info";
 
 export interface Finding {
@@ -67,66 +69,38 @@ export function compareBySeverity(a: Finding, b: Finding): number {
   return severityRank(a.severity) - severityRank(b.severity);
 }
 
-export interface SeverityStyle {
-  label: string;
-  dot: string; // background color class for a small severity dot
-  text: string; // text color class
-  tint: string; // subtle background tint for inline annotation blocks
-  border: string; // left-accent border color
-}
+export type SeverityKey = "critical" | "major" | "minor" | "info";
 
-export const severityStyles: Record<string, SeverityStyle> = {
-  critical: {
-    label: "Critical",
-    dot: "bg-rose-500",
-    text: "text-rose-600 dark:text-rose-400",
-    tint: "bg-rose-50 dark:bg-rose-500/10",
-    border: "border-rose-500",
-  },
-  major: {
-    label: "Major",
-    dot: "bg-amber-400",
-    text: "text-amber-600 dark:text-amber-400",
-    tint: "bg-amber-50 dark:bg-amber-500/10",
-    border: "border-amber-400",
-  },
-  warning: {
-    label: "Major",
-    dot: "bg-amber-400",
-    text: "text-amber-600 dark:text-amber-400",
-    tint: "bg-amber-50 dark:bg-amber-500/10",
-    border: "border-amber-400",
-  },
-  minor: {
-    label: "Minor",
-    dot: "bg-blue-400",
-    text: "text-blue-600 dark:text-blue-400",
-    tint: "bg-blue-50 dark:bg-blue-500/10",
-    border: "border-blue-400",
-  },
-  info: {
-    label: "Info",
-    dot: "bg-signal-500",
-    text: "text-signal-600 dark:text-signal-400",
-    tint: "bg-signal-50 dark:bg-signal-500/10",
-    border: "border-signal-500",
-  },
+const SEVERITY_KEYS: Record<string, SeverityKey> = {
+  critical: "critical",
+  major: "major",
+  warning: "major",
+  minor: "minor",
+  info: "info",
 };
 
-export function getSeverityStyle(severity: string | null | undefined): SeverityStyle {
-  const key = (severity || "info").toLowerCase();
-  return severityStyles[key] || severityStyles.info;
+const SEVERITY_LABELS: Record<SeverityKey, string> = {
+  critical: "Critical",
+  major: "Major",
+  minor: "Minor",
+  info: "Info",
+};
+
+/** Normalizes the model's free-text severity; anything unrecognized reads as Info. */
+export function severityKey(severity: string | null | undefined): SeverityKey {
+  return SEVERITY_KEYS[(severity || "info").toLowerCase()] ?? "info";
+}
+
+export function severityLabel(severity: string | null | undefined): string {
+  return SEVERITY_LABELS[severityKey(severity)];
 }
 
 /**
  * Matches findings to one changed file — by `filename` first, then
  * `previous_filename` (renames), so a finding the model attributed to a
- * file's pre-rename path still resolves. Shared by ChangedFilesRail and
- * the DiffViewer wiring in PullRequestDetails.tsx so both use identical
- * matching.
+ * file's pre-rename path still resolves. The navigator, the diff and the
+ * finding order all go through this one predicate.
  */
 export function getFindingsForFile(findings: Finding[], file: ChangedFile): Finding[] {
-  return findings.filter(
-    (f) => f.file_path === file.filename || (!!file.previous_filename && f.file_path === file.previous_filename)
-  );
+  return findings.filter((f) => findingMatchesFile(f.file_path, file));
 }

@@ -42,10 +42,40 @@ export default {
         amber: {
           400: "#F5A524",
         },
+        // PR Review workspace surfaces. Values live as CSS variables on
+        // `.review-ws` (globals.css) so one class serves both themes; the
+        // code area is the lit surface, chrome sits darker around it.
+        rv: {
+          chrome: "var(--rv-chrome)",
+          code: "var(--rv-code)",
+          rec: "var(--rv-rec)",
+          raised: "var(--rv-raised)",
+          hair: "var(--rv-hair)",
+          bd: "var(--rv-bd)",
+          ink: "var(--rv-ink)",
+          ink2: "var(--rv-ink2)",
+          mute: "var(--rv-mute)",
+          lnc: "var(--rv-lnc)",
+          hover: "var(--rv-hover)",
+          sel: "var(--rv-sel)",
+          teal: "var(--rv-teal)",
+          tealbd: "var(--rv-tealbd)",
+          add: "var(--rv-add)",
+          addg: "var(--rv-addg)",
+          del: "var(--rv-del)",
+          delg: "var(--rv-delg)",
+          crit: "var(--rv-crit)",
+          major: "var(--rv-major)",
+          minor: "var(--rv-minor)",
+          info: "var(--rv-info)",
+          open: "var(--rv-open)",
+          merged: "var(--rv-merged)",
+          warn: "var(--rv-warn)",
+        },
       },
       fontFamily: {
         display: ["'Space Grotesk'", "sans-serif"],
-        sans: ["'Inter'", "sans-serif"],
+        sans: ["'Geist'", "'Inter'", "sans-serif"],
         mono: ["'JetBrains Mono'", "monospace"],
       },
       borderRadius: {

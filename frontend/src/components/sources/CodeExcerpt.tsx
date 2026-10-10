@@ -8,6 +8,8 @@ interface CodeExcerptProps {
   filePath?: string;
   /** File line of the first excerpt line. No gutter when absent (lines aren't file-aligned). */
   startLine?: number;
+  /** Replaces the default bordered container, e.g. to sit on the review diff's surface. */
+  className?: string;
 }
 
 /**
@@ -15,7 +17,7 @@ interface CodeExcerptProps {
  * same highlighter and `.prism-code` token theme as DiffViewer. Not a file
  * viewer: it shows exactly the snapshot, nothing fetched.
  */
-export function CodeExcerpt({ code, filePath, startLine }: CodeExcerptProps) {
+export function CodeExcerpt({ code, filePath, startLine, className }: CodeExcerptProps) {
   const lines = useMemo(() => code.split("\n"), [code]);
   const language = useMemo(() => languageForFilename(filePath ?? ""), [filePath]);
   const [showAll, setShowAll] = useState(false);
@@ -24,7 +26,7 @@ export function CodeExcerpt({ code, filePath, startLine }: CodeExcerptProps) {
   const hasMore = lines.length > PREVIEW_LINES;
 
   return (
-    <div className="overflow-hidden rounded-md border border-border-light dark:border-border-dark">
+    <div className={className ?? "overflow-hidden rounded-md border border-border-light dark:border-border-dark"}>
       <div className="thin-scrollbar overflow-x-auto">
         <div
           className="prism-code w-max min-w-full py-1.5 font-mono text-xs leading-5"

@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { Outlet } from "react-router-dom";
+import { Outlet, useMatch } from "react-router-dom";
 import { Sidebar } from "./sidebar/Sidebar";
 import { Navbar } from "./navbar/Navbar";
+import { cn } from "@/utils/cn";
 
 /**
  * The authenticated application frame: Sidebar + Navbar + a scrollable
@@ -15,6 +16,9 @@ import { Navbar } from "./navbar/Navbar";
 export function AppShell() {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  // The PR review workspace is edge-to-edge: its panes carry their own
+  // borders, and page padding would only cost code width.
+  const fullBleed = useMatch("/repositories/:repositoryId/pulls/:pullNumber") !== null;
 
   return (
     <div className="flex h-screen overflow-hidden bg-canvas-light dark:bg-canvas-dark">
@@ -26,7 +30,12 @@ export function AppShell() {
       />
       <div className="flex min-w-0 flex-1 flex-col">
         <Navbar onOpenMobileSidebar={() => setMobileOpen(true)} />
-        <main className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6 lg:px-8">
+        <main
+          className={cn(
+            "min-h-0 flex-1",
+            fullBleed ? "overflow-hidden" : "overflow-y-auto px-4 py-6 sm:px-6 lg:px-8",
+          )}
+        >
           <Outlet />
         </main>
       </div>

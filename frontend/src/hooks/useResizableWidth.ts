@@ -11,9 +11,8 @@ interface ResizableWidthOptions {
 
 /**
  * Width state for a right-hand panel resized from its left edge, persisted to
- * localStorage. Same behaviour as ReviewAIPanel's resize handle (drag left to
- * grow, arrow keys in 24px steps), which still has its own copy — migrating
- * it here is deferred with the rest of the review work.
+ * localStorage: drag left to grow, arrow keys in 24px steps. Used by the Q&A
+ * source inspector and the PR review discussion.
  */
 export function useResizableWidth({
   storageKey,
