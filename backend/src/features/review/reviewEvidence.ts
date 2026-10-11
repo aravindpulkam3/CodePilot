@@ -1,10 +1,16 @@
 import type { ChunkMetadata } from "../../infrastructure/chunking/astChunking.service.js";
+import { reviewEvidenceKind } from "../../shared/utils/documentationPaths.js";
+import { stripChunkHeader } from "../../shared/prompts/sourceRefs.js";
 import type {
   RetrievedContext,
   CodeChunkSearchResult,
   DocChunkSearchResult,
 } from "../../infrastructure/retrieval/retrievalTypes.js";
 import type { ChangedCodeDeps } from "./changedCodeContext.js";
+
+export function formatReviewDocumentEvidence(chunk: DocChunkSearchResult): string {
+  return `// File: ${chunk.filePath}\n// Evidence kind: ${reviewEvidenceKind(chunk.filePath)}\n// Revision: ${chunk.commitSha}\n// Lines: ${chunk.lineStart}-${chunk.lineEnd}\n// Section/part: ${chunk.sectionPath}\n${chunk.content.includes("// Fragment: partial source line") ? "// Fragment: partial source line; not the complete line\n" : ""}// Scope: selected excerpt; not proof of complete file coverage\n${stripChunkHeader(chunk.content)}`;
+}
 
 /** Index rows locate candidates only. Reparse source at HEAD; never reuse indexed line coordinates. */
 export async function verifyReviewEvidence(
@@ -74,6 +80,7 @@ export async function verifyReviewEvidence(
         ...candidate,
         content: chunk.content,
         contentHash: chunk.content_hash,
+        ...("sectionPath" in candidate ? { sectionPath: chunk.symbol_name } : {}),
         lineStart: chunk.start_line,
         lineEnd: chunk.end_line,
         commitSha: headSha,

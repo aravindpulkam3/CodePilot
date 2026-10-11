@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { DOCUMENTATION_CHUNK_MARKER } from "../../shared/utils/documentationPaths.js";
 import { repositorySyncService } from "../../features/repository/repositorySync.service.js";
 import { syncQueue } from "../../config/queues.js";
 import {
@@ -79,16 +81,14 @@ const QA_GRAPH_NEIGHBOR_LIMIT = 12;
  * returns real code instead of discarded prose. Without them, changing a
  * widely-imported utility would pull in every caller in the repository.
  *
- * Note the per-class *file* lists are NOT truncated arbitrarily — the
- * `totalLimit` passed to searchCodeChunksInFiles ranks across all of a class's
- * files by similarity and takes the best, which is strictly better than
- * slicing an unordered path list. The fan-in rule below is what prevents a
- * pathological path list reaching SQL in the first place.
+ * Production importer paths are bounded before fetching chunks. Within the
+ * selected paths, SQL similarity/per-file limits and the existing token budget
+ * still control which source reaches the prompt.
  */
 const REVIEW_LIMITS = {
   /** Changed files whose graph we expand. Every changed file still appears in the diff. */
   maxChangedFilesForExpansion: 20,
-  /** Above this many non-test callers, a file is a shared util: its callers say nothing. */
+  /** Maximum production importer paths selected per changed file. */
   maxDependentFanIn: 30,
   /** Chunks per individual file, so one chunk-dense file can't fill a class. */
   perFileChunkLimit: 3,
@@ -141,17 +141,15 @@ export class RepositoryRetrievalService {
    * Refreshes the repository (JIT sync) and blocks until it has a servable
    * index — or throws a catchable error.
    *
-   * Servable means `last_indexed_sha` is set: indexing sets it only for a
-   * complete index and clears it whenever rows may be partial or mixed (a run
-   * that failed after enqueuing chunks, an untrustworthy delta). See
-   * decideIndexReadiness.
+   * Servable means READY with a published SHA. The run identity is checked
+   * again after context reads to detect concurrent indexing.
    *
    * The wait is bounded (60 s) because this runs inline on a request (POST
    * /reviews, chat stream, interview start). It first waits for the enqueued
    * sync job so a fresh push is picked up, but if that job is slow (worker
    * down, queue backlog, retry backoff) the index is still checked once more
-   * and served when valid: freshness is best-effort, safety is not. Only a
-   * missing index times out, as INDEXING_IN_PROGRESS. Callers surface both
+   * and served when valid: freshness is best-effort, safety is not. An
+   * unavailable index times out, as INDEXING_IN_PROGRESS. Callers surface both
    * error strings to the client (409, or an SSE error frame).
    */
   private async ensureSearchable(clerkUserId: string, repositoryId: string) {
@@ -164,17 +162,14 @@ export class RepositoryRetrievalService {
     const startTime = Date.now();
     const deadline = () => Date.now() - startTime < maxWaitMs;
 
-    // 0. No valid index and the last run failed: recovery is an explicit retry
+    // 0. The last run failed: recovery is an explicit retry
     // (start-working), not a side effect of a session request — otherwise a
     // deterministic failure would start a full rebuild on every session.
     const { rows: current } = await pool.query(
       "SELECT last_indexed_sha, indexing_status FROM repositories WHERE id = $1",
       [repositoryId],
     );
-    if (
-      !current[0]?.last_indexed_sha &&
-      current[0]?.indexing_status === "FAILED"
-    ) {
+    if (current[0]?.indexing_status === "FAILED") {
       throw new Error("INDEXING_FAILED");
     }
 
@@ -199,7 +194,7 @@ export class RepositoryRetrievalService {
     // 2. The sync job only enqueues indexing chunks; it doesn't wait for them.
     // Poll until the index is servable. The state is read at least once even
     // when the job wait above used up the whole budget, so a slow freshness
-    // sync can't make an existing complete index unservable.
+    // sync can still return if a complete READY index is available.
     for (;;) {
       const { rows } = await pool.query(
         "SELECT last_indexed_sha, indexing_status FROM repositories WHERE id = $1",
@@ -253,25 +248,34 @@ export class RepositoryRetrievalService {
    * per turn would put a GitHub sync round trip on every single answer.
    */
   private async assertSearchable(repositoryId: string): Promise<void> {
+    await this.readIndexIdentity(repositoryId);
+  }
+
+  private async readIndexIdentity(repositoryId: string): Promise<string> {
     const { rows } = await pool.query(
-      "SELECT last_indexed_sha, indexing_status FROM repositories WHERE id = $1",
-      [repositoryId],
+      `SELECT last_indexed_sha, indexing_status, indexing_run_id,
+         EXISTS (SELECT 1 FROM repository_embeddings e WHERE e.repository_id = $1
+           AND e.symbol_type = 'documentation' AND split_part(e.content, chr(10), 2) <> $2) AS needs_reindex
+       FROM repositories WHERE id = $1`,
+      [repositoryId, DOCUMENTATION_CHUNK_MARKER],
     );
-    const status = rows[0]?.indexing_status ?? "NOT_STARTED";
-
-    if (rows[0]?.last_indexed_sha) return;
-
-    if (status === "FAILED") {
-      console.error(
-        `[RetrievalService] Repository ${repositoryId} indexing FAILED — refusing to retrieve on a broken index.`,
-      );
-      throw new Error("INDEXING_FAILED");
+    const row = rows[0];
+    if (row?.needs_reindex) throw new Error("INDEXING_IN_PROGRESS");
+    const readiness = decideIndexReadiness(
+      { lastIndexedSha: row?.last_indexed_sha, status: row?.indexing_status }, true,
+    );
+    if (readiness !== "ready") {
+      throw new Error(readiness === "failed" ? "INDEXING_FAILED" : "INDEXING_IN_PROGRESS");
     }
+    return JSON.stringify([row.last_indexed_sha, row.indexing_run_id ?? null]);
+  }
 
-    console.warn(
-      `[RetrievalService] Repository ${repositoryId} is not searchable (status: ${status}) — refusing this turn.`,
-    );
-    throw new Error("INDEXING_IN_PROGRESS");
+  private async assertIndexUnchanged(repositoryId: string, identity: string): Promise<void> {
+    // Every writer leaves READY before mutation. The run ID also detects a
+    // complete same-SHA reindex between these reads. Never return mixed context.
+    if (await this.readIndexIdentity(repositoryId) !== identity) {
+      throw new Error("INDEXING_IN_PROGRESS");
+    }
   }
 
   // --- QA Mode ---
@@ -296,6 +300,7 @@ export class RepositoryRetrievalService {
     } else {
       await this.assertSearchable(repositoryId);
     }
+    const indexIdentity = await this.readIndexIdentity(repositoryId);
 
     // recentHistory's last element is the just-saved CURRENT user turn (see
     // chat.service.ts#streamMessage) — excluded here so buildQAEmbeddingQuery
@@ -431,6 +436,7 @@ export class RepositoryRetrievalService {
       }
     }
 
+    await this.assertIndexUnchanged(repositoryId, indexIdentity);
     return context;
   }
 
@@ -481,13 +487,13 @@ export class RepositoryRetrievalService {
     } else {
       await this.ensureSearchable(clerkUserId, repositoryId);
     }
+    const indexIdentity = await this.readIndexIdentity(repositoryId);
 
     const queryVectorStr = await semanticRetrievalService.getQueryVectorStr(
       "What does this project do? Explain its architecture, main components, and how it's structured.",
     );
 
-    // The repository profile is deterministic and keyed by the indexed SHA, so
-    // it always describes the same revision as the code — no READY gate.
+    // Profiles and code share the same before/after run check.
     const [moduleInventory, docChunks, profile] = await Promise.all([
       repositoryMapService.buildModuleInventory(repositoryId),
       semanticRetrievalService.searchDocumentationChunks(
@@ -511,6 +517,7 @@ export class RepositoryRetrievalService {
         `profile=${profile.text.length} chars.`,
     );
 
+    await this.assertIndexUnchanged(repositoryId, indexIdentity);
     return {
       repositoryProfile,
       moduleInventory,
@@ -537,6 +544,7 @@ export class RepositoryRetrievalService {
     state: InterviewState,
   ): Promise<InterviewFollowUpContext> {
     await this.assertSearchable(repositoryId);
+    const indexIdentity = await this.readIndexIdentity(repositoryId);
 
     const granularity: InterviewGranularity = granularityOf(
       state.currentFocus ?? { filePath: null, symbolName: null, module: null },
@@ -754,6 +762,7 @@ export class RepositoryRetrievalService {
         `query="${docPreview(question, 80)}".`,
     );
 
+    await this.assertIndexUnchanged(repositoryId, indexIdentity);
     return {
       granularity,
       groundingCode,
@@ -805,6 +814,7 @@ export class RepositoryRetrievalService {
     } else {
       await this.ensureSearchable(clerkUserId, repositoryId);
     }
+    const indexIdentity = await this.readIndexIdentity(repositoryId);
 
     const rawCandidates: RetrievalCandidate[] = [];
 
@@ -855,6 +865,7 @@ export class RepositoryRetrievalService {
       docRetrievalLog(
         `Review: no reviewable changed files — skipping retrieval entirely.`,
       );
+      await this.assertIndexUnchanged(repositoryId, indexIdentity);
       return emptyContext();
     }
 
@@ -892,7 +903,7 @@ export class RepositoryRetrievalService {
     const testSet = new Set<string>();
     const dependentSet = new Set<string>();
     const dependencySet = new Set<string>();
-    const fanInSuppressed: string[] = [];
+    const fanInLimited: string[] = [];
 
     // A huge PR shouldn't fan out to hundreds of graph queries. This caps
     // EXPANSION only — every changed file still appears in the diff.
@@ -929,16 +940,24 @@ export class RepositoryRetrievalService {
 
       for (const t of tests) testSet.add(t);
 
-      // Fan-in suppression: a file with 200 callers is a shared utility, and
-      // each individual caller carries almost no information about the change.
-      // Without this, changing utils/logger.ts would flood the prompt.
-      // Tests are kept regardless — a widely-used util's tests are still the
-      // best statement of its intended behaviour.
-      if (nonTestDependents.length > REVIEW_LIMITS.maxDependentFanIn) {
-        fanInSuppressed.push(file);
-      } else {
-        for (const d of nonTestDependents) dependentSet.add(d);
-      }
+      // No exact symbol references are available in this file graph. Prefer
+      // proximity to other changed files; a stable hash samples ties without
+      // privileging alphabetical names. Existing SQL still ranks/bounds chunks.
+      const nearbyChanges = expansionFiles.filter(path => path !== file);
+      const anchors = nearbyChanges.length ? nearbyChanges : [file];
+      const proximity = (path: string) => Math.max(...anchors.map(anchor => {
+        const left = path.split("/").slice(0, -1);
+        const right = anchor.split("/").slice(0, -1);
+        let shared = 0;
+        while (shared < left.length && shared < right.length && left[shared] === right[shared]) shared++;
+        return shared;
+      }));
+      const ranked = [...new Set(nonTestDependents)].map(path => ({
+        path, proximity: proximity(path),
+        tie: createHash("sha256").update(JSON.stringify([file, path])).digest("hex"),
+      })).sort((a, b) => b.proximity - a.proximity || (a.tie < b.tie ? -1 : a.tie > b.tie ? 1 : a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+      if (ranked.length > REVIEW_LIMITS.maxDependentFanIn) fanInLimited.push(file);
+      for (const { path } of ranked.slice(0, REVIEW_LIMITS.maxDependentFanIn)) dependentSet.add(path);
 
       for (const d of deps) dependencySet.add(d);
     }
@@ -972,7 +991,7 @@ export class RepositoryRetrievalService {
       tests: testPaths.length,
       dependents: dependentPaths.length,
       dependencies: dependencyPaths.length,
-      fanInSuppressed,
+      fanInLimited,
     };
     trace.timingMs.graphExpansion = performance.now() - t0;
     t0 = performance.now();
@@ -1059,8 +1078,8 @@ export class RepositoryRetrievalService {
         `${dependentPaths.length} dependent / ${dependencyPaths.length} dependency file(s) -> ` +
         `${changedChunks.length}/${testChunks.length}/${dependentChunks.length}/${dependencyChunks.length} chunk(s), ` +
         `${semanticChunks.length} semantic.` +
-        (fanInSuppressed.length > 0
-          ? ` Fan-in suppressed for: ${fanInSuppressed.join(", ")}.`
+        (fanInLimited.length > 0
+          ? ` Fan-in selection limited for: ${fanInLimited.join(", ")}.`
           : ""),
     );
 
@@ -1154,12 +1173,12 @@ export class RepositoryRetrievalService {
       });
     }
 
-    // Repository-level orientation: the deterministic, SHA-keyed profile, so
-    // it is present on every review and always describes the indexed revision.
+    // Repository orientation is built from the same fenced live index reads.
     context.repositoryProfile =
       (await repositoryMapService.getRepositoryProfile(repositoryId)).text ||
       null;
 
+    await this.assertIndexUnchanged(repositoryId, indexIdentity);
     return context;
   }
 

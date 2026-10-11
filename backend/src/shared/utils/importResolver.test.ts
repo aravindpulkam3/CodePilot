@@ -74,7 +74,7 @@ describe("resolveLocalImport", () => {
 });
 
 describe("extractLocalImports", () => {
-  test("carries the fix through the wrapper and dedupes by resolved path", () => {
+  test("preserves distinct source spellings resolving to the same path", () => {
     const known = new Set(["src/services/auth.service.ts", "src/config/env.ts"]);
     const edges = extractLocalImports(
       "src/controllers/auth.controller.ts",
@@ -88,8 +88,8 @@ describe("extractLocalImports", () => {
     );
 
     const targets = edges.map((e) => e.resolvedPath).sort();
-    assert.deepEqual(targets, ["src/config/env.ts", "src/services/auth.service.ts"]);
-    // The first spelling seen wins as the recorded specifier.
+    assert.deepEqual(targets, ["src/config/env.ts", "src/services/auth.service.ts", "src/services/auth.service.ts"]);
+    // Both source spellings remain available for later re-resolution.
     assert.equal(
       edges.find((e) => e.resolvedPath === "src/services/auth.service.ts")?.specifier,
       "../services/auth.service.js",

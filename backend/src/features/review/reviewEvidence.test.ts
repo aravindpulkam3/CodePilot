@@ -1,3 +1,5 @@
+import { CodeReviewPromptBuilder } from "./codeReviewPromptBuilder.js";
+import { createRequestBudget } from "../../infrastructure/llm/requestBudget.js";
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { verifyReviewEvidence } from "./reviewEvidence.js";
@@ -79,4 +81,20 @@ describe("revision-correct review evidence", () => {
     assert.equal(result.context.docChunks[0].commitSha, "pinned");
     assert.equal(result.context.docChunks[0].contentHash, "hash");
   });
+});
+
+test("default-branch importer candidates reach review only as actual PR-head source", async () => {
+  for (const source of ["import { util } from './utils';", "import { util } from './helpers';"]) {
+    const refreshed = await verifyReviewEvidence(context(), "pr-head", {
+      fetchContent: async (_path, ref) => { assert.equal(ref, "pr-head"); return source; },
+      chunkFile: async (_path, content) => [chunk(content)], supportsFile: () => true, chunkDocument: async () => [],
+    });
+    const prompt = CodeReviewPromptBuilder.buildBudgetedReviewPrompt({ repoName: "r", title: "rename", description: "", headSha: "pr-head", baseSha: "base", expectedFiles: 1,
+      files: [{ filename: "helpers.ts", previous_filename: "utils.ts", status: "renamed", additions: 0, deletions: 0 }], budget: createRequestBudget(32768), changedCode: null, documentation: [],
+      codeContext: refreshed.context.codeChunks.map(c => c.content),
+    }).messages.map(m => m.content).join("\n");
+    assert.ok(prompt.includes(source));
+    assert.ok(!prompt.includes("old indexed caller"));
+    assert.match(prompt, /does not verify an import, call, or test relationship/);
+  }
 });

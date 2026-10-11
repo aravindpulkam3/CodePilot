@@ -64,7 +64,7 @@ describe("documentationChunker.chunkWholeFile", () => {
     const compose = "services:\r\n  db:\r\n    image: postgres:16\r\n\r\n  cache:\r\n    image: redis:7\r\n";
     const rows = await documentationChunker.chunkWholeFile("docker-compose.yml", compose);
     assert.equal(rows.length, 1);
-    assert.equal(stripChunkHeader(rows[0].content), compose.trim());
+    assert.equal(stripChunkHeader(rows[0].content), compose);
   });
 
   test("does NOT split on a column-0 YAML comment, unlike chunkDocument", async () => {
@@ -239,4 +239,35 @@ describe("documentationChunker.chunkDocument", () => {
       "unstable hashes would re-embed the whole document on every sync",
     );
   });
+});
+
+for (const filePath of ["schema.sql", "docker-compose.yml", "README.md"]) {
+  test("all content beyond 40 chunks remains indexed: " + filePath, async () => {
+    const source = Array.from({ length: 10000 }, (_, i) => filePath.endsWith("sql") ? `CREATE TABLE t${i} (id INTEGER PRIMARY KEY);` : `entry_${i}: value_${i}`).join("\n");
+    const run = () => filePath.endsWith("md") ? documentationChunker.chunkDocument(filePath, source) : documentationChunker.chunkWholeFile(filePath, source);
+    const rows = await run();
+    assert.ok(rows.length > 40);
+    assert.ok(rows.every(r => r.content.length <= 6000));
+    const covered = new Set(rows.flatMap(r => stripChunkHeader(r.content).split("\n")));
+    for (const line of source.split("\n")) assert.ok(covered.has(line), line);
+    assert.equal(rows.at(-1)!.end_line, 10000);
+    assert.deepEqual(rows, await run());
+  });
+}
+
+test("oversized individual lines split without false line numbers or lost characters", async () => {
+  const source = "x".repeat(4999) + "??".repeat(5000) + "TAIL";
+  const rows = await documentationChunker.chunkWholeFile("schema.sql", source);
+  assert.ok(rows.length > 2);
+  assert.ok(rows.every(r => r.start_line === 1 && r.end_line === 1 && r.content.length <= 6000));
+  assert.ok(rows.every(r => r.content.includes("// Fragment: partial source line")));
+  assert.equal(rows.map(r => stripChunkHeader(r.content)).join(""), source);
+  assert.deepEqual(rows.map(r => r.chunk_index), rows.map((_, i) => i + 1));
+  assert.equal(new Set(rows.map(r => r.content_hash)).size, rows.length);
+});
+
+test("long heading metadata cannot make an oversized embedding", async () => {
+  const rows = await documentationChunker.chunkDocument("README.md", "# " + "h".repeat(9000) + "\nbody");
+  assert.ok(rows.every(r => r.content.length <= 6000));
+  assert.ok(rows.some(r => stripChunkHeader(r.content).includes("body")));
 });

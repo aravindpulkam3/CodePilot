@@ -1,5 +1,4 @@
 import { pool } from "../../config/db.js";
-import { withCache } from "../../shared/utils/cache.js";
 
 /**
  * INVARIANT: every query here that returns import targets as file paths must
@@ -97,24 +96,15 @@ export class RepositoryGraphService {
    * module to rank the areas offered for orientation/NEW_TOPIC.
    */
   public async getImportFanInCounts(repositoryId: string): Promise<Map<string, number>> {
-    // Cached as entry pairs, not a Map — JSON.stringify silently turns a
-    // Map into "{}", so withCache's serialization needs a plain array here.
-    const entries = await withCache<[string, number][]>(
-      `repo:${repositoryId}:import-fan-in`,
-      600,
-      async () => {
-        const { rows } = await pool.query(
-          `SELECT target, COUNT(*)::int AS fan_in
-           FROM repository_imports
-           WHERE repository_id = $1
-             AND resolved
-           GROUP BY target`,
-          [repositoryId],
-        );
-        return rows.map((r) => [r.target as string, r.fan_in as number]);
-      },
+    const { rows } = await pool.query(
+      `SELECT target, COUNT(*)::int AS fan_in
+       FROM repository_imports
+       WHERE repository_id = $1
+         AND resolved
+       GROUP BY target`,
+      [repositoryId],
     );
-    return new Map(entries);
+    return new Map(rows.map((r) => [r.target as string, r.fan_in as number]));
   }
 }
 

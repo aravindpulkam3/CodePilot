@@ -1,3 +1,4 @@
+import { DOCUMENTATION_CHUNK_MARKER } from "../../shared/utils/documentationPaths.js";
 import { pool } from "../../config/db.js";
 import * as githubService from "../../infrastructure/github/github.service.js";
 import { isIndexableFile, type FileChange } from "./repositoryIndex.service.js";
@@ -46,6 +47,24 @@ export class RepositorySyncService {
     if (!targets.length) return { status: "stale" };
     const latestSha = targets[0].indexing_target_sha;
     let lastIndexedSha: string | null = repo.last_indexed_sha;
+    // Old document chunks may have silently stopped at 40 or exceeded the
+    // embedding limit. Use the existing full-sync path even at an equal SHA.
+    if (lastIndexedSha && repo.index_chunks_total == null) {
+      const legacy = await pool.query(
+        `SELECT 1 FROM repository_embeddings WHERE repository_id = $1
+         AND symbol_type = 'documentation' AND split_part(content, chr(10), 2) <> $2 LIMIT 1`,
+        [repositoryId, DOCUMENTATION_CHUNK_MARKER],
+      );
+      if (legacy.rows.length) {
+        const invalidated = await pool.query(
+          `UPDATE repositories SET last_indexed_sha = NULL WHERE id = $1
+           AND indexing_run_id = $2 AND indexing_status = 'INDEXING' AND index_chunks_total IS NULL`,
+          [repositoryId, runId],
+        );
+        if (!invalidated.rowCount) return { status: "stale" };
+        lastIndexedSha = null;
+      }
+    }
     let filesToIndex: FileChange[] = [];
     if (lastIndexedSha && lastIndexedSha !== latestSha) {
       const delta = await githubService.getChangedFilesBetweenCommits(token, repo.owner, repo.name, lastIndexedSha, latestSha, isIndexableFile);

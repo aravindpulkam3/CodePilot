@@ -1,3 +1,4 @@
+import { DOCUMENTATION_CHUNK_MARKER } from "../../shared/utils/documentationPaths.js";
 import crypto from "crypto";
 import path from "path";
 import { ChunkMetadata } from "./astChunking.service.js";
@@ -10,11 +11,10 @@ import { ChunkMetadata } from "./astChunking.service.js";
 
 const DOC_CHUNK_LIMITS = {
   maxLines: 200,
-  maxChars: 6000,
+  maxChars: 5000, // Reserve up to 1000 characters for bounded provenance headers.
   overlapLines: 10,
 };
 
-const MAX_CHUNKS_PER_DOCUMENT = 40;
 
 const INTRO_SECTION_NAME = "(intro)";
 
@@ -26,6 +26,7 @@ interface Block {
   /** 1-based, inclusive. */
   startLine: number;
   endLine: number;
+  partialLine?: boolean;
   /** Heading blocks only. */
   level?: number;
   text?: string;
@@ -245,12 +246,26 @@ export class DocumentationChunkingService {
     let cursor = 0;
 
     while (cursor < block.lines.length) {
+      const line = block.lines[cursor];
+      if (line.length > DOC_CHUNK_LIMITS.maxChars) {
+        for (let offset = 0; offset < line.length;) {
+          let end = Math.min(offset + DOC_CHUNK_LIMITS.maxChars, line.length);
+          // Do not split a UTF-16 surrogate pair.
+          if (end < line.length && /[\uD800-\uDBFF]/.test(line[end - 1])) end--;
+          parts.push({ kind: block.kind, lines: [line.slice(offset, end)],
+            startLine: block.startLine + cursor, endLine: block.startLine + cursor, partialLine: true });
+          offset = end;
+        }
+        cursor++;
+        continue;
+      }
       const taken: string[] = [];
       let chars = 0;
       let idx = cursor;
 
       while (idx < block.lines.length) {
         const nextLen = block.lines[idx].length + 1;
+        if (block.lines[idx].length > DOC_CHUNK_LIMITS.maxChars) break;
         if (taken.length >= DOC_CHUNK_LIMITS.maxLines) break;
         if (taken.length > 0 && chars + nextLen > DOC_CHUNK_LIMITS.maxChars) break;
         taken.push(block.lines[idx]);
@@ -266,7 +281,8 @@ export class DocumentationChunkingService {
       });
 
       if (idx >= block.lines.length) break;
-      cursor = Math.max(idx - DOC_CHUNK_LIMITS.overlapLines, cursor + 1);
+      cursor = block.lines[idx].length > DOC_CHUNK_LIMITS.maxChars
+        ? idx : Math.max(idx - DOC_CHUNK_LIMITS.overlapLines, cursor + 1);
     }
 
     return parts;
@@ -312,6 +328,7 @@ export class DocumentationChunkingService {
     partIndex: number,
     partTotal: number,
   ): ChunkMetadata {
+    breadcrumb = breadcrumb.length > 200 ? breadcrumb.slice(0, 197) + "..." : breadcrumb;
     const sectionName = partTotal > 1 ? `${breadcrumb} (part ${partIndex}/${partTotal})` : breadcrumb;
 
     // Self-describing header, same idea as the AST chunker's: a chunk
@@ -319,11 +336,14 @@ export class DocumentationChunkingService {
     // breadcrumb is repeated on every part of a split section.
     const header = [
       `// File: ${filePath}`,
-      `// Type: documentation`,
+      DOCUMENTATION_CHUNK_MARKER,
       `// Section: ${breadcrumb}`,
+      ...(partTotal > 1 ? [`// Part: ${partIndex}/${partTotal}`] : []),
+      ...(blocks.some(b => b.partialLine) ? ["// Fragment: partial source line; not the complete line"] : []),
     ].join("\n");
 
-    const content = `${header}\n${this.blockText(blocks)}`.trim();
+    const content = `${header}\n${this.blockText(blocks)}`;
+    if (content.length > 6000) throw new Error(`Documentation header/body exceeds 6000 characters: ${filePath}`);
 
     return {
       file_path: filePath,
@@ -388,7 +408,7 @@ export class DocumentationChunkingService {
         chunks.push(...this.wholeFileParts(filePath, source));
       }
 
-      return this.dedupeAndCap(filePath, chunks);
+      return this.dedupe(chunks);
     } catch (error) {
       console.error(`[Doc Chunker] Failed to chunk ${filePath}:`, error);
       // Deliberately NOT returning [] — see the contract note above. A parse
@@ -408,7 +428,7 @@ export class DocumentationChunkingService {
    */
   public async chunkWholeFile(filePath: string, source: string): Promise<ChunkMetadata[]> {
     if (!source || source.trim().length === 0) return [];
-    return this.dedupeAndCap(filePath, this.wholeFileParts(filePath, source));
+    return this.dedupe(this.wholeFileParts(filePath, source));
   }
 
   private wholeFileParts(filePath: string, source: string): ChunkMetadata[] {
@@ -425,7 +445,7 @@ export class DocumentationChunkingService {
     );
   }
 
-  private dedupeAndCap(filePath: string, chunks: ChunkMetadata[]): ChunkMetadata[] {
+  private dedupe(chunks: ChunkMetadata[]): ChunkMetadata[] {
     // De-duplicate by content_hash. repository_embeddings has
     // UNIQUE(repository_id, file_path, content_hash) but the INSERT has no
     // ON CONFLICT clause, so two identical sections in one document (a
@@ -437,13 +457,6 @@ export class DocumentationChunkingService {
       seen.add(c.content_hash);
       return true;
     });
-
-    if (deduped.length > MAX_CHUNKS_PER_DOCUMENT) {
-      console.warn(
-        `[Doc Chunker] ${filePath} produced ${deduped.length} chunks; keeping the first ${MAX_CHUNKS_PER_DOCUMENT}.`,
-      );
-      return deduped.slice(0, MAX_CHUNKS_PER_DOCUMENT);
-    }
 
     return deduped;
   }

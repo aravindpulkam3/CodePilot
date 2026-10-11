@@ -18,7 +18,7 @@ import { retrievalService } from "../../infrastructure/retrieval/retreival.servi
 import type { RetrievedContext } from "../../infrastructure/retrieval/retrievalTypes.js";
 import { documentationChunker } from "../../infrastructure/chunking/documentationChunking.service.js";
 import { isDocumentationFile } from "../../shared/utils/documentationPaths.js";
-import { verifyReviewEvidence } from "./reviewEvidence.js";
+import { verifyReviewEvidence, formatReviewDocumentEvidence } from "./reviewEvidence.js";
 import { applyReviewInput, type ReviewInputMetadata } from "./reviewInput.js";
 import type { LLMRequestBudget } from "../../infrastructure/llm/requestBudget.js";
 import { buildDocumentationQuery } from "../../shared/utils/documentationQuery.js";
@@ -165,10 +165,7 @@ export class ReviewService {
       (chunk) =>
         `// File: ${chunk.filePath}\n// Symbol: ${chunk.symbolName}\n// Lines: ${chunk.lineStart}-${chunk.lineEnd}\n// Candidate discovery: ${chunk.symbolType}\n${stripChunkHeader(chunk.content)}`,
     );
-    const documentation = retrievedContext.docChunks.map(
-      (chunk) =>
-        `// File: ${chunk.filePath}\n// Lines: ${chunk.lineStart}-${chunk.lineEnd}\n${stripChunkHeader(chunk.content)}`,
-    );
+    const documentation = retrievedContext.docChunks.map(formatReviewDocumentEvidence);
     const result = CodeReviewPromptBuilder.buildBudgetedReviewPrompt({
       repoName: repoDetails.name,
       title: prDetails.title,

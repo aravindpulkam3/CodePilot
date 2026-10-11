@@ -1,6 +1,5 @@
 import { pool } from "../../config/db.js";
 import { embedder } from "../embedding/embedding.service.js";
-import { withCache } from "../../shared/utils/cache.js";
 import type { CodeChunkSearchResult, DocChunkSearchResult, RetrievalOptions } from "./retrievalTypes.js";
 // TEMPORARY verification logging — see utils/readmeDebugLog.ts for removal.
 import { docRetrievalLog, isReadmeDebugEnabled } from "../../shared/utils/readmeDebugLog.js";
@@ -266,14 +265,13 @@ export class SemanticRetrievalService {
    * resolution) in interview.service.ts#resolveFocus.
    */
   public async listIndexedFilePaths(repositoryId: string): Promise<string[]> {
-    return withCache(`repo:${repositoryId}:indexed-paths`, 600, async () => {
-      const { rows } = await pool.query(
-        `SELECT DISTINCT file_path FROM repository_embeddings
-         WHERE repository_id = $1 AND symbol_type <> 'documentation'`,
-        [repositoryId],
-      );
-      return rows.map((r) => r.file_path);
-    });
+    // Live facts are covered by retrieval's run-identity check.
+    const { rows } = await pool.query(
+      `SELECT DISTINCT file_path FROM repository_embeddings
+       WHERE repository_id = $1 AND symbol_type <> 'documentation'`,
+      [repositoryId],
+    );
+    return rows.map((r) => r.file_path);
   }
 }
 

@@ -439,8 +439,16 @@ Return ONLY valid JSON matching the provided schema.
   private static readonly DOCUMENTATION_RULES = `
 Documentation Consistency
 
-When supplied, the <Documentation> block contains repository documentation
-relevant to this pull request. Changed documentation can also appear in the diff.
+When supplied, the <Documentation> block contains typed repository evidence:
+prose documentation, repository configuration, database definitions, or source.
+- Repository configuration defines checked-in operational settings, not proof of
+  the actual deployed environment. Establish applicability before claiming runtime impact.
+- SQL schemas, migrations and constraints are database-definition evidence. Check
+  migration order and applicability rather than assuming they describe the live database.
+- Configuration/schema defects may be correctness, security or deployment problems;
+  do not downgrade them to Minor documentation mismatches. Choose category and
+  severity from the supported trigger and consequence.
+- The README consistency rules below apply only to prose documentation.
 
 - README documents INTENDED behaviour, setup steps and project description.
   The code is authoritative for ACTUAL current behaviour.
@@ -508,6 +516,7 @@ The following code chunks are pulled from the existing repository to give you ar
 PROVENANCE: ${provenance?.headSha ? `Source verified at PR head ${provenance.headSha}. PR base tip: ${provenance.baseSha ?? "unknown"}; patches use GitHub PR diff semantics (merge base to head).` : `Discovery context from ${origin}; revision unverified. Do not use it as factual evidence.`}
 
 Retrieval labels describe candidate discovery, not verified relationships:
+The index may describe the default branch, not the PR base or head. Refreshing a snippet at PR head verifies its source only; it does not verify an import, call, or test relationship. Establish relationships from supplied PR-head source before using them as evidence.
 - changed_file: a changed file
 - graph_dependent: an indexed importer, not proof of a call
 - graph_dependency: an indexed import target
@@ -523,7 +532,7 @@ ${codebaseContext || "No relevant repository context found."}
     if (documentationContext) {
       prompt += `
 <Documentation>
-README sections relevant to this pull request. These describe INTENDED behaviour and are not part of the diff:
+Selected repository evidence labeled by role. These excerpts are not complete-file coverage. Prose describes intent; configuration and SQL define repository settings and database behavior subject to applicability:
 
 ${documentationContext}
 </Documentation>

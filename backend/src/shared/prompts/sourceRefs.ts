@@ -90,7 +90,7 @@ export const TRUNCATION_MARKER = "\n...[truncated]";
 // content (astChunking.service.ts#buildHeader, documentationChunking's
 // buildChunk). Useful to the embedder, noise to a reader — and its facts are
 // restated in each entry's heading.
-const HEADER_LINE = /^\/\/ (File|Language|Type|Name|Exported|Class|Members|Part|Signature|Context|Section): /;
+const HEADER_LINE = /^\/\/ (File|Language|Type|Name|Exported|Class|Members|Part|Signature|Context|Section|Fragment): /;
 
 /**
  * Removes the leading synthetic header block. Only fires when line 1 is a

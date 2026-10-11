@@ -70,3 +70,15 @@ export function isConfigFile(filePath: string): boolean {
   if (/^\.github\/workflows\/[^/]+\.ya?ml$/i.test(normalized)) return true;
   return CONFIG_BASENAMES.some((p) => p.test(basename));
 }
+
+/** Evidence role, independent of the deliberately narrow indexing allowlist. */
+export function reviewEvidenceKind(filePath: string): "documentation" | "repository configuration" | "database definition" | "application source" {
+  const { basename } = normalize(filePath);
+  if (/\.sql$/i.test(basename)) return "database definition";
+  if (isDocumentationFile(filePath) || /\.(md|markdown|rst|txt)$/i.test(basename)) return "documentation";
+  if (isConfigFile(filePath) || /\.(ya?ml|json|toml|ini|conf)$/i.test(basename) || /^\.env(?:\.|$)/i.test(basename)) return "repository configuration";
+  return "application source";
+}
+
+// Stored in existing chunk content, allowing detection of pre-limit-fix rows.
+export const DOCUMENTATION_CHUNK_MARKER = "// Type: documentation-v2";

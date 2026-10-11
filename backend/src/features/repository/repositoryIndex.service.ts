@@ -287,8 +287,7 @@ export class RepositoryIndexingService {
 
       // 3. Apply import-graph changes
       const importIndexer = new RelationshipIndexingService(client);
-      // Renames first: retargeting incoming edges has to happen while the old
-      // path's rows are still present, before any delete can remove them.
+      // Drop old-path relationships; finalization re-resolves retained specifiers.
       for (const { oldPath, newPath } of renames) {
         await importIndexer.renameFileRelationships(repositoryId, oldPath, newPath);
       }
@@ -321,7 +320,7 @@ export class RepositoryIndexingService {
         // matching — no network, safe inside the tx.
         const { pending, resolved } = await importIndexer.resolvePendingImports(repositoryId);
         console.log(
-          `[Index] Pending imports for ${repositoryId}: resolved ${resolved} of ${pending}.`,
+          `[Index] Import specifiers for ${repositoryId}: resolved ${resolved} of ${pending}.`,
         );
 
         await client.query(

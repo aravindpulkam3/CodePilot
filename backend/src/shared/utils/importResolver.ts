@@ -58,7 +58,7 @@ export interface LocalImport {
 
 /**
  * Extract distinct local imports from a file's AST metadata: resolved edges
- * (deduped by target path, first specifier wins) plus unresolved RELATIVE
+ * (retaining distinct original spellings) plus unresolved RELATIVE
  * specifiers (deduped by specifier). Non-relative specifiers — packages and
  * path aliases like "@/lib/x" — are dropped, since they can never resolve.
  */
@@ -67,18 +67,9 @@ export function extractLocalImports(
   rawImports: string[],
   knownPaths: Set<string>,
 ): LocalImport[] {
-  const edges = new Map<string, string>();
-  const pending = new Set<string>();
-  for (const imp of rawImports) {
-    const resolved = resolveLocalImport(fromFile, imp, knownPaths);
-    if (resolved) {
-      if (!edges.has(resolved)) edges.set(resolved, imp);
-    } else if (imp.startsWith(".")) {
-      pending.add(imp);
-    }
-  }
-  return [
-    ...Array.from(edges.entries()).map(([resolvedPath, specifier]) => ({ resolvedPath, specifier })),
-    ...Array.from(pending).map((specifier) => ({ resolvedPath: null, specifier })),
-  ];
+  // Distinct spellings may resolve to the same module now but diverge after a
+  // rename. Preserve both; SQL deduplicates the resulting resolved edges.
+  return [...new Set(rawImports.filter((imp) => imp.startsWith(".")))].map((specifier) => ({
+    specifier, resolvedPath: resolveLocalImport(fromFile, specifier, knownPaths),
+  }));
 }

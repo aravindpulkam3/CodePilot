@@ -318,7 +318,7 @@ export interface RetrievalTrace {
     tests: number;
     dependents: number;
     dependencies: number;
-    fanInSuppressed: string[];
+    fanInLimited: string[];
   };
   budget: {
     changedCodeTokens: number;

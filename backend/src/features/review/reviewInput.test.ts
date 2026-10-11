@@ -1,3 +1,5 @@
+import { formatReviewDocumentEvidence } from "./reviewEvidence.js";
+import { reviewEvidenceKind } from "../../shared/utils/documentationPaths.js";
 import { describe, test } from "node:test";
 import { changedSourceTargets, parseChangedLines, type ChangedCodeContext, type EnclosingChunk } from "./changedCodeContext.js";
 import assert from "node:assert/strict";
@@ -349,4 +351,40 @@ describe("final enclosing selection and coverage", () => {
     assert.equal(result.reviewInput.files[0].enclosing?.reason, "over-file-cap");
     assert.equal(result.reviewInput.files[1].enclosing?.status, "not-applicable");
   });
+});
+
+test("typed config, SQL and prose evidence reaches the budgeted LLM prompt", () => {
+  const paths = ["Dockerfile", "docker-compose.yml", ".github/workflows/build.yml", ".env.example", "db/migrations/001.sql", "docs/README.md", "src/a.ts"];
+  assert.deepEqual(paths.map(reviewEvidenceKind), ["repository configuration", "repository configuration", "repository configuration", "repository configuration", "database definition", "documentation", "application source"]);
+  assert.equal(reviewEvidenceKind("docs/schema.sql.md"), "documentation");
+  const documentation = paths.slice(0, -1).map(filePath => formatReviewDocumentEvidence({
+    filePath, content: "source evidence", contentHash: "hash", commitSha: "head", symbolName: "section", sectionPath: "section", symbolType: "documentation", lineStart: 1, lineEnd: 2, similarity: 1,
+  }));
+  const result = build([file()], 32768, [], documentation);
+  const prompt = result.messages.map(m => m.content).join("\n");
+  for (const evidence of documentation) assert.ok(prompt.includes(evidence));
+  assert.match(prompt, /do not downgrade them to Minor documentation mismatches/);
+  assert.match(prompt, /not proof of[\s\S]*actual deployed environment/);
+  assert.doesNotMatch(prompt, /README sections relevant/);
+  fits(result);
+});
+
+test("PR-head source does not promote default-branch graph edges to verified relationships", () => {
+  const result = build([file("helpers.ts")], 32768, ["// Candidate discovery: graph_dependent\nimport { util } from './utils';\nexport function service() { return util(); }"]);
+  const prompt = result.messages.map(m => m.content).join("\n");
+  assert.match(prompt, /index may describe the default branch, not the PR base or head/);
+  assert.match(prompt, /does not verify an import, call, or test relationship/);
+  assert.match(prompt, /import \{ util \} from '\.\/utils'/);
+  assert.doesNotMatch(prompt, /from '\.\/helpers'/);
+  fits(result);
+});
+
+test("partial source lines stay explicit in the final review prompt", () => {
+  const evidence = formatReviewDocumentEvidence({ filePath: "schema.sql", symbolType: "documentation", symbolName: "schema.sql (part 2/3)", sectionPath: "schema.sql (part 2/3)", lineStart: 1, lineEnd: 1, contentHash: "hash", commitSha: "head", similarity: 1,
+    content: "// File: schema.sql\n// Type: documentation-v2\n// Fragment: partial source line; not the complete line\nVALUES (1)" });
+  const result = build([file()], 32768, [], [evidence]);
+  assert.match(result.messages.map(m => m.content).join("\n"), /partial source line; not the complete line/);
+  assert.match(evidence, /not proof of complete file coverage/);
+  assert.match(evidence, /part 2\/3/);
+  fits(result);
 });
